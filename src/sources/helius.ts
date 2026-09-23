@@ -1,6 +1,7 @@
 import { config, hasHelius } from '../config.ts';
-import { tryGetJson } from '../util/http.ts';
+import { getOutcome, type ProviderResult } from '../util/http.ts';
 import { TtlCache } from '../util/cache.ts';
+import { notConfigured, type ProviderFailure } from '../util/failure.ts';
 import { ValidationReport, validMint, validNumber } from '../core/validate.ts';
 import type { OnChainInfo } from '../types.ts';
 
@@ -13,13 +14,32 @@ interface RpcResponse<T> {
   error?: { message?: string };
 }
 
-async function rpc<T>(method: string, params: unknown[]): Promise<T | null> {
-  const data = await tryGetJson<RpcResponse<T>>(rpcUrl(), {
+async function rpc<T>(method: string, params: unknown[]): Promise<ProviderResult<T>> {
+  const outcome = await getOutcome<RpcResponse<T>>('helius', rpcUrl(), {
     method: 'POST',
     body: { jsonrpc: '2.0', id: method, method, params },
     retries: 1,
   });
-  return data?.result ?? null;
+
+  if (outcome.failure !== null) return { data: null, failure: outcome.failure };
+
+  // A JSON-RPC error body is a 200 response carrying a refusal, so it has to be
+  // recognised here rather than by the HTTP layer.
+  const rpcError = outcome.data?.error;
+  if (rpcError !== undefined) {
+    return {
+      data: null,
+      failure: {
+        provider: 'helius',
+        kind: 'INVALID_RESPONSE',
+        message: (rpcError.message ?? 'rpc error').slice(0, 200),
+        at: Date.now(),
+        retryable: false,
+      },
+    };
+  }
+
+  return { data: outcome.data?.result ?? null, failure: null };
 }
 
 interface MintAccount {
@@ -49,17 +69,28 @@ interface LargestAccounts {
  * Caveat: the largest accounts include AMM pool vaults, so top10Share is an
  * upper bound on genuine holder concentration, not a clean insider metric.
  */
-export async function onchainInfo(mint: string): Promise<OnChainInfo | null> {
-  if (!hasHelius()) return null;
+export async function onchainInfo(mint: string): Promise<ProviderResult<OnChainInfo>> {
+  // Not configured is a distinct, permanent condition: there is nothing to
+  // retry and nothing wrong, but the signal is UNAVAILABLE, not UNKNOWN.
+  if (!hasHelius()) return { data: null, failure: notConfigured('helius') };
 
-  return cache.wrap(mint, async () => {
-    const [account, largest] = await Promise.all([
+  const hit = cache.get(mint);
+  if (hit !== undefined) return { data: hit, failure: null };
+
+  const result = await (async (): Promise<ProviderResult<OnChainInfo>> => {
+    // The two RPC calls are independent: a failure of one must not discard the
+    // other's answer, so neither can reject the pair.
+    const [accountResult, largestResult] = await Promise.all([
       rpc<MintAccount>('getAccountInfo', [mint, { encoding: 'jsonParsed' }]),
       rpc<LargestAccounts>('getTokenLargestAccounts', [mint]),
     ]);
 
+    const failure: ProviderFailure | null = accountResult.failure ?? largestResult.failure;
+    const account = accountResult.data;
+    const largest = largestResult.data;
+
     const info = account?.value?.data?.parsed?.info;
-    if (!info && !largest) return null;
+    if (!info && !largest) return { data: null, failure };
 
     const report = new ValidationReport('helius');
 
@@ -101,19 +132,28 @@ export async function onchainInfo(mint: string): Promise<OnChainInfo | null> {
         ? report.reject('top10Share', 'holder balances exceed total supply', rawTop10Share)
         : rawTop10Share;
 
+
     return {
-      mintAuthority,
-      freezeAuthority,
-      mintAuthorityStated,
-      freezeAuthorityStated,
-      decimals,
-      supply,
-      top10Share,
-      largestHolderShare:
-        top10Share !== null && usableSupply && holders[0] !== undefined
-          ? holders[0] / usableSupply
-          : null,
-      issues: report.issues,
+      data: {
+        mintAuthority,
+        freezeAuthority,
+        mintAuthorityStated,
+        freezeAuthorityStated,
+        decimals,
+        supply,
+        top10Share,
+        largestHolderShare:
+          top10Share !== null && usableSupply && holders[0] !== undefined
+            ? holders[0] / usableSupply
+            : null,
+        issues: report.issues,
+      },
+      // A partial answer is still an answer; the failure is reported alongside
+      // it so the gap is attributable.
+      failure,
     };
-  });
+  })();
+
+  if (result.data !== null) cache.set(mint, result.data);
+  return result;
 }

@@ -121,6 +121,12 @@ as new.
 AGING evidence is usable at reduced confidence. **STALE evidence is not usable at
 all**, so stale market activity can never be scored as current momentum.
 
+Freshness is evaluated **per claim, before a winner is chosen**. A stale claim is
+set aside for the decision and kept in `evidence.overridden`; only if *every*
+claim is stale does the fact become STALE. Without this, one stale provider could
+win the resolution and then drag a fact to STALE, discarding a perfectly current
+reading from someone else.
+
 ## 3. Cross-provider resolution
 
 `src/core/resolve.ts`. Rules, in order:
@@ -134,24 +140,45 @@ all**, so stale market activity can never be scored as current momentum.
 Provider trust: `helius 1.0` (reads the chain directly), `rugcheck 0.95`,
 `dexscreener 0.9`, `jupiter 0.85`.
 
-### Safety facts are resolved conservatively
+### Precedence is per fact type, not global
 
-For mint and freeze authority:
+There is no single "best provider". Each is authoritative for what it actually
+observes, and silent on the rest:
 
-- **A danger assertion beats silence.** RugCheck only ever reports problems, so the
-  absence of a finding says nothing at all. This is the SCORING.md §5.2 defect:
-  RugCheck said "Mint Authority still enabled" while Jupiter's audit field was null,
-  and the null won.
-- **A danger assertion beats a contradicting claim of safety.** The result is
-  `CONFLICTED` with the dangerous reading as the value, and both claims kept.
-- **CONFLICTED still fires the gate, and still earns no positive safety credit.** A
-  disputed claim of safety is not a claim of safety.
+| Fact | Precedence | Why |
+|---|---|---|
+| mint / freeze authority | **Helius (on-chain)** > RugCheck danger > Jupiter audit | Helius reads the mint account directly; the others report *about* it |
+| tradability | derived from resolved depth | a venue with depth is one you can exit through |
+| liquidity, volume, price | market providers, conservative | both observe venues; neither is canonical |
+| rug history, named risks | **RugCheck** | the only source that asserts them, and history does not expire |
+| holders, organic score | Jupiter | the only source that reports them |
 
-Deliberate consequence: an on-chain Helius read showing a revoked authority does *not*
-override a RugCheck danger finding. On-chain is ground truth and RugCheck's report may
-simply be stale, so this will sometimes be wrong in the safe direction. It is recorded
-as a conflict rather than silently resolved — trusting one provider absolutely is how
-the original defect happened.
+A provider with precedence wins outright **when its claim is current**. When it is
+stale it stops deciding, and the remaining current claims take over.
+
+### Safety facts are resolved conservatively, bounded by freshness
+
+For mint and freeze authority, in order:
+
+1. **Stale claims do not decide.** An authority report from last week is not a
+   statement about now. It is set aside and kept in `evidence.overridden`.
+2. **A current on-chain read wins.** Helius reads the mint account directly, so
+   where it has a current claim it outranks a third-party report of that same
+   fact — including a RugCheck danger finding that has gone stale. This is what
+   stops a week-old "mint authority still enabled" vetoing a token the chain now
+   says is safe.
+3. **Otherwise, a danger assertion beats silence.** RugCheck only ever reports
+   problems, so the absence of a finding says nothing at all. With no on-chain
+   claim — the default keyless setup — this is the governing rule, unchanged.
+4. **Otherwise, a danger assertion beats a contradicting claim of safety**, as
+   `CONFLICTED` with the dangerous reading as the value.
+5. **CONFLICTED still fires the gate and still earns no positive credit.** A
+   disputed claim of safety is not a claim of safety.
+
+Nothing is silently discarded. A danger assertion that loses — on staleness or on
+precedence — lands in `evidence.overridden` and sets `historicalDangerEvidence`, so
+the token keeps a visible record that something once reported otherwise even though
+it is no longer vetoed for it.
 
 ### Market facts are resolved conservatively too, but differently
 
@@ -176,15 +203,22 @@ because it is the same underlying fact.
 `src/core/gate.ts`, evaluated **before** ranking. A penalty multiplier cannot express
 "do not show this", because a strong enough token absorbs one and stays near the top.
 
-| Code | Fires when | Source | Re-checkable |
-|---|---|---|---|
-| `AUTHORITY_MINT_ACTIVE` | mint authority resolves to live | jupiter / rugcheck / helius | yes — can be revoked later |
-| `AUTHORITY_FREEZE_ACTIVE` | freeze authority resolves to live | jupiter / rugcheck / helius | yes |
-| `CRITICAL_RUGCHECK` | a `danger` finding naming a rugged token or a creator with rug history | rugcheck | **no** — history cannot be undone |
-| `UNTRADEABLE` | liquidity measured at exactly 0 | derived | yes |
-| `LIQUIDITY_TOO_LOW` | measured liquidity below `MIN_LIQUIDITY_USD` | dexscreener / jupiter | yes |
-| `CATASTROPHIC_CONCENTRATION` | Jupiter-measured top holders >= `CATASTROPHIC_CONCENTRATION_PCT` (90) | jupiter only | yes |
-| `MALFORMED_TOKEN` | a *critical* field failed validation | validation | yes |
+| Code | Nature | Fires when | Source | Re-checkable |
+|---|---|---|---|---|
+| `AUTHORITY_MINT_ACTIVE` | current-state | mint authority resolves to live, on **current** evidence | jupiter / rugcheck / helius | yes |
+| `AUTHORITY_FREEZE_ACTIVE` | current-state | freeze authority resolves to live, on **current** evidence | jupiter / rugcheck / helius | yes |
+| `CRITICAL_RUGCHECK` | **historical** | a `danger` finding naming a rugged token or a creator with rug history | rugcheck | **no** — history cannot be undone |
+| `UNTRADEABLE` | current-state | liquidity measured at exactly 0 | derived | yes |
+| `LIQUIDITY_TOO_LOW` | current-state | measured liquidity below `MIN_LIQUIDITY_USD` | dexscreener / jupiter | yes |
+| `CATASTROPHIC_CONCENTRATION` | current-state | Jupiter-measured top holders >= `CATASTROPHIC_CONCENTRATION_PCT` (90) | jupiter only | yes |
+| `MALFORMED_TOKEN` | current-state | a *critical* field failed validation | validation | yes |
+
+**Nature decides how staleness is treated.** A `current-state` veto requires FRESH or
+AGING evidence: an old reading of a changeable fact — an authority that may since have
+been revoked, liquidity that may since have been added — is not a fact about the
+present. A `historical` veto is exempt by construction: a creator's rug history is as
+true today as when it was recorded, so it fires on stale evidence and is not
+re-checkable.
 
 Design rules:
 
@@ -265,3 +299,36 @@ describing no venue that exists.
 The two double charges (concentration, thin liquidity) are **retained deliberately**
 and documented rather than removed: the penalty models a cliff risk the graded score
 cannot, and changing either without outcome data would be guessing.
+
+## 8. Failure isolation
+
+**No single item or provider can abort a batch.** Three fan-out paths were fragile:
+
+| Path | Was | Now |
+|---|---|---|
+| `pool()` in `util/http.ts` | `Promise.all(runners)` — rejected on the first failure *and* left the other runners consuming the cursor in the background | `poolSettled()` catches inside each runner; it cannot reject, and every item gets a recorded outcome |
+| batch market fetch in `analyze.ts` | `Promise.all([dexscreener, jupiter])` — one timeout discarded a complete response from the other and ended the scan | `Promise.allSettled`; whichever side answered is kept, the other is recorded as a failure |
+| per-token enrichment in `analyze.ts` | `Promise.all([rugcheck, helius, typesafe])` | `Promise.allSettled`; a failing provider becomes an UNAVAILABLE signal, not an exception |
+
+### Failures carry their reason
+
+Adapters report *why* they failed rather than collapsing to `null`. `getOutcome()`
+returns `{ data, failure }`; `tryGetJson()` remains for cosmetic fetches but is no
+longer used for anything feeding the evidence model, because it makes a provider
+outage indistinguishable from a token having no data.
+
+| Kind | Meaning | Retryable |
+|---|---|---|
+| `TIMEOUT` | the request exceeded its deadline | yes |
+| `RATE_LIMITED` | 429 | yes |
+| `NETWORK_ERROR` | never reached the provider | yes |
+| `PROVIDER_UNAVAILABLE` | 5xx, or no key configured | yes (5xx) / no (no key) |
+| `INVALID_RESPONSE` | answered, but unusable — 4xx, bad JSON, JSON-RPC error | **no** — the same request fails the same way |
+| `UNKNOWN` | unclassified | **no** — retrying what we do not understand is how a scan becomes a rate-limit spiral |
+
+A failed provider's signals become **UNAVAILABLE**, which is counted separately from
+UNKNOWN in the coverage report. Failures are **not cached**, so a transient outage does
+not lock a token out of safety data for the length of the cache TTL.
+
+`ScanResult` carries `tokenFailures` and `providerFailures`; each token's `evaluation`
+carries `providerFailures` for the tokens it affected.

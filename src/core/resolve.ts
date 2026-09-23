@@ -6,6 +6,22 @@
  * settlement rules are deliberately asymmetric between safety facts and market
  * facts.
  *
+ * ## Precedence is per fact type, not global
+ *
+ * There is no single "best provider". Each provider is authoritative for the
+ * things it actually observes, and has nothing to say about the rest:
+ *
+ * | Fact | Precedence | Why |
+ * |---|---|---|
+ * | mint / freeze authority | **Helius (on-chain)** > RugCheck danger > Jupiter audit | Helius reads the mint account directly; the others report *about* it |
+ * | tradability | derived from resolved depth | a venue with depth is one you can exit through |
+ * | liquidity, volume, price | market providers, conservative | DexScreener and Jupiter both observe venues; neither is canonical |
+ * | rug history, named risks | **RugCheck** | it is the only source that asserts them, and history does not expire |
+ * | holders, organic score | Jupiter | the only source that reports them |
+ *
+ * A provider with precedence wins outright when its claim is **current**. When
+ * it is stale, it stops deciding and the remaining current claims take over.
+ *
  * ## Resolution rules
  *
  * **Market facts** (liquidity, volume, holders, price change) use the most
@@ -13,25 +29,30 @@
  * figure wins: liquidity is a claim about whether an exit exists, and the
  * optimistic reading is the one that costs money if wrong.
  *
- * **Safety facts** (mint and freeze authority) use conservative resolution:
+ * **Safety facts** (mint and freeze authority) use conservative resolution,
+ * bounded by freshness and by precedence:
  *
- * 1. A provider asserting danger beats a provider that is silent. Silence is
- *    not evidence of safety - RugCheck only ever reports problems, so the
- *    absence of a finding says nothing at all.
- * 2. A provider asserting danger beats a provider asserting safety. The token
- *    is marked CONFLICTED and both claims are retained. This is the case
- *    SCORING.md 5.2 documented: RugCheck said "Mint Authority still enabled"
- *    while Jupiter's audit field was null, and the null won.
- * 3. Because the dangerous reading wins, CONFLICTED safety evidence still
- *    fires the safety gate. It earns no positive credit in scoring either -
- *    a disputed claim of safety is not a claim of safety.
+ * 1. **Stale claims do not decide.** A claim older than its aging window is set
+ *    aside before a winner is chosen, and kept in `evidence.overridden`. An
+ *    authority report from last week is not a statement about now.
+ * 2. **A current on-chain read wins.** Helius reads the mint account directly,
+ *    so where it has a current claim it outranks a third-party report of that
+ *    same fact - including a RugCheck danger finding that has gone stale. This
+ *    is what stops a week-old "mint authority still enabled" vetoing a token
+ *    the chain now says is safe.
+ * 3. **Otherwise, danger beats silence.** RugCheck only ever reports problems,
+ *    so the absence of a finding says nothing at all. With no on-chain claim -
+ *    the default keyless setup - this is the governing rule, exactly as before.
+ * 4. **Otherwise, danger beats a claim of safety.** The fact is marked
+ *    CONFLICTED with the dangerous reading as its value, and every claim is
+ *    retained.
+ * 5. **CONFLICTED still fires the gate and still earns no positive credit.**
+ *    A disputed claim of safety is not a claim of safety.
  *
- * The deliberate consequence of rule 2: an on-chain read from Helius showing a
- * revoked authority does *not* override a RugCheck danger finding. On-chain is
- * ground truth and RugCheck's report may simply be stale, so this will
- * sometimes be wrong in the safe direction. It is recorded as a conflict rather
- * than silently resolved, because trusting one provider absolutely is how the
- * original defect happened.
+ * Nothing is silently discarded. A danger assertion that loses - on staleness
+ * or on precedence - lands in `evidence.overridden` and sets
+ * `historicalDangerEvidence`, so the token carries a visible record that
+ * something once reported otherwise even though it is no longer vetoed for it.
  */
 
 import {
@@ -42,6 +63,7 @@ import {
   type Evidence,
   type TokenEvidence,
 } from './evidence.ts';
+import type { ProviderFailure } from '../util/failure.ts';
 import type {
   FieldIssue,
   JupiterInfo,
@@ -68,6 +90,12 @@ export interface ResolveInput {
   };
   /** Whether Helius is configured at all; drives UNAVAILABLE vs UNKNOWN. */
   heliusConfigured: boolean;
+  /**
+   * Providers that failed for this token. Their signals become UNAVAILABLE
+   * rather than UNKNOWN, and - critically - the failure of one provider does
+   * not touch evidence already gathered from the others.
+   */
+  failures?: ProviderFailure[];
   now: number;
 }
 
@@ -85,6 +113,21 @@ function conservativeAuthority(claims: Claim<boolean>[]): number {
   const dangerous = claims.findIndex((claim) => claim.value === false);
   return dangerous === -1 ? 0 : dangerous;
 }
+
+/**
+ * Authority is an on-chain fact, so a direct read of the chain outranks a
+ * third-party report of that read.
+ *
+ * This is what stops a stale RugCheck finding vetoing a token the chain now
+ * says is safe. The losing claim is not discarded: it lands in
+ * `evidence.overridden`, and if it asserted danger the token carries
+ * `historicalDangerEvidence` so the disagreement stays visible.
+ *
+ * Helius only appears among the claims when a key is configured and the mint
+ * account actually carried the field, so in the default keyless setup this
+ * changes nothing and the conservative rule still governs.
+ */
+const AUTHORITY_PRECEDENCE = ['helius'] as const;
 
 /** Picks the lowest value - the reading that assumes the least depth. */
 function lowestValue(claims: Claim<number>[]): number {
@@ -119,6 +162,25 @@ function sumPairs(pairs: PairMetrics[], pick: (pair: PairMetrics) => number | nu
 
 export function resolveEvidence(input: ResolveInput): TokenEvidence {
   const { pairs, jupiter, rugcheck, onchain, observedAt, now } = input;
+
+  const failures = input.failures ?? [];
+  /** An unavailable-claim stub for a provider that could not be reached. */
+  const down = <T>(provider: string): Claim<T> | null => {
+    const failure = failures.find((f) => f.provider === provider);
+    return failure === undefined
+      ? null
+      : {
+          provider,
+          value: null,
+          observedAt: failure.at,
+          unavailable: `${failure.kind}: ${failure.message}`,
+        };
+  };
+  const withDown = <T>(provider: string, claims: Claim<T>[]): Claim<T>[] => {
+    if (claims.length > 0) return claims;
+    const stub = down<T>(provider);
+    return stub === null ? claims : [stub];
+  };
 
   const issues: FieldIssue[] = [
     ...pairs.flatMap((pair) => pair.issues),
@@ -207,7 +269,12 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
   // Only DexScreener reports 24h volume. No pair means no observation at all,
   // which is UNKNOWN - distinct from a pair that genuinely traded nothing.
   const volume24h = resolve<number>(
-    hasPairs ? [claim('dexscreener', sumPairs(pairs, (pair) => pair.volume.h24), observedAt.dexscreener)] : [],
+    withDown(
+      'dexscreener',
+      hasPairs
+        ? [claim('dexscreener', sumPairs(pairs, (pair) => pair.volume.h24), observedAt.dexscreener)]
+        : [],
+    ),
     { metric: 'volume24h', now },
   );
 
@@ -276,9 +343,12 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
 
   // --- holders -------------------------------------------------------------
   const holders = resolve<number>(
-    jupiter
-      ? [claim('jupiter', jupiter.holderCount, observedAt.jupiter, issueFor(jupiter.issues, 'holderCount'))]
-      : [],
+    withDown(
+      'jupiter',
+      jupiter
+        ? [claim('jupiter', jupiter.holderCount, observedAt.jupiter, issueFor(jupiter.issues, 'holderCount'))]
+        : [],
+    ),
     { metric: 'holders', now },
   );
 
@@ -353,12 +423,20 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
     metric: 'mintAuthorityRevoked',
     now,
     resolveConflict: conservativeAuthority,
+    precedence: AUTHORITY_PRECEDENCE,
   });
   const freezeAuthorityRevoked = resolve<boolean>(freezeClaims, {
     metric: 'freezeAuthorityRevoked',
     now,
     resolveConflict: conservativeAuthority,
+    precedence: AUTHORITY_PRECEDENCE,
   });
+
+  // A danger assertion that lost - to staleness or to a current on-chain read -
+  // is still worth surfacing. It does not veto, but it is not forgotten either.
+  const historicalDangerEvidence = [mintAuthorityRevoked, freezeAuthorityRevoked].some(
+    (evidence) => evidence.overridden.some((claim) => claim.value === false),
+  );
 
   // --- concentration -------------------------------------------------------
   // Helius top10Share includes AMM pool vaults, so it is an upper bound and is
@@ -387,17 +465,23 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
 
   // --- rugcheck risk -------------------------------------------------------
   const rugcheckRisk = resolve<number>(
-    rugcheck
-      ? [claim('rugcheck', rugcheck.scoreNormalised, observedAt.rugcheck, issueFor(rugcheck.issues, 'score_normalised'))]
-      : [],
+    withDown(
+      'rugcheck',
+      rugcheck
+        ? [claim('rugcheck', rugcheck.scoreNormalised, observedAt.rugcheck, issueFor(rugcheck.issues, 'score_normalised'))]
+        : [],
+    ),
     { metric: 'rugcheckRisk', now },
   );
 
   // --- organic score -------------------------------------------------------
   const organicScore = resolve<number>(
-    jupiter
-      ? [claim('jupiter', jupiter.organicScore, observedAt.jupiter, issueFor(jupiter.issues, 'organicScore'))]
-      : [],
+    withDown(
+      'jupiter',
+      jupiter
+        ? [claim('jupiter', jupiter.organicScore, observedAt.jupiter, issueFor(jupiter.issues, 'organicScore'))]
+        : [],
+    ),
     { metric: 'organicScore', now },
   );
 
@@ -410,7 +494,10 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
           ...liquidityUsd,
           value: (liquidityUsd.value ?? 0) > 0,
           notes: [...liquidityUsd.notes, 'derived from resolved liquidity'],
+          // Derived, so it carries no claims of its own; the depth evidence
+          // holds the provenance.
           claims: [],
+          overridden: [],
         }
       : input.heliusConfigured || hasPairs || jupiter !== null
         ? unknown<boolean>(['no usable liquidity reading, so tradability is unknown'])
@@ -433,6 +520,8 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
     .map(([key]) => key);
 
   return {
+    historicalDangerEvidence,
+    providerFailures: failures,
     liquidityUsd,
     venueLiquidityUsd,
     volume24h,

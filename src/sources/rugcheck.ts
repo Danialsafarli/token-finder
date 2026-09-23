@@ -1,4 +1,4 @@
-import { tryGetJson } from '../util/http.ts';
+import { getOutcome, type ProviderResult } from '../util/http.ts';
 import { TtlCache } from '../util/cache.ts';
 import { ValidationReport, validNumber, validString } from '../core/validate.ts';
 import type { RugcheckInfo } from '../types.ts';
@@ -22,16 +22,26 @@ const RISK_LEVELS = new Set(['danger', 'warn', 'info', 'good']);
  * and a handful of named risks. Public and unauthenticated, but tightly rate
  * limited, so this is the slowest source in a scan.
  */
-export async function summary(mint: string): Promise<RugcheckInfo | null> {
-  return cache.wrap(mint, async () => {
-    const data = await tryGetJson<RawSummary>(`${BASE}/tokens/${mint}/report/summary`, {
-      retries: 1,
-      timeoutMs: 10_000,
-      nullOn: [400, 404, 422],
-    });
-    if (!data) return null;
-    return normalizeSummary(data);
+export async function summary(mint: string): Promise<ProviderResult<RugcheckInfo>> {
+  // A cached answer is a real answer. Failures are deliberately NOT cached, so
+  // a transient outage does not lock the token out of safety data for 20
+  // minutes - the next scan retries it.
+  const hit = cache.get(mint);
+  if (hit !== undefined) return { data: hit, failure: null };
+
+  const outcome = await getOutcome<RawSummary>('rugcheck', `${BASE}/tokens/${mint}/report/summary`, {
+    retries: 1,
+    timeoutMs: 10_000,
+    nullOn: [400, 404, 422],
   });
+
+  if (outcome.failure !== null) return { data: null, failure: outcome.failure };
+
+  // `null` here means RugCheck answered and had nothing on this mint, which is
+  // a fact worth caching - unlike a failure.
+  const info = outcome.data === null ? null : normalizeSummary(outcome.data);
+  cache.set(mint, info);
+  return { data: info, failure: null };
 }
 
 /**

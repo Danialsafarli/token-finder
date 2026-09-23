@@ -132,7 +132,9 @@ date is manual: typecheck, two live scans, HTTP endpoint probes.
 5. `cli.ts analyze` overwrites a token's `sources` with `['cli']`, destroying discovery provenance.
 6. Helius/Birdeye code paths have never executed against a real response.
 7. `store.prune` deletes tokens silently; no event records that a token stopped being tracked.
-8. `pool()` in `util/http.ts` still uses `Promise.all`, so one rejected worker aborts the scan.
+8. ~~`pool()` in `util/http.ts` still uses `Promise.all`, so one rejected worker aborts
+   the scan~~ — **FIXED.** `poolSettled()` isolates every task; the batch always
+   completes and each item keeps its outcome. See [PIPELINE.md](PIPELINE.md) §8.
 9. ~~Snapshots written before evidence tracking carry no `coverage`/`unknown` field~~ —
    state is now versioned (`STATE_VERSION = 2`) and the previous file is copied aside
    before a migration. Legacy snapshots are still shown as "not recorded" until the next

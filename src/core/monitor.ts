@@ -3,7 +3,8 @@ import { config } from '../config.ts';
 import { log } from '../util/logger.ts';
 import { fmtUsd } from '../util/num.ts';
 import { discover } from './discover.ts';
-import { analyze } from './analyze.ts';
+import { analyze, type TokenFailure } from './analyze.ts';
+import type { ProviderFailure } from '../util/failure.ts';
 import { store } from './store.ts';
 import type { MonitorEvent, RiskLevel, TokenSnapshot, TokenState } from '../types.ts';
 
@@ -17,6 +18,10 @@ export interface ScanResult {
   analyzed: number;
   fresh: number;
   events: MonitorEvent[];
+  /** Tokens whose analysis failed, with the reason. The scan still completed. */
+  tokenFailures: TokenFailure[];
+  /** Providers that failed batch-wide, with the reason. */
+  providerFailures: ProviderFailure[];
   top: TokenSnapshot[];
 }
 
@@ -175,7 +180,17 @@ export async function runScan(): Promise<ScanResult> {
       if (state !== undefined) priorStates.set(token.mint, state);
     }
 
-    const snapshots = await analyze(candidates, { priorStates });
+    const analysis = await analyze(candidates, { priorStates });
+    const { snapshots } = analysis;
+
+    // Failures are reported, never fatal: one token or one provider going down
+    // must not end the scan or discard what the others returned.
+    for (const failure of analysis.providerFailures) {
+      log.warn(`provider ${failure.provider} failed this scan (${failure.kind}): ${failure.message}`);
+    }
+    for (const failed of analysis.failures) {
+      log.warn(`token ${failed.mint} could not be analysed (${failed.failure.kind})`);
+    }
 
     const events: MonitorEvent[] = [];
     let fresh = 0;
@@ -197,6 +212,8 @@ export async function runScan(): Promise<ScanResult> {
       analyzed: snapshots.length,
       fresh,
       events,
+      tokenFailures: analysis.failures,
+      providerFailures: analysis.providerFailures,
       top: [...snapshots].sort((a, b) => b.score.total - a.score.total).slice(0, 10),
     };
 

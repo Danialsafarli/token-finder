@@ -2,8 +2,10 @@
 
 import type { FieldIssue } from './core/validate.ts';
 import type { Evidence, EvidenceState, TokenEvidence } from './core/evidence.ts';
+import type { ProviderFailure, ProviderFailureKind } from './util/failure.ts';
 
 export type { FieldIssue, Evidence, EvidenceState, TokenEvidence };
+export type { ProviderFailure, ProviderFailureKind };
 
 export interface TokenCandidate {
   mint: string;
@@ -206,8 +208,23 @@ export type VetoCode =
   | 'CATASTROPHIC_CONCENTRATION'
   | 'MALFORMED_TOKEN';
 
+/**
+ * What kind of claim a veto is making about time.
+ *
+ * `current-state` vetoes describe how the token is *right now* - a live mint
+ * authority, an empty pool. They require current evidence, because an old
+ * reading of a changeable fact is not a fact about the present.
+ *
+ * `historical` vetoes describe something that happened and cannot un-happen -
+ * a creator who has rugged before. Staleness is irrelevant: the event is as
+ * true today as when it was recorded.
+ */
+export type VetoNature = 'current-state' | 'historical';
+
 export interface Veto {
   code: VetoCode;
+  /** Whether this describes the present or a permanent historical fact. */
+  nature: VetoNature;
   /** Plain-language reason, safe to show a person with no context. */
   reason: string;
   /** Which provider's evidence triggered this. */
@@ -284,6 +301,18 @@ export interface Evaluation {
   conflicts: string[];
   /** Provider fields rejected at the boundary during this analysis. */
   issues: FieldIssue[];
+  /**
+   * Providers that could not be reached while analysing this token. Recorded
+   * rather than silently folded into "no data", so an outage is visibly
+   * different from a token that genuinely has nothing to report.
+   */
+  providerFailures: ProviderFailure[];
+  /**
+   * True when a danger assertion was overridden - by staleness, or by a current
+   * on-chain read contradicting it. The token is not vetoed for it, but the
+   * disagreement is not forgotten either.
+   */
+  historicalDangerEvidence: boolean;
 }
 
 export interface TokenSnapshot {

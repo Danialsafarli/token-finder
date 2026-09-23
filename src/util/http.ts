@@ -1,18 +1,8 @@
 import { log } from './logger.ts';
+import { HttpError } from './http-error.ts';
+import { classifyFailure, type ProviderFailure } from './failure.ts';
 
-export class HttpError extends Error {
-  status: number;
-  url: string;
-  body: string;
-
-  constructor(status: number, url: string, body: string) {
-    super(`HTTP ${status} for ${url}`);
-    this.name = 'HttpError';
-    this.status = status;
-    this.url = url;
-    this.body = body;
-  }
-}
+export { HttpError };
 
 /**
  * One queue per host, so a burst of calls to DexScreener cannot spend the
@@ -146,6 +136,10 @@ export async function getJson<T>(url: string, options: FetchOptions = {}): Promi
 /**
  * Like getJson but never throws: failures become null and are logged at debug
  * level. Used for optional enrichment so one flaky API cannot abort a scan.
+ *
+ * Prefer {@link getOutcome} for anything that feeds the evidence model. This
+ * returns `null` for both "the provider said there is nothing" and "the
+ * provider never answered", and those are not the same fact.
  */
 export async function tryGetJson<T>(url: string, options: FetchOptions = {}): Promise<T | null> {
   try {
@@ -156,23 +150,104 @@ export async function tryGetJson<T>(url: string, options: FetchOptions = {}): Pr
   }
 }
 
-/** Runs tasks with bounded concurrency, preserving input order. */
+/** A provider answer, or the classified reason there is not one. */
+export interface ProviderResult<T> {
+  data: T | null;
+  failure: ProviderFailure | null;
+}
+
+/**
+ * Fetches without throwing, keeping *why* it failed.
+ *
+ * This is the difference between a scan that silently degrades and one that can
+ * say "RugCheck timed out for 12 tokens". `tryGetJson` collapses an outage and
+ * an empty result into the same `null`, which makes a provider being down look
+ * exactly like a token having no data - so the evidence model cannot tell
+ * UNAVAILABLE from UNKNOWN, and nobody finds out the provider is down.
+ */
+export async function getOutcome<T>(
+  provider: string,
+  url: string,
+  options: FetchOptions = {},
+): Promise<ProviderResult<T>> {
+  try {
+    return { data: await getJson<T>(url, options), failure: null };
+  } catch (error) {
+    const failure = classifyFailure(provider, error);
+    log.debug(`${provider} failed (${failure.kind}): ${failure.message}`);
+    return { data: null, failure };
+  }
+}
+
+/** Outcome of one pooled task. Mirrors PromiseSettledResult, with the index. */
+export type PoolResult<Out> =
+  | { status: 'fulfilled'; index: number; value: Out }
+  | { status: 'rejected'; index: number; reason: unknown };
+
+/**
+ * Runs tasks with bounded concurrency, preserving input order.
+ *
+ * **Never rejects.** Each task is caught inside its own runner, so one failing
+ * item cannot abort the batch or leave the remaining runners detached - which
+ * is what the previous `Promise.all(runners)` did: it rejected on the first
+ * failure while the other runners kept consuming the cursor in the background,
+ * so a single provider timeout ended a scan *and* left work running against a
+ * result nobody was waiting for.
+ *
+ * Callers decide what a failure means; this only guarantees the batch finishes.
+ */
+export async function poolSettled<In, Out>(
+  items: In[],
+  limit: number,
+  worker: (item: In, index: number) => Promise<Out>,
+): Promise<PoolResult<Out>[]> {
+  const results = new Array<PoolResult<Out>>(items.length);
+  let cursor = 0;
+
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      try {
+        results[index] = {
+          status: 'fulfilled',
+          index,
+          value: await worker(items[index] as In, index),
+        };
+      } catch (reason) {
+        results[index] = { status: 'rejected', index, reason };
+      }
+    }
+  });
+
+  // Safe now: no runner can reject, because every task is caught above.
+  await Promise.all(runners);
+  return results;
+}
+
+/**
+ * Bounded-concurrency pool that keeps only the successful results.
+ *
+ * For callers that treat a failed item as "no data for this item" - the common
+ * case for optional enrichment. Failures are handed to `onError` so they can
+ * still be recorded rather than vanishing.
+ */
 export async function pool<In, Out>(
   items: In[],
   limit: number,
   worker: (item: In, index: number) => Promise<Out>,
+  onError?: (reason: unknown, item: In, index: number) => void,
 ): Promise<Out[]> {
-  const results = new Array<Out>(items.length);
-  let cursor = 0;
+  const settled = await poolSettled(items, limit, worker);
+  const out: Out[] = [];
 
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    for (;;) {
-      const index = cursor++;
-      if (index >= items.length) return;
-      results[index] = await worker(items[index] as In, index);
+  for (const result of settled) {
+    if (result.status === 'fulfilled') {
+      out.push(result.value);
+    } else if (onError) {
+      onError(result.reason, items[result.index] as In, result.index);
     }
-  });
+  }
 
-  await Promise.all(runners);
-  return results;
+  return out;
 }

@@ -207,6 +207,9 @@ Full detail: **[PIPELINE.md](PIPELINE.md)**.
   the safety gate, coverage, eligibility, the lifecycle and the Jev failure paths, over a
   deterministic 14-scenario fixture corpus. Discovery, the HTTP layer, the store and the
   dashboard still have no tests. See [ROADMAP.md](ROADMAP.md) for the rest.
+- **A provider outage degrades a scan, it does not end one.** Every fan-out path is
+  failure-isolated, and a failed provider's signals become `UNAVAILABLE` with a
+  classified reason rather than silently reading as "no data".
 - **No threshold here is calibrated against outcome data.** Coverage bars, the veto
   concentration limit and the A/B/C/D/F grades are reasoned starting points. Nothing has
   been validated against whether a token actually rugged.

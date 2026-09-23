@@ -11,6 +11,16 @@
  * - **Never veto on UNKNOWN.** Absence of evidence is not evidence of danger
  *   any more than it is evidence of safety. A veto requires a provider to have
  *   actually asserted the dangerous condition.
+ * - **Never veto a current-state condition on stale evidence.** `isCurrent()`
+ *   below requires FRESH or AGING. An old reading of a changeable fact - an
+ *   authority that may since have been revoked, liquidity that may since have
+ *   been added - is not a fact about the present. Historical vetoes are exempt
+ *   by construction: a creator's rug history does not expire.
+ * - **Every veto declares its nature**, so a reader can tell "this is true now"
+ *   from "this happened once and always will have".
+ * - **Re-checkability is separate from nature.** A current-state veto is
+ *   re-checkable because the world can change; a historical one is not,
+ *   because the past cannot.
  * - **CONFLICTED counts as asserted.** Resolution already took the conservative
  *   reading, so a disputed authority still fires. A contested claim of safety
  *   is not a claim of safety.
@@ -21,7 +31,7 @@
  *   new number is the catastrophic-concentration bar, justified below.
  */
 
-import { isUsable, type TokenEvidence } from './evidence.ts';
+import { isUsable, type Evidence, type TokenEvidence } from './evidence.ts';
 import type { Veto } from '../types.ts';
 
 export interface GateConfig {
@@ -65,6 +75,18 @@ const CRITICAL_RUGCHECK_RISKS: { match: string; recheckable: boolean; why: strin
   },
 ];
 
+/**
+ * Whether evidence is current enough to justify a claim about the present.
+ *
+ * STALE never qualifies. AGING does, at reduced confidence: a mint authority
+ * observed six hours ago is still overwhelmingly likely to be what it was,
+ * and refusing to act on it would make the gate useless in the common case
+ * where safety data is cached.
+ */
+function isCurrent(evidence: Evidence<unknown>): boolean {
+  return isUsable(evidence) && (evidence.freshness === 'FRESH' || evidence.freshness === 'AGING');
+}
+
 /** Renders an observed value for the audit trail without trusting its type. */
 function show(value: unknown): string {
   if (value === null || value === undefined) return 'unknown';
@@ -89,9 +111,10 @@ export function evaluateGate(
   // `false` means the authority is still live. UNKNOWN never reaches here
   // because isUsable() requires MEASURED or CONFLICTED.
   const mint = evidence.mintAuthorityRevoked;
-  if (isUsable(mint) && mint.value === false) {
+  if (isCurrent(mint) && mint.value === false) {
     vetoes.push({
       code: 'AUTHORITY_MINT_ACTIVE',
+      nature: 'current-state',
       reason:
         'Mint authority is still live - the supply can be inflated at will, so any position can be diluted to nothing.',
       source: mint.source ?? 'unknown',
@@ -103,9 +126,10 @@ export function evaluateGate(
   }
 
   const freeze = evidence.freezeAuthorityRevoked;
-  if (isUsable(freeze) && freeze.value === false) {
+  if (isCurrent(freeze) && freeze.value === false) {
     vetoes.push({
       code: 'AUTHORITY_FREEZE_ACTIVE',
+      nature: 'current-state',
       reason:
         'Freeze authority is still live - holder accounts can be frozen, which can make selling impossible.',
       source: freeze.source ?? 'unknown',
@@ -117,9 +141,10 @@ export function evaluateGate(
 
   // --- tradability ---------------------------------------------------------
   const tradable = evidence.tradable;
-  if (isUsable(tradable) && tradable.value === false) {
+  if (isCurrent(tradable) && tradable.value === false) {
     vetoes.push({
       code: 'UNTRADEABLE',
+      nature: 'current-state',
       reason: 'No venue reports any usable liquidity, so there is nothing to trade against.',
       source: tradable.source ?? 'derived',
       observedValue: '0 liquidity across every known pair',
@@ -130,9 +155,10 @@ export function evaluateGate(
 
   // --- liquidity floor -----------------------------------------------------
   const liquidity = evidence.liquidityUsd;
-  if (isUsable(liquidity) && (liquidity.value as number) > 0 && (liquidity.value as number) < config.minLiquidityUsd) {
+  if (isCurrent(liquidity) && (liquidity.value as number) > 0 && (liquidity.value as number) < config.minLiquidityUsd) {
     vetoes.push({
       code: 'LIQUIDITY_TOO_LOW',
+      nature: 'current-state',
       reason: `Only ${show(liquidity.value)} USD of pooled liquidity - below the ${config.minLiquidityUsd} USD floor, an exit would move the price against itself.`,
       source: liquidity.source ?? 'unknown',
       observedValue: show(liquidity.value),
@@ -147,12 +173,13 @@ export function evaluateGate(
   // whose liquidity simply sits in a pool account.
   const concentration = evidence.topHoldersPct;
   if (
-    isUsable(concentration) &&
+    isCurrent(concentration) &&
     concentration.source === 'jupiter' &&
     (concentration.value as number) >= config.catastrophicConcentrationPct
   ) {
     vetoes.push({
       code: 'CATASTROPHIC_CONCENTRATION',
+      nature: 'current-state',
       reason: `Top holders control ${show(concentration.value)}% of supply - the float is small enough that a single holder can end the market.`,
       source: concentration.source ?? 'unknown',
       observedValue: `${show(concentration.value)}%`,
@@ -182,6 +209,9 @@ export function evaluateRugcheckGate(
 
     vetoes.push({
       code: 'CRITICAL_RUGCHECK',
+      // Historical by construction: these findings describe an event, and an
+      // event does not stop having happened because the report aged.
+      nature: 'historical',
       reason: `RugCheck: ${risk.name} - ${critical.why}.`,
       source: 'rugcheck',
       observedValue: `${risk.name} (danger)`,
@@ -222,6 +252,7 @@ export function evaluateMalformedGate(
   return [
     {
       code: 'MALFORMED_TOKEN',
+      nature: 'current-state',
       reason: `Structural provider data failed validation (${critical
         .map((issue) => `${issue.field}: ${issue.reason}`)
         .slice(0, 3)

@@ -174,7 +174,13 @@ async function cmdAnalyze(target: string): Promise<void> {
     log.info(`matched ${matches[0]!.symbol} (${mint})`);
   }
 
-  const [snapshot] = await analyze([{ mint, sources: ['cli'] }], { includeAll: true, deepLimit: 1 });
+  const result = await analyze([{ mint, sources: ['cli'] }], { includeAll: true, deepLimit: 1 });
+  const snapshot = result.snapshots[0];
+
+  for (const failure of [...result.providerFailures, ...result.failures.map((f) => f.failure)]) {
+    log.warn(`${failure.provider} unavailable (${failure.kind}): ${failure.message}`);
+  }
+
   if (!snapshot) {
     log.error('no market data found for that mint - it may have no live pool');
     process.exitCode = 1;

@@ -4,7 +4,8 @@ import * as jupiter from '../sources/jupiter.ts';
 import * as rugcheck from '../sources/rugcheck.ts';
 import * as helius from '../sources/helius.ts';
 import * as typesafe from '../sources/typesafe.ts';
-import { pool } from '../util/http.ts';
+import { poolSettled } from '../util/http.ts';
+import { classifyFailure, type ProviderFailure } from '../util/failure.ts';
 import { log } from '../util/logger.ts';
 import { hasHelius } from '../config.ts';
 import { scoreToken } from './score.ts';
@@ -20,11 +21,28 @@ import { isUsable } from './evidence.ts';
 import type {
   Evaluation,
   JupiterInfo,
+  OnChainInfo,
   PairMetrics,
+  RugcheckInfo,
   TokenCandidate,
   TokenSnapshot,
   TokenState,
 } from '../types.ts';
+
+/** A token whose analysis failed outright, kept so the scan can report it. */
+export interface TokenFailure {
+  mint: string;
+  symbol: string | null;
+  failure: ProviderFailure;
+}
+
+export interface AnalyzeResult {
+  snapshots: TokenSnapshot[];
+  /** Tokens that could not be analysed at all. Never aborts the batch. */
+  failures: TokenFailure[];
+  /** Batch-level provider failures, e.g. a whole market feed being down. */
+  providerFailures: ProviderFailure[];
+}
 
 export interface AnalyzeOptions {
   /** Skip the liquidity and age filters; used by the single-token CLI command. */
@@ -70,16 +88,41 @@ function launchTime(pairs: PairMetrics[], jup: JupiterInfo | null): number | nul
 export async function analyze(
   candidates: TokenCandidate[],
   options: AnalyzeOptions = {},
-): Promise<TokenSnapshot[]> {
-  if (candidates.length === 0) return [];
+): Promise<AnalyzeResult> {
+  if (candidates.length === 0) return { snapshots: [], failures: [], providerFailures: [] };
 
   const mints = candidates.map((candidate) => candidate.mint);
   const sourcesByMint = new Map(candidates.map((c) => [c.mint, c.sources]));
+  const providerFailures: ProviderFailure[] = [];
 
-  const [pairsByMint, jupByMint] = await Promise.all([
+  // The two market feeds are fetched independently. `Promise.all` here meant a
+  // single DexScreener timeout threw away a complete, already-fetched Jupiter
+  // response and ended the scan; `allSettled` keeps whichever side answered.
+  const [pairsSettled, jupSettled] = await Promise.allSettled([
     dexscreener.pairsForMints(mints),
     jupiter.infoForMints(mints),
   ]);
+
+  const pairsByMint =
+    pairsSettled.status === 'fulfilled' ? pairsSettled.value : new Map<string, PairMetrics[]>();
+  if (pairsSettled.status === 'rejected') {
+    const failure = classifyFailure('dexscreener', pairsSettled.reason);
+    providerFailures.push(failure);
+    log.warn(`dexscreener batch failed (${failure.kind}): ${failure.message}`);
+  }
+
+  const jupByMint =
+    jupSettled.status === 'fulfilled' ? jupSettled.value : new Map<string, JupiterInfo>();
+  if (jupSettled.status === 'rejected') {
+    const failure = classifyFailure('jupiter', jupSettled.reason);
+    providerFailures.push(failure);
+    log.warn(`jupiter batch failed (${failure.kind}): ${failure.message}`);
+  }
+
+  if (pairsByMint.size === 0 && jupByMint.size === 0 && providerFailures.length === 2) {
+    log.error('both market providers failed; no evidence to analyse this scan');
+    return { snapshots: [], failures: [], providerFailures };
+  }
 
   // Observation times for freshness. Batch fetches complete together, so one
   // timestamp per provider is accurate to well inside the freshest window.
@@ -137,14 +180,19 @@ export async function analyze(
   // discovery, liquidity and age.
   typesafe.resetScanBudget();
 
-  return pool(deep, 4, async (draft): Promise<TokenSnapshot> => {
+  const settled = await poolSettled(deep, 4, async (draft): Promise<TokenSnapshot> => {
     const { candidate, pairs, jup } = draft;
 
     const best = dexscreener.bestPair(pairs);
     const symbol = candidate.symbol ?? best?.baseSymbol ?? jup?.symbol ?? null;
     const name = candidate.name ?? best?.baseName ?? jup?.name ?? null;
 
-    const [rug, onchain, impersonation] = await Promise.all([
+    // Each enrichment provider is isolated from the others. One of them failing
+    // must not discard the evidence the other two already returned, so a
+    // rejection becomes a recorded failure and an UNAVAILABLE signal rather
+    // than an exception that unwinds the whole token.
+    const tokenFailures: ProviderFailure[] = [];
+    const [rugSettled, onchainSettled, impersonationSettled] = await Promise.allSettled([
       rugcheck.summary(candidate.mint),
       helius.onchainInfo(candidate.mint),
       typesafe.screenImpersonation({
@@ -154,6 +202,39 @@ export async function analyze(
         jupiterVerified: jup?.isVerified ?? false,
       }),
     ]);
+
+    // Each adapter reports its own failure rather than collapsing it to null,
+    // so a provider outage is distinguishable from "this token has no data".
+    // The allSettled wrapper is the backstop for an adapter that throws anyway.
+    let rug: RugcheckInfo | null = null;
+    if (rugSettled.status === 'fulfilled') {
+      rug = rugSettled.value.data;
+      if (rugSettled.value.failure !== null) tokenFailures.push(rugSettled.value.failure);
+    } else {
+      tokenFailures.push(classifyFailure('rugcheck', rugSettled.reason));
+    }
+
+    let onchain: OnChainInfo | null = null;
+    if (onchainSettled.status === 'fulfilled') {
+      onchain = onchainSettled.value.data;
+      // A missing Helius key reports as PROVIDER_UNAVAILABLE. That is true and
+      // useful, but it is the default configuration, not an incident, so it is
+      // not recorded as a per-token failure.
+      const failure = onchainSettled.value.failure;
+      if (failure !== null && failure.message !== 'no API key configured') {
+        tokenFailures.push(failure);
+      }
+    } else {
+      tokenFailures.push(classifyFailure('helius', onchainSettled.reason));
+    }
+
+    // Screening never throws by contract, but if it ever did, a naming check
+    // must not be able to take a token's whole analysis with it.
+    const impersonation =
+      impersonationSettled.status === 'fulfilled' ? impersonationSettled.value : null;
+    if (impersonationSettled.status === 'rejected') {
+      tokenFailures.push(classifyFailure('typesafe', impersonationSettled.reason));
+    }
 
     const safetyObservedAt = Date.now();
 
@@ -170,6 +251,7 @@ export async function analyze(
         onchain: safetyObservedAt,
       },
       heliusConfigured: hasHelius(),
+      failures: [...providerFailures, ...tokenFailures],
       now: safetyObservedAt,
     });
 
@@ -208,6 +290,8 @@ export async function analyze(
       coverage,
       conflicts: evidence.conflicts,
       issues: evidence.issues,
+      providerFailures: [...providerFailures, ...tokenFailures],
+      historicalDangerEvidence: evidence.historicalDangerEvidence,
     };
 
     const resolvedLiquidity = isUsable(evidence.liquidityUsd)
@@ -248,4 +332,27 @@ export async function analyze(
       evaluation,
     };
   });
+
+  // A token that threw is reported, not fatal. The rest of the batch stands.
+  const snapshots: TokenSnapshot[] = [];
+  const failures: TokenFailure[] = [];
+
+  for (const result of settled) {
+    if (result.status === 'fulfilled') {
+      snapshots.push(result.value);
+      continue;
+    }
+    const draft = deep[result.index];
+    const failure = classifyFailure('analyze', result.reason);
+    failures.push({
+      mint: draft?.candidate.mint ?? 'unknown',
+      symbol: draft?.candidate.symbol ?? null,
+      failure,
+    });
+    log.warn(
+      `analysis failed for ${draft?.candidate.mint ?? 'unknown'} (${failure.kind}): ${failure.message}`,
+    );
+  }
+
+  return { snapshots, failures, providerFailures };
 }

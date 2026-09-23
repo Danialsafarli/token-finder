@@ -21,6 +21,7 @@
  */
 
 import type { FieldIssue } from './validate.ts';
+import type { ProviderFailure } from '../util/failure.ts';
 
 export type EvidenceState =
   | 'MEASURED'
@@ -40,6 +41,14 @@ export interface Claim<T> {
   observedAt: number;
   /** Present when this provider's value was rejected by validation. */
   invalid?: string;
+  /**
+   * Present when the provider could not be reached at all. Distinct from
+   * `invalid`: nothing was returned to reject, so the right state is
+   * UNAVAILABLE rather than INVALID, and retrying may help.
+   */
+  unavailable?: string;
+  /** Computed during resolution, so a stale claim can be shown as such. */
+  freshness?: Freshness;
 }
 
 export interface Evidence<T> {
@@ -59,6 +68,16 @@ export interface Evidence<T> {
   notes: string[];
   /** Every provider claim, kept so a disagreement can be shown, not just counted. */
   claims: Claim<T>[];
+  /**
+   * Claims that were set aside - stale, or outranked by a provider with
+   * precedence on this fact type - but which asserted a *different* value.
+   *
+   * Kept so disagreement is never silently discarded. A stale RugCheck report
+   * of a live mint authority lands here when fresh on-chain evidence says it
+   * was revoked: the effective value is "revoked", and the fact that something
+   * once said otherwise remains visible.
+   */
+  overridden: Claim<T>[];
 }
 
 /**
@@ -145,6 +164,7 @@ export function unknown<T>(notes: string[] = []): Evidence<T> {
     confidence: 0,
     notes,
     claims: [],
+    overridden: [],
   };
 }
 
@@ -180,6 +200,16 @@ export interface ResolveOptions<T> {
    * this is what separates "different scope" from "someone is wrong".
    */
   equal?: (a: T, b: T) => boolean;
+  /**
+   * Providers with precedence on this fact type, strongest first.
+   *
+   * Precedence is per-fact, not global: Helius reads authority straight from
+   * the chain and outranks a third-party report of it, while for 24h volume it
+   * has nothing to say at all. A provider named here wins over the conservative
+   * rule when its claim is current, and the losing claim is retained in
+   * `overridden` rather than discarded.
+   */
+  precedence?: readonly string[];
 }
 
 /**
@@ -205,29 +235,95 @@ export function resolve<T>(claims: Claim<T>[], options: ResolveOptions<T>): Evid
   const { metric, now } = options;
   const equal = options.equal ?? ((a: T, b: T): boolean => a === b);
 
-  const answered = claims.filter((claim) => claim.value !== null || claim.invalid !== undefined);
-  const valid = claims.filter((claim) => claim.value !== null && claim.invalid === undefined);
-  const invalid = claims.filter((claim) => claim.invalid !== undefined);
+  // Freshness is per claim, not per winner. A stale report and a current one
+  // are not interchangeable inputs, so staleness has to be decided before the
+  // winner is picked - otherwise a stale claim can win and then drag the whole
+  // fact to STALE, discarding a perfectly current reading from someone else.
+  const dated: Claim<T>[] = claims.map((claim) => ({
+    ...claim,
+    freshness: freshnessOf(metric, claim.observedAt, now),
+  }));
 
-  if (answered.length === 0) return { ...unknown<T>(), claims };
+  const unreachable = dated.filter((claim) => claim.unavailable !== undefined);
+  const invalid = dated.filter(
+    (claim) => claim.invalid !== undefined && claim.unavailable === undefined,
+  );
+  const valid = dated.filter(
+    (claim) => claim.value !== null && claim.invalid === undefined && claim.unavailable === undefined,
+  );
+
+  const notes = [
+    ...invalid.map((claim) => `${claim.provider}: rejected - ${claim.invalid}`),
+    ...unreachable.map((claim) => `${claim.provider}: unavailable - ${claim.unavailable}`),
+  ];
 
   if (valid.length === 0) {
+    // Nothing usable. Which of the three "we have no value" states applies
+    // matters: a provider outage is not the same as a malformed answer, and
+    // neither is the same as never having asked.
+    if (invalid.length > 0) {
+      return {
+        value: null,
+        state: 'INVALID',
+        source: invalid[0]?.provider ?? null,
+        observedAt: invalid[0]?.observedAt ?? null,
+        freshness: 'UNKNOWN',
+        confidence: 0,
+        notes,
+        claims: dated,
+        overridden: [],
+      };
+    }
+    if (unreachable.length > 0) {
+      return {
+        value: null,
+        state: 'UNAVAILABLE',
+        source: unreachable[0]?.provider ?? null,
+        observedAt: null,
+        freshness: 'UNKNOWN',
+        confidence: 0,
+        notes,
+        claims: dated,
+        overridden: [],
+      };
+    }
+    return { ...unknown<T>(notes), claims: dated };
+  }
+
+  // Stale claims are set aside for the decision but kept in the record. If
+  // every claim is stale the fact is STALE; if only some are, the current ones
+  // decide and the stale ones are reported as overridden.
+  const current = valid.filter((claim) => claim.freshness !== 'STALE');
+  const staleValid = valid.filter((claim) => claim.freshness === 'STALE');
+
+  if (current.length === 0) {
+    const newest = staleValid.reduce((best, claim) =>
+      claim.observedAt > best.observedAt ? claim : best,
+    );
     return {
       value: null,
-      state: 'INVALID',
-      source: invalid[0]?.provider ?? null,
-      observedAt: invalid[0]?.observedAt ?? null,
-      freshness: 'UNKNOWN',
+      state: 'STALE',
+      source: newest.provider,
+      observedAt: newest.observedAt,
+      freshness: 'STALE',
       confidence: 0,
-      notes: invalid.map((claim) => `${claim.provider}: rejected - ${claim.invalid}`),
-      claims,
+      notes: [...notes, `every observation is older than the ${metric} aging window`],
+      claims: dated,
+      overridden: [],
     };
   }
 
-  const notes = invalid.map((claim) => `${claim.provider}: rejected - ${claim.invalid}`);
+  const first = current[0] as Claim<T>;
+  const disagreeing = current.filter((claim) => !equal(claim.value as T, first.value as T));
 
-  const first = valid[0] as Claim<T>;
-  const disagreeing = valid.filter((claim) => !equal(claim.value as T, first.value as T));
+  // A provider with precedence on this fact type wins outright when it has a
+  // current claim - the fact is its speciality, not a matter of averaging.
+  const preferred =
+    options.precedence === undefined
+      ? undefined
+      : options.precedence
+          .map((provider) => current.find((claim) => claim.provider === provider))
+          .find((claim) => claim !== undefined);
 
   let winner: Claim<T>;
   let state: EvidenceState;
@@ -235,54 +331,55 @@ export function resolve<T>(claims: Claim<T>[], options: ResolveOptions<T>): Evid
 
   if (disagreeing.length === 0) {
     winner =
-      options.chooseWinner !== undefined
-        ? ((valid[options.chooseWinner(valid)] ?? first) as Claim<T>)
-        : valid.reduce((best, claim) =>
+      preferred ??
+      (options.chooseWinner !== undefined
+        ? ((current[options.chooseWinner(current)] ?? first) as Claim<T>)
+        : current.reduce((best, claim) =>
             trustOf(claim.provider) > trustOf(best.provider) ? claim : best,
-          );
+          ));
     state = 'MEASURED';
     confidence = trustOf(winner.provider);
-    if (valid.length > 1) {
+    if (current.length > 1) {
       notes.push(
-        `${valid.map((claim) => `${claim.provider}=${String(claim.value)}`).join(', ')}; within tolerance, took ${winner.provider}`,
+        `${current.map((claim) => `${claim.provider}=${String(claim.value)}`).join(', ')}; within tolerance, took ${winner.provider}`,
       );
     }
   } else {
-    const index = options.resolveConflict ? options.resolveConflict(valid) : 0;
-    winner = (valid[index] ?? first) as Claim<T>;
+    winner =
+      preferred ??
+      ((current[options.resolveConflict ? options.resolveConflict(current) : 0] ?? first) as Claim<T>);
     state = 'CONFLICTED';
     confidence = trustOf(winner.provider) * CONFLICT_CONFIDENCE;
     notes.push(
-      `providers disagree: ${valid
+      `providers disagree: ${current
         .map((claim) => `${claim.provider}=${String(claim.value)}`)
-        .join(' vs ')}; took ${winner.provider}`,
+        .join(' vs ')}; took ${winner.provider}${preferred ? ' (precedence on this fact)' : ''}`,
     );
   }
 
-  const freshness = freshnessOf(metric, winner.observedAt, now);
-  if (freshness === 'STALE') {
-    return {
-      value: null,
-      state: 'STALE',
-      source: winner.provider,
-      observedAt: winner.observedAt,
-      freshness,
-      confidence: 0,
-      notes: [...notes, `observation is older than the ${metric} aging window`],
-      claims,
-    };
+  // Anything that said something different and did not win - whether it lost on
+  // staleness or on precedence - is recorded rather than dropped.
+  const overridden = [...staleValid, ...current].filter(
+    (claim) => claim !== winner && !equal(claim.value as T, winner.value as T),
+  );
+  if (staleValid.length > 0) {
+    notes.push(
+      `set aside as stale: ${staleValid.map((claim) => `${claim.provider}=${String(claim.value)}`).join(', ')}`,
+    );
   }
-  if (freshness === 'AGING') confidence *= AGING_CONFIDENCE;
+
+  if (winner.freshness === 'AGING') confidence *= AGING_CONFIDENCE;
 
   return {
     value: winner.value,
     state,
     source: winner.provider,
     observedAt: winner.observedAt,
-    freshness,
+    freshness: winner.freshness ?? 'UNKNOWN',
     confidence: Math.round(confidence * 1000) / 1000,
     notes,
-    claims,
+    claims: dated,
+    overridden,
   };
 }
 
@@ -291,6 +388,14 @@ export function resolve<T>(claims: Claim<T>[], options: ResolveOptions<T>): Evid
  * coverage, scoring - reads only this.
  */
 export interface TokenEvidence {
+  /**
+   * True when a claim asserting danger lost - to staleness, or to a current
+   * on-chain read that contradicts it. The effective safety value stands, but
+   * the fact that something once reported otherwise is not thrown away.
+   */
+  historicalDangerEvidence: boolean;
+  /** Providers that could not be reached for this token. */
+  providerFailures: ProviderFailure[];
   liquidityUsd: Evidence<number>;
   /**
    * DexScreener-only depth, used solely as the turnover denominator so the
