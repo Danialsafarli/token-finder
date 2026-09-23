@@ -1,0 +1,284 @@
+# Architecture
+
+Audience: engineers working on Token Finder.
+**Part 1 describes what exists. Parts 2–5 are proposals and are NOT IMPLEMENTED.**
+
+## Part 1 — Current architecture (as committed)
+
+### Runtime shape
+
+Single Node 24 process, no build step, **zero runtime dependencies**. TypeScript is executed
+by native type stripping. `typescript` + `@types/node` are devDependencies used only by
+`npm run typecheck`.
+
+```
+src/cli.ts ── serve ──> src/server/index.ts ──> node:http ──> src/server/public/*
+    │                        │
+    │                        └── startMonitor() ──┐
+    ├── scan / watch / analyze / rank / discover  │
+    │                                             v
+    └────────────────> src/core/monitor.ts  (chained setTimeout loop)
+                             │
+              discover.ts ──>│<── analyze.ts ──> score.ts
+                             │         │
+                             │         ├── sources/dexscreener.ts   LIVE
+                             │         ├── sources/jupiter.ts       LIVE
+                             │         ├── sources/rugcheck.ts      LIVE
+                             │         ├── sources/helius.ts        key-gated, inactive
+                             │         └── sources/birdeye.ts       key-gated, inactive
+                             v
+                        core/store.ts ──> data/state.json (whole-file rewrite)
+                             │
+                        EventEmitter "bus" ──> SSE /api/stream ──> dashboard
+```
+
+### Pipeline stage status
+
+| Stage | Status | What the code actually does |
+|---|---|---|
+| Token discovery | **IMPLEMENTED** | 5 feeds via `Promise.allSettled`; a failing feed logs and contributes nothing |
+| Normalization | **PARTIAL** | Per-source normalizers map raw JSON to `PairMetrics`/`JupiterInfo` with `toNumber` coercion. **No schema validation, no `UNKNOWN` state** — absent values become `0`, `null` or a neutral default |
+| Initial filter | **IMPLEMENTED** | Drops `liquidity < MIN_LIQUIDITY_USD` and `age > MAX_AGE_HOURS`; sorts by liquidity and truncates to `MAX_ANALYZE_PER_SCAN` (60) |
+| Market enrichment | **IMPLEMENTED** | Batched DexScreener pairs (30/call) + Jupiter search (100/call), run concurrently |
+| On-chain safety | **NOT IMPLEMENTED in practice** | `helius.ts` exists but returns `null` without a key. Measured contribution: 0 of 60 tokens. Untested against a real response |
+| Buyer / holder analysis | **PARTIAL** | `holderCount` and `topHoldersPercentage` read from Jupiter. **No wallet clustering, no sybil/bundler detection, no buyer quality** |
+| Momentum | **PARTIAL** | DexScreener `priceChange` 1h/6h blended. **Fabricates 0% when no pair exists** (35% of tokens) |
+| Scoring | **IMPLEMENTED** | 7 weighted components + multiplicative penalties — see `SCORING.md` |
+| Ranking | **IMPLEMENTED** | In-memory sort by one of 6 keys, filtered, capped at 500 |
+| Monitoring | **IMPLEMENTED** | Chained `setTimeout` (never stacks); diffs each snapshot and emits 6 event kinds |
+| Dashboard | **IMPLEMENTED** | Static HTML/CSS/JS, SSE live updates, filters, sort, detail drawer with score breakdown + sparklines |
+
+### Component inventory
+
+**Discovery** (`core/discover.ts`) — feeds: `jupiter:recent`, `jupiter:organic`,
+`dexscreener:profiles`, `dexscreener:boosts`, `birdeye:new`. Merged into a `Map` keyed by
+mint; each feed that re-sees a mint appends its name to `sources[]`. Measured contribution:
+`jupiter:organic` 39, `dexscreener:profiles` 11, `dexscreener:boosts` 8, `jupiter:recent` 5,
+`birdeye:new` 0. Only 4 of 60 tokens were seen by more than one feed, and **`sources[]` is
+never used as corroboration in scoring.**
+
+**Deduplication** — mint-address keyed `Map` in `discover()`, plus `Map` keyed by
+`baseToken.address` in `pairsForMints`. No cross-symbol or metadata-similarity dedup, so
+copycat tokens are separate entries (RugCheck's `copycat_token` risk is the only detector).
+
+**Liquidity filtering** — `totalLiquidity()` sums `liquidity.usd` across **all** pairs, falling
+back to Jupiter's single number when the sum is 0. Fallback is silent and unvalidated.
+
+**Rate-limit handling** (`util/http.ts`) — one serialized promise chain per host with a minimum
+gap derived from a hardcoded RPM table; 429 sets a per-host `cooldownUntil` honouring
+`retry-after`. **No provider returns rate-limit headers, so this is open-loop.**
+
+**Retry logic** — `getJson` retries up to 2 times on 429 and 5xx with linear backoff
+(500 ms × attempt); 4xx other than 429 throws immediately; `nullOn` (default `[404]`) resolves
+to `null`. `tryGetJson` converts every failure into `null` and a debug log.
+
+**Caching** — `TtlCache` (`util/cache.ts`), in-process only, FIFO eviction (not LRU).
+RugCheck 20 min / 2000 entries, Helius 10 min. **Does not survive process restart** — measured:
+a second CLI scan took 122.8 s vs. 123.0 s cold, i.e. no benefit.
+
+**Persistence** (`core/store.ts`) — the entire state is one JSON file, `data/state.json`,
+rewritten in full via temp-file + `rename` on a 1.5 s debounce, plus flush on `exit`/`SIGINT`/
+`SIGTERM`. Holds `tokens`, `history` (240 points/token), `events` (cap 500), `lastScanAt`,
+`scanCount`. Measured: 173,773 bytes for 60 tokens with 61 history points.
+
+**Error handling** — sources fail soft to `null`; `discover` uses `allSettled`; the server
+wraps every request. **Gap:** `pool()` uses `Promise.all`, so if any worker in `analyze()`
+throws synchronously (e.g. `scoreToken` on malformed input) the **entire scan aborts**.
+`runScan` catches it in `startMonitor`, so the loop survives, but that scan yields nothing.
+
+**SSE / realtime** — `EventEmitter` bus; `/api/stream` registers `alert` and `scan` listeners
+per connection, 25 s keep-alive ping, cleanup on `close`. Realtime is *within* the app only —
+**all ingestion is polled REST; there is no websocket or gRPC feed from any provider.**
+
+**Dashboard** — table with 6 sort keys, filters (query, min score, max age, min liquidity,
+hide-critical), live event feed, detail drawer with per-component bars, all risk flags,
+score/price sparklines, outbound links. Refetches on `scan` events, 15 s status poll, 60 s
+token poll.
+
+**API key requirements** — none to run. `HELIUS_API_KEY` and `BIRDEYE_API_KEY` are optional
+and currently unset; both corresponding sources are inert.
+
+**Test coverage — zero.** No test files, no test runner, no `npm test` script. Verification to
+date is manual: typecheck, two live scans, HTTP endpoint probes.
+
+### Known defects carried by this baseline
+
+1. Missing market data scores as neutral rather than unknown — 9.6 fabricated points can push a
+   token over the alert threshold (`SCORING.md` §5.1).
+2. RugCheck `danger` authority findings never trigger the authority penalty; Jupiter `null`
+   earns partial credit (`SCORING.md` §5.2).
+3. `lpLockedPct` is received from RugCheck and discarded.
+4. `MonitorEvent` kind `'gone'` is declared in `types.ts` but never emitted — dead contract.
+5. `cli.ts analyze` overwrites a token's `sources` with `['cli']`, destroying discovery provenance.
+6. Helius/Birdeye code paths have never executed against a real response.
+7. `store.prune` deletes tokens silently; no event records that a token stopped being tracked.
+
+## Part 2 — Target architecture (PROPOSAL — NOT IMPLEMENTED)
+
+```
+                    ┌──────────────── INGESTION ────────────────┐
+  Helius WS/gRPC ──>│ pool-init events        (push, realtime)  │
+  Jupiter/DexScr ──>│ polled feeds            (pull, reconcile) │
+                    └────────────────────┬──────────────────────┘
+                                         v
+                              [1] DISCOVERY QUEUE            durable, deduped by mint
+                                         v
+                              [2] NORMALIZER                 schema-validated, UNKNOWN preserved
+                                         v
+                              [3] SAFETY GATE                hard veto — can terminate here
+                                         v
+                              [4] ENRICHMENT FAN-OUT         market · liquidity · holders · volume
+                                         v
+                              [5] ANALYSIS                   concentration · buyer quality ·
+                                                             sybil/cluster · volume quality · momentum
+                                         v
+                              [6] SCORING                    explainable, per-component provenance
+                                         v
+                              [7] RANKING                    + watchlist
+                                         v
+                              [8] DECISION ENGINE            state machine (Part 4)
+                                         v
+                              [9] EXECUTION LAYER            paper | manual | capped | auto
+                                         v
+                             [10] POSITION MONITOR           exit rules, kill switch
+                                         v
+                             [11] AUDIT TRAIL                append-only, every decision
+                                         v
+                             [12] DASHBOARD / API
+```
+
+### Module dependency map
+
+| Module | Depends on | Blocks |
+|---|---|---|
+| Normalizer + `UNKNOWN` type | — | everything downstream; **must land first** |
+| Safety gate | normalizer, Helius key | scoring integrity, all trading |
+| Provider cross-validation | normalizer | safety gate, scoring |
+| Persistence (DB) | — | score history, clusters, trades, audit |
+| Holder/cluster analysis | Helius, persistence | buyer quality, sybil detection |
+| Volume quality | Jupiter organic fields | scoring v2 |
+| Scoring v2 | all analysis modules | ranking, decision engine |
+| Watchlist | persistence | decision engine |
+| Paper trading | persistence, price feed, audit trail | manual mode |
+| Decision engine | scoring v2, watchlist, paper trading | every trading mode |
+| Risk limits (size, daily loss, kill switch) | persistence, audit trail | **hard prerequisite for any live mode** |
+| Pre-trade revalidation | decision engine, safety gate | capped/auto modes |
+| Wallet connection | key custody design | capped/auto modes |
+| Execution (Jupiter swap) | wallet, risk limits, revalidation | capped/auto modes |
+
+Critical path: **normalizer → cross-validation → safety gate → persistence → scoring v2**.
+Nothing in trading should start before those five are done.
+
+## Part 3 — Trading modes (PROPOSAL — NOT IMPLEMENTED)
+
+No mode may be skipped. Each is a superset of the previous one plus new safeguards.
+
+| Mode | What it does | Wallet | New infrastructure required |
+|---|---|---|---|
+| **1. Scan only** | discovery, scoring, ranking, alerts. *This is today's product.* | none | none |
+| **2. Paper trading** | simulated entries/exits, P&L accounting, no chain writes | none | position ledger, fill simulation (slippage + price impact from pool depth), P&L engine, audit trail |
+| **3. Manual confirmation** | engine proposes; a human approves each trade; execution is real | read-only connect, sign per trade | signing UX, per-trade expiry, pre-trade revalidation, execution adapter |
+| **4. Capped auto** | engine executes autonomously inside hard caps | hot wallet, strictly limited balance | position-size limits, daily-loss limit, max concurrent positions, per-token cap, kill switch, rate limiter, circuit breaker on anomaly, mandatory pre-trade revalidation |
+| **5. Full auto** | as above with raised caps | hot wallet | everything from mode 4 plus: proven paper→live correlation over a statistically meaningful sample, monitored alerting, independent watchdog process, documented incident runbook |
+
+Promotion gates (proposed, must be explicit): mode 2→3 requires a paper track record on a
+pre-registered strategy; 3→4 requires manual-mode fills matching paper expectations within a
+stated tolerance; 4→5 requires sustained operation at caps with zero safety-limit breaches.
+
+**Key custody is an unsolved design question.** No private key should live in `.env`, in this
+repo, or in the app process. Modes 3–5 need a deliberate custody decision (hardware signer,
+OS keychain, or a separate signer service) before any code is written.
+
+## Part 4 — Decision engine state machine (PROPOSAL — NOT IMPLEMENTED)
+
+```
+            DISCOVERED
+                 v
+             SCANNING ──────────────> REJECTED   (terminal, with reason + TTL before re-look)
+                 v
+        ┌──── triage ────┐
+        v                v
+     WATCH           QUALIFIED
+        │                v
+        └──re-scan──> ENTRY_READY ──veto──> WATCH
+                         v
+          PAPER_POSITION | LIVE_POSITION
+                         v
+                    MONITORING ──> EXIT_SIGNAL ──> CLOSING ──> CLOSED
+                         │                                       ^
+                         └──────── EMERGENCY_EXIT ───────────────┘
+```
+
+Every transition carries `{from, to, at, reason, evidence[], provider_versions}` and is
+appended to the audit trail. A state change with no recorded reason is a bug.
+
+**Immediate rejection** — mint or freeze authority live and unrevoked; LP unlocked below
+threshold; liquidity below floor; honeypot / sell-disabled detected; creator on a known-rug
+list; token program not a recognized SPL variant; **required safety data unavailable**
+(unknown is rejection, never a pass).
+
+**Score downgrade** — liquidity falling; holder count falling; concentration rising; organic
+volume share falling; provider disagreement appearing; a new RugCheck risk; momentum reversal.
+
+**Entry veto** (at `ENTRY_READY`, re-checked immediately pre-trade) — price moved beyond the
+decision's validity window; liquidity dropped since qualification; spread or price impact for
+the intended size exceeds limit; position-size or daily-loss limit would be breached; max
+concurrent positions reached; any safety datum now stale or unknown; quote older than N seconds.
+
+**Emergency exit** — LP removal detected; authority re-enabled; a large holder dumping;
+liquidity collapse beyond threshold; price collapse beyond stop; trading halted on the pair;
+our own data pipeline degraded (exit rather than fly blind).
+
+**Trading halt (global kill switch)** — daily loss limit hit; N consecutive losses; execution
+failure rate above threshold; provider outage affecting safety checks; clock/state desync
+detected; manual trigger. Halt must be **enforced in the execution path itself**, not merely
+signalled to the UI.
+
+## Part 5 — Persistence and performance (PROPOSAL — NOT IMPLEMENTED)
+
+### What needs persisting
+
+| Data | Shape | Retention | Why the current file cannot serve it |
+|---|---|---|---|
+| Discovered tokens | row per mint | indefinite | fine today |
+| Scan snapshots | append-only, per scan per token | 30–90 d | whole-file rewrite makes append O(total) |
+| Score history | time series | 90 d+ | capped at 240 points, silently truncated |
+| Market snapshots | time series | 30 d | same |
+| Risk events | append-only | indefinite | capped at 500, oldest dropped |
+| Wallet clusters | graph / adjacency | indefinite | not modelled |
+| Paper + live trades | ledger, immutable | indefinite | not modelled |
+| Decisions + entry/exit reasons | append-only audit | indefinite — **must be tamper-evident** | not modelled |
+| P&L | derived, recomputable | indefinite | not modelled |
+| System events | append-only | 30 d | not modelled |
+
+**Recommendation: SQLite** (via `node:sqlite`, keeping the zero-dependency property) with
+WAL mode. Relational, transactional, append-friendly, single file, no server. Time series in
+narrow tables with `(mint, at)` indexes; audit trail as an append-only table with no UPDATE
+grant. Revisit Postgres + TimescaleDB only if this becomes multi-process or multi-user.
+Keep `state.json` only as an export format.
+
+### Performance model
+
+Measured today: 60 deep tokens per scan, **123 s wall clock**, 173 KB state, RugCheck-bound.
+
+| Scanned | RugCheck time at 30 RPM | State size at full history | Verdict |
+|---|---|---|---|
+| 100 | ~200 s | ~2.2 MB | already exceeds a 120 s interval — **scans overlap-block** |
+| 1,000 | ~33 min | ~22 MB | infeasible; whole-file rewrite dominates |
+| 10,000 | ~5.5 h | ~221 MB | infeasible on every axis |
+
+Bottlenecks in order: **(1) RugCheck 30 RPM serialized per host** — the hard ceiling;
+(2) **whole-file JSON rewrite** — O(total state) on a 1.5 s debounce, so cost grows with
+tokens tracked, not tokens changed; (3) **everything in one heap** — `store` holds all tokens
+and history permanently; (4) **`pool()` concurrency of 4** on deep lookups, itself gated by the
+per-host serial chain, so the two limits compound; (5) **dashboard re-fetches the full list**
+on every scan event; (6) Helius RPC credits once enabled — `getTokenLargestAccounts` per token
+per scan would dominate cost.
+
+Proposed direction (not to be implemented now): a durable priority queue instead of
+"sort by liquidity, take 60"; **tiered refresh** (new/qualified tokens every scan, watchlist
+hourly, cold tokens daily) so cost scales with interest rather than corpus size; persistent
+cross-restart cache keyed by `(mint, provider, fetched_at)`; worker processes for enrichment
+with the API limiter as a shared token-bucket service; incremental DB writes replacing the
+file rewrite; SSE deltas instead of full-list refetch; drop raw provider payloads after
+normalization.

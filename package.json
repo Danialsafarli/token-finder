@@ -1,0 +1,22 @@
+{
+  "name": "token-finder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Discover, analyze, rank and monitor newly launched Solana tokens.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "serve": "node src/cli.ts serve",
+    "scan": "node src/cli.ts scan",
+    "rank": "node src/cli.ts rank",
+    "watch": "node src/cli.ts watch",
+    "analyze": "node src/cli.ts analyze",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
