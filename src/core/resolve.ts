@@ -56,14 +56,19 @@
  */
 
 import {
+  freshnessOf,
+  isCurrentEnough,
+  isUsable,
   resolve,
   unavailable,
   unknown,
   type Claim,
   type Evidence,
+  type RugcheckFinding,
   type TokenEvidence,
 } from './evidence.ts';
 import type { ProviderFailure } from '../util/failure.ts';
+import { canAffectScore, classifyRisk, decaysWhenStale } from './rugcheck-signals.ts';
 import type {
   FieldIssue,
   JupiterInfo,
@@ -519,9 +524,66 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
     .filter(([, evidence]) => (evidence as Evidence<unknown>).state === 'CONFLICTED')
     .map(([key]) => key);
 
+  // --- RugCheck findings ---------------------------------------------------
+  // Classified, freshness-stamped, and checked against canonical evidence. A
+  // finding is reported either way; `scorable` decides only whether it may move
+  // the multiplier.
+  const rugcheckFindings: RugcheckFinding[] = (rugcheck?.risks ?? []).map((risk) => {
+    const { nature, rationale } = classifyRisk(risk.name);
+    const freshness = freshnessOf('rugcheckRisk', observedAt.rugcheck, now);
+
+    const base: RugcheckFinding = {
+      name: risk.name,
+      level: risk.level,
+      description: risk.description,
+      nature,
+      rationale,
+      observedAt: observedAt.rugcheck,
+      freshness,
+      scorable: true,
+    };
+
+    const suppress = (reason: string): RugcheckFinding => ({
+      ...base,
+      scorable: false,
+      suppressedReason: reason,
+    });
+
+    // A finding whose nature we cannot defend is evidence, not a penalty.
+    if (!canAffectScore(nature)) {
+      return suppress('nature could not be classified, so it is recorded as evidence only');
+    }
+
+    // A current-state condition observed too long ago is not a statement about
+    // now. Historical and permanent findings are exempt: age does not touch them.
+    if (decaysWhenStale(nature) && !isCurrentEnough(freshness)) {
+      return suppress(`current-state finding is ${freshness.toLowerCase()}, so it no longer describes the present`);
+    }
+
+    // Canonical evidence overrides a third-party report of the same fact, even
+    // when both are current. If the chain says the authority is revoked, a
+    // RugCheck finding that it is live must not still charge for it.
+    const lower = risk.name.toLowerCase();
+    const canonical =
+      lower.includes('mint authority')
+        ? mintAuthorityRevoked
+        : lower.includes('freeze authority')
+          ? freezeAuthorityRevoked
+          : null;
+
+    if (canonical !== null && isUsable(canonical) && canonical.value === true) {
+      return suppress(
+        `contradicted by current ${canonical.source ?? 'canonical'} evidence showing the authority revoked`,
+      );
+    }
+
+    return base;
+  });
+
   return {
     historicalDangerEvidence,
     providerFailures: failures,
+    rugcheckFindings,
     liquidityUsd,
     venueLiquidityUsd,
     volume24h,

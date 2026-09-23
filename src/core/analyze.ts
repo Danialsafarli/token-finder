@@ -269,7 +269,6 @@ export async function analyze(
     const hasSocials = pairs.some((pair) => pair.socials.length > 0 || pair.websites.length > 0);
     const score = scoreToken({
       evidence,
-      rugcheckRisks: rug?.risks ?? [],
       hasSocials,
       jupiterVerified: jup?.isVerified ?? false,
       impersonation,

@@ -82,7 +82,6 @@ export function runPipeline(fixture: RawFixture, options: PipelineOptions = {}):
 
   const score = scoreToken({
     evidence,
-    rugcheckRisks: rugcheck?.risks ?? [],
     hasSocials: pairs.some((pair) => pair.socials.length > 0 || pair.websites.length > 0),
     jupiterVerified: jupiter?.isVerified ?? false,
     minLiquidityUsd: gateConfig.minLiquidityUsd,

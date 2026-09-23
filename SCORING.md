@@ -341,3 +341,44 @@ fixed — with no key, Jupiter still supplies most of the evidence for most toke
 `providerConcentration` says so. §5.4 is documented, not resolved. §5.5's attack table
 is unchanged except that the two rewarded attacks are now closed and the authority
 attacks are vetoes. §5.6's grade calibration is untouched: A/B/C/D/F remains asserted.
+
+## 8. RugCheck penalties are freshness-aware
+
+Every path by which RugCheck evidence can reach a score:
+
+| # | Path | Effect | Freshness-aware |
+|---|---|---|---|
+| 1 | `scoreNormalised` -> safety sub-part | 5.2% of weight | yes (evidence model) |
+| 2 | authority findings -> mint/freeze claims | safety sub-parts, x0.55 / x0.45 | yes (per-claim freshness + precedence) |
+| 3 | named risks -> `rugcheck:*` risk flags | visibility, alert severity | **yes, new** |
+| 4 | named risks -> x0.85 multiplier each | direct score | **yes, new** |
+| 5 | named risks -> `CRITICAL_RUGCHECK` veto | rejection | yes (historical, exempt by design) |
+| 6 | `rugcheckRisk` -> coverage weight | 5.2% | yes |
+| 7 | `issues[]` -> `provider_data_rejected` flag | diagnostic only | n/a |
+
+Paths 3 and 4 were the gap. Both read the raw `risks[]` array straight from the
+adapter, bypassing the evidence model entirely, so neither knew when the
+observation was made. A stale finding therefore kept charging x0.85 after the
+gate had already stopped vetoing on it.
+
+Both now read `evidence.rugcheckFindings`, which carries each finding's nature,
+freshness and scorability. The multiplier is applied per finding rather than per
+flag code, because a flag code carries no sense of when it was observed.
+
+**Weights and multipliers are unchanged.** The only change is *when* they apply.
+See [PIPELINE.md](PIPELINE.md) section 9 for the policy and the classification table.
+
+### Measured effect
+
+Deterministic corpus (14 fixtures): **zero deltas** in score, base, penalty,
+grade, coverage, confidence, eligibility, state, vetoes, conflicts and flags.
+Every fixture's RugCheck observation is fresh and classifiable, so the new rule
+correctly changes nothing about them — the change is confined to stale,
+unclassified and contradicted findings, which the fixtures do not exercise and
+the dedicated test matrix does.
+
+Live scan (30 tokens): 27 RugCheck findings across 9 distinct conditions, all
+classified, all scored. No suppression occurred, because live RugCheck data is
+always fresh — it is cached for 20 minutes against a 6-hour freshness window.
+**The stale path cannot be exercised live**, which is precisely why it is pinned
+by deterministic tests rather than by observation.

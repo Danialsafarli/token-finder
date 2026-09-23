@@ -332,3 +332,83 @@ not lock a token out of safety data for the length of the cache TTL.
 
 `ScanResult` carries `tokenFailures` and `providerFailures`; each token's `evaluation`
 carries `providerFailures` for the tokens it affected.
+
+## 9. Freshness applies to penalties, not just vetoes
+
+A veto and a penalty make the same kind of claim about the world, so they answer
+to the same rule. They did not always: hardening the gate against stale evidence
+left the penalty path untouched, so a month-old RugCheck finding stopped vetoing
+a token but kept taking 15% off its score — including when fresher evidence had
+already shown the condition was gone.
+
+### One rule, shared by every layer
+
+`isEvidenceScorable()` in `src/core/evidence.ts` is the single definition of
+"may this move a score". Scoring, penalties, risk flags, the safety gate and
+ranking eligibility all call it. `gate.ts` no longer keeps a private copy — the
+drift between a gate that checked freshness and a penalty loop that did not is
+exactly what this centralisation prevents.
+
+| Evidence state | Scorable | Reason reported |
+|---|---|---|
+| MEASURED / CONFLICTED, FRESH or AGING | **yes** | `scorable` |
+| MEASURED, STALE | no | `stale` |
+| UNKNOWN | no | `unknown` |
+| INVALID | no | `invalid` — diagnostic preserved |
+| UNAVAILABLE | no | `unavailable` |
+
+AGING counts as current, at reduced confidence. Refusing it would make safety
+data useless in the common case where it is cached.
+
+### RugCheck findings are classified by nature
+
+A named condition is not a value, so it does not fit `Evidence<T>` — but it
+reaches the score through flags and the multiplier, so it needs the same
+discipline. `src/core/rugcheck-signals.ts` classifies each finding:
+
+| Nature | Meaning | Decays when stale | Can score |
+|---|---|---|---|
+| `CURRENT_STATE` | describes the token now; can stop being true | **yes** | yes |
+| `HISTORICAL` | an event that happened; cannot un-happen | no | yes |
+| `PERMANENT` | fixed at mint initialisation; cannot be removed | no | yes |
+| `UNKNOWN_NATURE` | not confidently classifiable | n/a | **no** |
+
+Current classifications, each with its rationale in code:
+
+- **CURRENT_STATE** — mint authority, freeze authority, LP unlocked, LP provider
+  count, low liquidity, mutable metadata, single-holder ownership, holder
+  concentration, transfer fee. All revocable or continuously changing.
+- **HISTORICAL** — creator history of rugged tokens, token already rugged.
+- **PERMANENT** — permanent control enabled (Token-2022 permanent delegate,
+  fixed at mint initialisation).
+- **UNKNOWN_NATURE** — anything unrecognised. Recorded as evidence, never scored.
+
+Unrecognised findings default to `UNKNOWN_NATURE` rather than being assumed
+current-state. That costs a penalty on findings the system does not recognise,
+which is the intended trade: a score should not move for a reason nobody can
+articulate.
+
+### When a penalty is withheld
+
+1. **Nature unclassifiable** — evidence only.
+2. **Current-state finding gone stale** — it no longer describes the present.
+3. **Contradicted by canonical evidence** — if the chain currently shows the
+   authority revoked, a RugCheck finding that it is live does not charge, even
+   when the finding itself is fresh. Canonical current state governs
+   current-state scoring.
+
+### Suppression is never deletion
+
+A withheld penalty leaves the finding fully visible. The flag is still raised,
+its message carries `[not scored: <reason>]`, and its severity drops to `low` so
+it cannot fire a high-severity alert on evidence that is not scoring. The token
+additionally carries `historicalDangerEvidence` when a danger assertion lost to
+staleness or precedence.
+
+So a token can correctly report: *RugCheck previously reported mint authority
+active · freshness STALE · current canonical state revoked · provider conflict
+yes · score impact none.*
+
+And the mirror holds: a **stale clean bill of health earns no safety credit**
+either. RugCheck's numeric risk score goes STALE on the same window, so it stops
+contributing to the safety component. Suppression cuts both ways.

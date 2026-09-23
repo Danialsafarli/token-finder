@@ -207,6 +207,10 @@ Full detail: **[PIPELINE.md](PIPELINE.md)**.
   the safety gate, coverage, eligibility, the lifecycle and the Jev failure paths, over a
   deterministic 14-scenario fixture corpus. Discovery, the HTTP layer, the store and the
   dashboard still have no tests. See [ROADMAP.md](ROADMAP.md) for the rest.
+- **Stale evidence cannot lower a current score.** A RugCheck finding only
+  charges its penalty while it is current, is classified as something age does
+  not touch, and is not contradicted by canonical on-chain state. Suppressed
+  findings stay visible and say why they did not count.
 - **A provider outage degrades a scan, it does not end one.** Every fan-out path is
   failure-isolated, and a failed provider's signals become `UNAVAILABLE` with a
   classified reason rather than silently reading as "no data".

@@ -31,7 +31,7 @@
  *   new number is the catastrophic-concentration bar, justified below.
  */
 
-import { isUsable, type Evidence, type TokenEvidence } from './evidence.ts';
+import { isEvidenceScorable, isUsable, type Evidence, type TokenEvidence } from './evidence.ts';
 import type { Veto } from '../types.ts';
 
 export interface GateConfig {
@@ -78,13 +78,13 @@ const CRITICAL_RUGCHECK_RISKS: { match: string; recheckable: boolean; why: strin
 /**
  * Whether evidence is current enough to justify a claim about the present.
  *
- * STALE never qualifies. AGING does, at reduced confidence: a mint authority
- * observed six hours ago is still overwhelmingly likely to be what it was,
- * and refusing to act on it would make the gate useless in the common case
- * where safety data is cached.
+ * Delegates to the shared {@link isEvidenceScorable} rather than keeping its
+ * own copy of the rule. The gate having a private freshness check while the
+ * penalty loop had none is exactly how the two layers drifted apart: stale
+ * evidence stopped vetoing but kept on penalising.
  */
 function isCurrent(evidence: Evidence<unknown>): boolean {
-  return isUsable(evidence) && (evidence.freshness === 'FRESH' || evidence.freshness === 'AGING');
+  return isEvidenceScorable(evidence);
 }
 
 /** Renders an observed value for the audit trail without trusting its type. */

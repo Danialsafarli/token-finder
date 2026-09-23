@@ -22,6 +22,7 @@
 
 import type { FieldIssue } from './validate.ts';
 import type { ProviderFailure } from '../util/failure.ts';
+import type { RiskNature } from './rugcheck-signals.ts';
 
 export type EvidenceState =
   | 'MEASURED'
@@ -177,6 +178,89 @@ export function isUsable<T>(evidence: Evidence<T>): boolean {
   return (
     (evidence.state === 'MEASURED' || evidence.state === 'CONFLICTED') && evidence.value !== null
   );
+}
+
+/**
+ * Why a piece of evidence may or may not move a score.
+ *
+ * `scorable` is the single question every layer asks - scoring, penalties, risk
+ * flags, the safety gate, ranking eligibility. Keeping the answer in one place
+ * is the point: the freshness bug this replaced existed because the gate had
+ * its own `isCurrent()` while the penalty loop had no check at all, and the two
+ * drifted apart without anything failing.
+ */
+export type ScorabilityReason =
+  | 'scorable'
+  /** Nobody reported it. */
+  | 'unknown'
+  /** Reported, but rejected at the provider boundary. */
+  | 'invalid'
+  /** Reported, but too old to speak for the present. */
+  | 'stale'
+  /** The provider that would know could not be reached. */
+  | 'unavailable';
+
+export interface Scorability {
+  scorable: boolean;
+  reason: ScorabilityReason;
+  /** Human-readable, safe to show next to a suppressed signal. */
+  explanation: string;
+}
+
+const NOT_SCORABLE: Record<Exclude<ScorabilityReason, 'scorable'>, string> = {
+  unknown: 'no provider reported this',
+  invalid: 'the provider value was rejected at the boundary',
+  stale: 'the observation is too old to describe the present',
+  unavailable: 'the provider that reports this could not be reached',
+};
+
+/**
+ * The one rule. A fact may move a score only when a provider actually asserted
+ * it, the assertion survived validation, and it is current enough to be about
+ * now rather than about some earlier state of the world.
+ *
+ * AGING counts as current: an authority observed six hours ago is still
+ * overwhelmingly likely to be what it was, and refusing to act on it would make
+ * safety data useless in the common case where it is cached. Its reduced
+ * `confidence` already expresses the doubt.
+ */
+export function scorabilityOf<T>(evidence: Evidence<T>): Scorability {
+  const deny = (reason: Exclude<ScorabilityReason, 'scorable'>): Scorability => ({
+    scorable: false,
+    reason,
+    explanation: NOT_SCORABLE[reason],
+  });
+
+  switch (evidence.state) {
+    case 'INVALID':
+      return deny('invalid');
+    case 'STALE':
+      return deny('stale');
+    case 'UNAVAILABLE':
+      return deny('unavailable');
+    case 'UNKNOWN':
+      return deny('unknown');
+    default:
+      break;
+  }
+
+  if (evidence.value === null) return deny('unknown');
+  if (!isCurrentEnough(evidence.freshness)) return deny('stale');
+
+  return { scorable: true, reason: 'scorable', explanation: 'measured and current' };
+}
+
+export function isEvidenceScorable<T>(evidence: Evidence<T>): boolean {
+  return scorabilityOf(evidence).scorable;
+}
+
+/**
+ * Freshness check for observations that are not wrapped in an `Evidence` - a
+ * named RugCheck finding, for instance, which is a condition rather than a
+ * value. Shares the FRESH-or-AGING rule so the two cannot drift.
+ */
+export function isCurrentEnough(freshness: Freshness): boolean {
+  return freshness === 'FRESH' || freshness === 'AGING';
 }
 
 export interface ResolveOptions<T> {
@@ -387,6 +471,33 @@ export function resolve<T>(claims: Claim<T>[], options: ResolveOptions<T>): Evid
  * The full evidence set for one token. Every downstream stage - gate, signals,
  * coverage, scoring - reads only this.
  */
+/**
+ * A RugCheck finding, classified and stamped with its own freshness.
+ *
+ * Named conditions are not values, so they do not fit `Evidence<T>` - but they
+ * reach the score through risk flags and the penalty multiplier, and therefore
+ * need the same freshness discipline. This carries everything a layer needs to
+ * decide whether the finding may move a score, and everything the UI needs to
+ * explain why it did not.
+ *
+ * `scorable: false` never means "hidden". The finding is always reported; only
+ * its effect on the number is withheld.
+ */
+export interface RugcheckFinding {
+  name: string;
+  level: string;
+  description: string;
+  nature: RiskNature;
+  /** Why the nature was assigned; empty for UNKNOWN_NATURE. */
+  rationale: string;
+  observedAt: number;
+  freshness: Freshness;
+  /** Whether this finding may contribute to the score multiplier. */
+  scorable: boolean;
+  /** Present when `scorable` is false: why the penalty was withheld. */
+  suppressedReason?: string;
+}
+
 export interface TokenEvidence {
   /**
    * True when a claim asserting danger lost - to staleness, or to a current
@@ -396,6 +507,11 @@ export interface TokenEvidence {
   historicalDangerEvidence: boolean;
   /** Providers that could not be reached for this token. */
   providerFailures: ProviderFailure[];
+  /**
+   * Every RugCheck finding, classified and freshness-stamped. Always complete -
+   * suppression withholds the penalty, never the evidence.
+   */
+  rugcheckFindings: RugcheckFinding[];
   liquidityUsd: Evidence<number>;
   /**
    * DexScreener-only depth, used solely as the turnover denominator so the

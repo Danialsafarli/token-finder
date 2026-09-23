@@ -1,5 +1,5 @@
 import { clamp01, logScore, bandScore } from '../util/num.ts';
-import { isUsable, type Evidence, type TokenEvidence } from './evidence.ts';
+import { isEvidenceScorable, isUsable, type Evidence, type TokenEvidence } from './evidence.ts';
 import type { ImpersonationAssessment, RiskFlag, Score, ScoreComponent } from '../types.ts';
 
 /**
@@ -364,7 +364,6 @@ function components(evidence: TokenEvidence): ScoreComponent[] {
 
 export interface FlagInput {
   evidence: TokenEvidence;
-  rugcheckRisks: { name: string; level: string; description: string }[];
   hasSocials: boolean;
   jupiterVerified: boolean;
   impersonation?: ImpersonationAssessment | null;
@@ -375,8 +374,10 @@ function riskFlags(input: FlagInput, coverage: number, unknownKeys: string[]): R
   const flags: RiskFlag[] = [];
   const { evidence } = input;
 
+  // The same rule the gate uses: a current-state penalty needs current
+  // evidence. `isEvidenceScorable` is the shared definition of that.
   const mint = evidence.mintAuthorityRevoked;
-  if (isUsable(mint) && mint.value === false) {
+  if (isEvidenceScorable(mint) && mint.value === false) {
     flags.push({
       code: 'mint_authority',
       level: 'critical',
@@ -384,7 +385,7 @@ function riskFlags(input: FlagInput, coverage: number, unknownKeys: string[]): R
     });
   }
   const freeze = evidence.freezeAuthorityRevoked;
-  if (isUsable(freeze) && freeze.value === false) {
+  if (isEvidenceScorable(freeze) && freeze.value === false) {
     flags.push({
       code: 'freeze_authority',
       level: 'critical',
@@ -401,7 +402,7 @@ function riskFlags(input: FlagInput, coverage: number, unknownKeys: string[]): R
   }
 
   const concentration = evidence.topHoldersPct;
-  if (isUsable(concentration) && (concentration.value as number) >= 60) {
+  if (isEvidenceScorable(concentration) && (concentration.value as number) >= 60) {
     flags.push({
       code: 'concentration',
       level: 'high',
@@ -410,7 +411,7 @@ function riskFlags(input: FlagInput, coverage: number, unknownKeys: string[]): R
   }
 
   const liquidity = evidence.liquidityUsd;
-  if (isUsable(liquidity) && (liquidity.value as number) < input.minLiquidityUsd) {
+  if (isEvidenceScorable(liquidity) && (liquidity.value as number) < input.minLiquidityUsd) {
     flags.push({
       code: 'thin_liquidity',
       level: 'high',
@@ -436,12 +437,22 @@ function riskFlags(input: FlagInput, coverage: number, unknownKeys: string[]): R
     }
   }
 
-  for (const risk of input.rugcheckRisks) {
-    if (risk.level !== 'danger' && risk.level !== 'warn') continue;
+  // Every RugCheck finding is reported. Suppression withholds the penalty, not
+  // the evidence - a stale "mint authority still enabled" still tells an
+  // operator what was once seen, it just stops charging the token for it.
+  for (const finding of evidence.rugcheckFindings) {
+    if (finding.level !== 'danger' && finding.level !== 'warn') continue;
+
+    const suffix = finding.scorable
+      ? ''
+      : ` [not scored: ${finding.suppressedReason ?? 'suppressed'}]`;
+
     flags.push({
-      code: `rugcheck:${risk.name.toLowerCase().replace(/\s+/g, '_')}`,
-      level: risk.level === 'danger' ? 'high' : 'medium',
-      message: `RugCheck: ${risk.name}${risk.description ? ` - ${risk.description}` : ''}`,
+      code: `rugcheck:${finding.name.toLowerCase().replace(/\s+/g, '_')}`,
+      // A suppressed finding drops to informational severity so it cannot
+      // trigger a critical/high alert on evidence that is not scoring.
+      level: !finding.scorable ? 'low' : finding.level === 'danger' ? 'high' : 'medium',
+      message: `RugCheck: ${finding.name}${finding.description ? ` - ${finding.description}` : ''}${suffix}`,
     });
   }
 
@@ -496,6 +507,11 @@ function riskFlags(input: FlagInput, coverage: number, unknownKeys: string[]): R
  * The first is an advisory model judgement; the second is already paid for by
  * the conflicted evidence earning no positive credit, and charging it again
  * would penalise the token for our uncertainty twice.
+ *
+ * `rugcheck:*` is absent too, but for a different reason: those are charged
+ * separately in {@link scoreToken} from the classified findings, so the penalty
+ * can respect each finding's nature and freshness. Keying off the flag code
+ * alone cannot - the code carries no sense of when it was observed.
  */
 const PENALTIES: Record<string, number> = {
   mint_authority: 0.55,
@@ -529,12 +545,21 @@ export function scoreToken(input: FlagInput): Score {
   const unknown = parts.filter((part) => part.value === null).map((part) => part.key);
 
   const flags = riskFlags(input, coverage, unknown);
+
   let multiplier = 1;
   for (const flag of flags) {
     const specific = PENALTIES[flag.code];
     if (specific !== undefined) multiplier *= specific;
-    else if (flag.code.startsWith('rugcheck:') && flag.level === 'high') multiplier *= 0.85;
   }
+
+  // RugCheck danger findings charge per finding, and only when the finding is
+  // scorable. Previously this keyed off the flag code and level, which meant a
+  // month-old "mint authority still enabled" still took 15% off a token the
+  // chain had since shown to be revoked.
+  for (const finding of input.evidence.rugcheckFindings) {
+    if (finding.level === 'danger' && finding.scorable) multiplier *= 0.85;
+  }
+
   multiplier = Math.max(multiplier, 0.1);
 
   const total = base * multiplier;

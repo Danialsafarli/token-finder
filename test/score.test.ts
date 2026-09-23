@@ -96,7 +96,6 @@ function build(options: BuildOptions = {}): FlagInput {
 
   return {
     evidence,
-    rugcheckRisks: rug?.risks ?? [],
     hasSocials: pairs.some((p) => p.socials.length > 0 || p.websites.length > 0),
     jupiterVerified: jup?.isVerified ?? false,
     minLiquidityUsd: 3_000,
