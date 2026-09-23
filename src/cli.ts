@@ -18,6 +18,7 @@ token-finder - discover, analyze, rank and monitor new Solana tokens
   node src/cli.ts watch            run the monitor in the terminal, no dashboard
   node src/cli.ts analyze <mint>   deep-dive one token (mint address or symbol)
   node src/cli.ts reset            clear stored tokens, history and events
+  node src/cli.ts typesafe-check   one request to verify TypeSafe credentials
 
 Options come from .env - see .env.example.
 `;
@@ -52,7 +53,8 @@ function printTable(tokens: TokenSnapshot[]): void {
   tokens.forEach((token, index) => {
     const worst = token.score.flags.find((flag) => flag.level === 'critical' || flag.level === 'high');
     const risk = worst ? worst.code : '-';
-    const change = token.priceChange.h1;
+    // Null means never measured, so it prints as '-' rather than a green 0.0%.
+    const change = token.priceChange === null ? null : token.priceChange.h1;
 
     console.log(
       [
@@ -61,7 +63,9 @@ function printTable(tokens: TokenSnapshot[]): void {
         pad(token.score.total.toFixed(1), 6, true),
         pad(token.score.grade, 3),
         pad(fmtUsd(token.priceUsd), 11, true),
-        log.paint(change >= 0 ? 'green' : 'red', pad(fmtPct(change), 8, true)),
+        change === null
+          ? log.paint('dim', pad('-', 8, true))
+          : log.paint(change >= 0 ? 'green' : 'red', pad(fmtPct(change), 8, true)),
         pad(fmtUsd(token.liquidityUsd), 9, true),
         pad(fmtUsd(token.volume24h), 9, true),
         pad(token.holders === null ? '-' : token.holders.toLocaleString('en-US'), 8, true),
@@ -80,12 +84,29 @@ function printDetail(token: TokenSnapshot): void {
   console.log(
     `score ${token.score.total} (${token.score.grade})  base ${token.score.base}  penalty -${token.score.penalty}%`,
   );
+  // Snapshots stored before evidence tracking existed have no coverage field.
+  if (typeof token.score.coverage === 'number') {
+    const unknown = token.score.unknown ?? [];
+    console.log(
+      `evidence ${Math.round(token.score.coverage * 100)}% covered  ceiling ${token.score.ceiling}${
+        unknown.length > 0 ? `  unknown: ${unknown.join(', ')}` : ''
+      }`,
+    );
+  }
   console.log(
     `price ${fmtUsd(token.priceUsd)}  liq ${fmtUsd(token.liquidityUsd)}  vol24 ${fmtUsd(token.volume24h)}  mcap ${fmtUsd(token.marketCap)}  holders ${token.holders ?? '-'}  age ${fmtAge(token.ageHours)}`,
   );
 
   console.log(`\n${log.paint('dim', 'breakdown')}`);
   for (const component of token.score.components) {
+    if (component.value === null) {
+      // An unknown component gets no bar at all: an empty bar would read as a
+      // measured zero, which is the confusion this whole change removes.
+      console.log(
+        `  ${pad(component.label, 13)} ${log.paint('dim', '─'.repeat(20))} ${pad('?', 3, true)}  ${log.paint('dim', `unknown - ${component.unknownReason ?? 'no evidence'}`)}`,
+      );
+      continue;
+    }
     const filled = Math.round(component.value * 20);
     const bar = `${'█'.repeat(filled)}${'░'.repeat(20 - filled)}`;
     console.log(
@@ -215,6 +236,20 @@ async function main(): Promise<void> {
       store.reset();
       log.ok('state cleared');
       break;
+
+    case 'typesafe-check': {
+      // Proves credentials and connectivity with exactly one request, without
+      // running a scan. Never prints the key or any part of it.
+      const { verifyConnectivity } = await import('./sources/typesafe.ts');
+      log.step(`checking TypeSafe connectivity (model ${config.typesafeModel})…`);
+      const result = await verifyConnectivity();
+      if (result.ok) log.ok(`TypeSafe reachable - ${result.detail}`);
+      else {
+        log.error(`TypeSafe check failed - ${result.detail}`);
+        process.exitCode = 1;
+      }
+      break;
+    }
 
     case 'help':
     case '--help':

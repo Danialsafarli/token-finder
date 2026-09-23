@@ -32,6 +32,10 @@ export class TtlCache<T> {
     this.#store.set(key, { value, expires: Date.now() + this.#ttlMs });
   }
 
+  clear(): void {
+    this.#store.clear();
+  }
+
   async wrap(key: string, compute: () => Promise<T>): Promise<T> {
     const hit = this.get(key);
     if (hit !== undefined) return hit;

@@ -23,8 +23,10 @@ node src/cli.ts serve       # dashboard on http://localhost:5173 + background mo
 | `node src/cli.ts analyze <mint\|symbol>` | Deep-dive one token with the full score breakdown. |
 | `node src/cli.ts discover` | Just the candidate mints each feed returned. |
 | `node src/cli.ts reset` | Clears stored tokens, history and events. |
+| `node src/cli.ts typesafe-check` | One request to verify TypeSafe credentials and connectivity. |
 
 `npm run serve`, `npm run scan` and friends are the same thing.
+`npm test` runs the test suite; `npm run check` runs the typecheck and the tests together.
 
 ## Configuration
 
@@ -40,7 +42,21 @@ without any API key.**
 | `MIN_LIQUIDITY_USD` | `3000` | Candidates with less pooled liquidity are dropped. |
 | `MAX_AGE_HOURS` | `168` | Anything older is no longer treated as a new launch. |
 | `MIN_SCORE_ALERT` | `70` | Score at which a newly discovered token raises an alert. |
+| `MIN_COVERAGE_ALERT` | `0.6` | Evidence coverage a token must also reach before it can alert. |
+| `MIN_COVERAGE_QUALIFY` | `0.6` | Coverage at or above which a veto-free token enters the main ranking. |
+| `MIN_COVERAGE_WATCH` | `0.35` | Below this, a token is held out of the ranking as `INSUFFICIENT_DATA`. |
+| `CATASTROPHIC_CONCENTRATION_PCT` | `90` | Top-holder share that triggers a hard veto rather than a penalty. |
+| `TOKEN_FINDER_DATA_DIR` | `data` | Where runtime state lives. Point it elsewhere for smoke runs. |
 | `MAX_ANALYZE_PER_SCAN` | `60` | Cap on deep (rate-limited) safety lookups per scan. |
+| `TYPESAFE_API_KEY` | — | Enables advisory impersonation screening. **Server-side only.** |
+| `TYPESAFE_ENABLED` | `false` | Feature flag; screening needs this *and* a key. |
+| `TYPESAFE_MODEL` | `jev-latest` | Model id. |
+| `TYPESAFE_MAX_PER_SCAN` | `10` | Hard cap on model requests per scan. |
+| `TYPESAFE_TIMEOUT_MS` | `8000` | Per-request timeout. |
+
+API keys are read only by `src/config.ts`, which runs server-side. No key is ever
+serialised into an API response or reaches the browser — `/api/status` reports
+booleans (`configured`, `enabled`) and nothing else.
 
 ## How it works
 
@@ -103,8 +119,9 @@ links out to DexScreener, Jupiter, RugCheck and Solscan. Press `/` to search.
 
 | Endpoint | Returns |
 | --- | --- |
-| `GET /api/status` | Scan count, last scan, which keys are active. |
-| `GET /api/tokens?sort=&minScore=&maxAgeH=&minLiquidity=&q=&hideRisky=&limit=` | Filtered ranking. |
+| `GET /api/status` | Scan count, last scan, which keys are active (booleans), corpus evidence coverage. |
+| `GET /api/coverage` | Evidence coverage, confidence, lifecycle states, eligibility counts and vetoes across the corpus. |
+| `GET /api/tokens?sort=&minScore=&maxAgeH=&minLiquidity=&minCoverage=&eligibility=&q=&hideRisky=&limit=` | Filtered ranking. Shows `QUALIFIED` and `WATCH` by default; `eligibility=all` reveals rejected and low-data tokens. |
 | `GET /api/tokens/:mint` | One snapshot plus its history. |
 | `GET /api/events?limit=` | Recent monitor events. |
 | `POST /api/scan` | Triggers a scan. |
@@ -124,9 +141,56 @@ has its own queue in `src/util/http.ts`; 429s set a cooldown for that host only.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | What exists today, stage by stage, plus the proposed target architecture, trading modes, decision engine, persistence and performance model. |
 | [DATA_SOURCES.md](DATA_SOURCES.md) | Measured live validation of all five providers, the fields we actually receive, and the proposed provider strategy. |
 | [SCORING.md](SCORING.md) | Full scoring audit: every component, weight and penalty, with measured weaknesses. |
+| [PIPELINE.md](PIPELINE.md) | **The analysis path as implemented**: provider validation, evidence model, cross-provider resolution, safety gate, coverage/confidence, eligibility and lifecycle. |
 | [ROADMAP.md](ROADMAP.md) | Proposed development sequence and test strategy. |
 
 Parts of those documents describe proposals; they are labelled **NOT IMPLEMENTED** where so.
+
+## Unknown is not zero
+
+Every fact carries how we came to believe it. Six states, none interchangeable:
+
+| State | Meaning | Earns points | Counts as evidence |
+|---|---|---|---|
+| `MEASURED` | a provider returned a value that passed validation | yes | yes |
+| `CONFLICTED` | providers disagreed; the conservative reading was taken | yes | yes |
+| `UNKNOWN` | nobody returned anything | no | **no** |
+| `INVALID` | a provider returned something impossible; it was rejected | no | no |
+| `STALE` | measured, but too old to speak for the present | no | no |
+| `UNAVAILABLE` | the only provider that could answer is not configured | no | no |
+
+A **measured zero** — a real pool that traded nothing — scores zero *and counts as
+evidence*. An **unknown** scores the same zero but does not, so it lowers coverage. That
+distinction is the difference between "this token is dead" and "we never looked".
+
+Unknown components keep their weight, so missing data can never earn a point. Three
+numbers are reported separately and never multiplied together:
+
+- **score** — how good the token looks;
+- **coverage** — how much of that rests on real observation (`score.ceiling` is the most
+  it could have scored);
+- **confidence** — what those observations are worth after provider disagreement,
+  staleness and single-provider dependence.
+
+## Not everything gets ranked
+
+A numeric score is not a licence to appear in the ranking. Before scoring, a hard safety
+gate can reject a token outright — a live mint authority, an untradeable pool, a RugCheck
+critical finding. A penalty multiplier cannot express that, because a strong enough token
+absorbs one and stays near the top.
+
+| Status | Meaning |
+|---|---|
+| `QUALIFIED` | clean gate, enough evidence to stand behind |
+| `WATCH` | clean gate, but coverage below the qualify bar |
+| `INSUFFICIENT_DATA` | too little observed to say anything useful |
+| `REJECTED` | one or more hard vetoes; not shown in the ranking by default |
+
+Every veto records its code, a readable reason, the provider, the observed value, a
+timestamp, and whether it can clear on fresh evidence. **A veto never fires on unknown
+evidence** — absence of evidence is not evidence of danger.
+
+Full detail: **[PIPELINE.md](PIPELINE.md)**.
 
 ## Caveats
 
@@ -139,9 +203,19 @@ Parts of those documents describe proposals; they are labelled **NOT IMPLEMENTED
 - Third-party endpoints change. Each adapter in `src/sources/` fails soft, so a
   changed endpoint degrades the scan rather than breaking it — if a feed goes
   quiet, check it there first.
-- **There are no automated tests yet.** Verification so far is a typecheck plus live smoke
-  scans. See [ROADMAP.md](ROADMAP.md) for the proposed test strategy.
-- Two scoring defects are known and documented rather than fixed, so this baseline stays
-  honest about them: absent market data currently earns neutral points, and a RugCheck
-  `danger` authority finding does not trigger the authority penalty. See
-  [SCORING.md](SCORING.md) sections 5.1 and 5.2.
+- **Test coverage is partial.** 124 tests cover provider validation, evidence resolution,
+  the safety gate, coverage, eligibility, the lifecycle and the Jev failure paths, over a
+  deterministic 14-scenario fixture corpus. Discovery, the HTTP layer, the store and the
+  dashboard still have no tests. See [ROADMAP.md](ROADMAP.md) for the rest.
+- **No threshold here is calibrated against outcome data.** Coverage bars, the veto
+  concentration limit and the A/B/C/D/F grades are reasoned starting points. Nothing has
+  been validated against whether a token actually rugged.
+- The two scoring defects previously listed here are **fixed**: absent market data now earns
+  nothing, and a RugCheck `danger` authority finding now resolves authority state and triggers
+  the penalty. See [SCORING.md](SCORING.md) §5.1 and §5.2. The weaknesses in §5.3–§5.6 —
+  provider concentration, correlated components, exploitability, no hard veto — are still open.
+- **Impersonation screening is advisory.** When enabled it flags naming that resembles an
+  established token. It never changes a score, is not proof of fraud, and is not a trading
+  signal. Any failure records "not assessed", which is not the same as safe.
+- Scores are still uncalibrated against outcome data, and there is no hard veto: a dangerous
+  token is penalised, never excluded.

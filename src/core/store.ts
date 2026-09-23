@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config, DATA_DIR } from '../config.ts';
@@ -7,8 +7,15 @@ import type { HistoryPoint, MonitorEvent, TokenSnapshot } from '../types.ts';
 
 const FILE = resolve(DATA_DIR, 'state.json');
 
+/**
+ * Bumped when the snapshot shape changes in a way older readers cannot
+ * interpret. Version 2 added `evaluation` (gate, coverage, lifecycle) and made
+ * several market fields nullable to carry UNKNOWN.
+ */
+const STATE_VERSION = 2;
+
 interface State {
-  version: 1;
+  version: number;
   lastScanAt: number | null;
   scanCount: number;
   tokens: Record<string, TokenSnapshot>;
@@ -17,14 +24,48 @@ interface State {
 }
 
 function emptyState(): State {
-  return { version: 1, lastScanAt: null, scanCount: 0, tokens: {}, history: {}, events: [] };
+  return {
+    version: STATE_VERSION,
+    lastScanAt: null,
+    scanCount: 0,
+    tokens: {},
+    history: {},
+    events: [],
+  };
+}
+
+/**
+ * Copies the current state aside before a version migration overwrites it.
+ *
+ * Collected scan history is genuinely useful and cannot be recovered from
+ * anywhere else, so a schema change never destroys it in place.
+ */
+function backupBeforeMigration(fromVersion: number): void {
+  if (!existsSync(FILE)) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const target = resolve(DATA_DIR, `state.v${fromVersion}.backup-${stamp}.json`);
+  try {
+    copyFileSync(FILE, target);
+    log.warn(`state.json migrated from v${fromVersion} to v${STATE_VERSION}; previous file kept at ${target}`);
+  } catch (error) {
+    log.error('could not back up state before migration:', error instanceof Error ? error.message : error);
+  }
 }
 
 function load(): State {
   if (!existsSync(FILE)) return emptyState();
   try {
     const parsed = JSON.parse(readFileSync(FILE, 'utf8')) as Partial<State>;
-    return { ...emptyState(), ...parsed, version: 1 };
+    const found = typeof parsed.version === 'number' ? parsed.version : 1;
+
+    if (found !== STATE_VERSION) {
+      backupBeforeMigration(found);
+      // Snapshots are carried forward as-is. Those written before v2 have no
+      // `evaluation`, which every reader treats as "not recorded" rather than
+      // inventing one; the next scan replaces them.
+    }
+
+    return { ...emptyState(), ...parsed, version: STATE_VERSION };
   } catch (error) {
     log.warn('state.json is unreadable, starting fresh:', error instanceof Error ? error.message : error);
     return emptyState();

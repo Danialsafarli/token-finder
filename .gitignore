@@ -3,3 +3,9 @@ data/*.json
 !data/.gitkeep
 .env
 *.log
+
+# Runtime state. Collected scans and migration backups are local data, not source.
+data/*.backup-*.json
+
+# Knowledge-graph tooling output (graphify), not part of the project source.
+graphify-out/

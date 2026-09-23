@@ -13,7 +13,9 @@
     "rank": "node src/cli.ts rank",
     "watch": "node src/cli.ts watch",
     "analyze": "node src/cli.ts analyze",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "check": "npm run typecheck && npm test"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

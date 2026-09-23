@@ -35,6 +35,7 @@ const RPM: Record<string, number> = {
   'api.rugcheck.xyz': 30,
   'public-api.birdeye.so': 50,
   'mainnet.helius-rpc.com': 120,
+  'api.typesafe.ai': 60,
 };
 
 function limitFor(host: string): HostLimit {

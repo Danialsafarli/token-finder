@@ -474,6 +474,19 @@ tr.empty td {
   background: linear-gradient(90deg, var(--accent), var(--up));
 }
 
+/*
+ * Unknown reads as a dashed empty track, never as a filled-to-zero bar, so
+ * "we did not measure this" cannot be mistaken for "this scored nothing".
+ */
+.bar.unknown {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--panel-2) 0 6px,
+    transparent 6px 12px
+  );
+  opacity: 0.7;
+}
+
 .bar-row .detail {
   grid-column: 2 / -1;
   color: var(--muted);

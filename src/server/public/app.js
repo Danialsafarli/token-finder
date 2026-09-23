@@ -65,10 +65,51 @@ function worstFlag(token) {
   return null;
 }
 
+/**
+ * A score built on partial evidence is marked at the point it is read. Without
+ * this the number looks identical to a fully-evidenced one.
+ */
+function coveragePill(score) {
+  const coverage = score?.coverage;
+  if (typeof coverage !== 'number' || coverage >= 0.999) return '';
+  const level = coverage < 0.6 ? 'medium' : 'low';
+  return ` <span class="pill ${level}" title="Only ${Math.round(coverage * 100)}% of scoring evidence was available. Missing evidence earns no points, so this token cannot exceed ${Math.round(score.ceiling)} before penalties. Unknown: ${(score.unknown ?? []).join(', ') || 'none'}">${Math.round(coverage * 100)}%</span>`;
+}
+
+/** Null priceChange means no pair ever existed; render '—', never 0.0%. */
+const EMPTY_CHANGE = { m5: null, h1: null, h6: null, h24: null };
+
+/**
+ * Ranking status. Kept to a single short badge in the table - the evidence
+ * behind it belongs in the detail drawer, not in a column people scan.
+ */
+const STATUS_PILL = {
+  QUALIFIED: { cls: 'info', text: 'qualified' },
+  WATCH: { cls: 'low', text: 'watch' },
+  INSUFFICIENT_DATA: { cls: 'medium', text: 'no data' },
+  REJECTED: { cls: 'critical', text: 'rejected' },
+};
+
+function statusPill(token) {
+  const eligibility = token.evaluation?.eligibility;
+  if (!eligibility) return '';
+  const pill = STATUS_PILL[eligibility];
+  if (!pill) return '';
+  const vetoes = token.evaluation?.vetoes ?? [];
+  const title = vetoes.length
+    ? vetoes.map((v) => `${v.code}: ${v.reason}`).join('\n')
+    : `Ranking status: ${eligibility}`;
+  return `<span class="pill ${pill.cls}" title="${escapeAttr(title)}">${pill.text}</span>`;
+}
+
+const escapeAttr = (value) =>
+  String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
 function rowHtml(token, index) {
   const flag = worstFlag(token);
   const verified = token.jupiter?.isVerified;
   const icon = token.pair?.imageUrl;
+  const change = token.priceChange ?? EMPTY_CHANGE;
 
   return `
     <tr data-mint="${token.mint}" class="${state.seen.has(token.mint) ? '' : 'flash'}">
@@ -77,16 +118,16 @@ function rowHtml(token, index) {
         <div class="tok">
           ${icon ? `<img src="${icon}" alt="" loading="lazy" onerror="this.remove()" />` : '<img alt="" />'}
           <div>
-            <div class="sym">${token.symbol}${verified ? ' <span class="pill info">ver</span>' : ''}</div>
+            <div class="sym">${token.symbol}${verified ? ' <span class="pill info">ver</span>' : ''}${statusPill(token)}</div>
             <div class="nm">${token.name || ''}</div>
           </div>
         </div>
       </td>
-      <td class="num"><span class="score grade-${token.score.grade}">${token.score.total.toFixed(0)}</span></td>
+      <td class="num"><span class="score grade-${token.score.grade}">${token.score.total.toFixed(0)}</span>${coveragePill(token.score)}</td>
       <td class="num">${fmtUsd(token.priceUsd)}</td>
-      <td class="num ${moveClass(token.priceChange.h1)}">${pct(token.priceChange.h1)}</td>
-      <td class="num ${moveClass(token.priceChange.h6)}">${pct(token.priceChange.h6)}</td>
-      <td class="num ${moveClass(token.priceChange.h24)}">${pct(token.priceChange.h24)}</td>
+      <td class="num ${moveClass(change.h1)}">${pct(change.h1)}</td>
+      <td class="num ${moveClass(change.h6)}">${pct(change.h6)}</td>
+      <td class="num ${moveClass(change.h24)}">${pct(change.h24)}</td>
       <td class="num">${fmtUsd(token.liquidityUsd)}</td>
       <td class="num">${fmtUsd(token.volume24h)}</td>
       <td class="num">${fmtNum(token.holders)}</td>
@@ -139,16 +180,120 @@ function sparkline(points, key) {
 
 function drawerHtml(token, history) {
   const components = token.score.components
-    .map(
-      (component) => `
+    .map((component) => {
+      // An unknown component shows no bar. A 0%-wide bar is indistinguishable
+      // from a measured zero, which is exactly the conflation being removed.
+      if (component.value === null) {
+        return `
+        <div class="bar-row">
+          <span>${component.label}</span>
+          <div class="bar unknown"></div>
+          <span class="num muted">?</span>
+          <span class="detail">unknown — ${component.unknownReason ?? 'no evidence'} · weight ${(component.weight * 100).toFixed(0)}% · earns 0</span>
+        </div>`;
+      }
+      return `
         <div class="bar-row">
           <span>${component.label}</span>
           <div class="bar"><i style="width:${(component.value * 100).toFixed(0)}%"></i></div>
           <span class="num muted">${(component.value * 100).toFixed(0)}</span>
           <span class="detail">${component.detail} · weight ${(component.weight * 100).toFixed(0)}%</span>
-        </div>`,
-    )
+        </div>`;
+    })
     .join('');
+
+  const score = token.score;
+  // Snapshots stored before evidence coverage existed have no coverage field.
+  // They are replaced on the next scan; until then, say so rather than
+  // rendering NaN% or throwing on a missing `unknown` array.
+  const unknownList = score.unknown ?? [];
+  const coverageBlock =
+    typeof score.coverage !== 'number'
+      ? `
+    <div class="section-title">Evidence coverage</div>
+    <p class="muted">Not recorded — this snapshot predates evidence tracking. It will be refreshed on the next scan.</p>`
+      : `
+    <div class="section-title">Evidence coverage</div>
+    <p class="muted">
+      ${Math.round(score.coverage * 100)}% of scoring weight was backed by real data.
+      Missing evidence earns no points, so this token could not have scored above
+      <b>${Math.round(score.ceiling)}</b> before penalties.
+      ${unknownList.length ? `No data for: <b>${unknownList.join(', ')}</b>.` : 'Every component was measured.'}
+    </p>`;
+
+  const evaluation = token.evaluation;
+  const vetoBlock =
+    !evaluation || evaluation.vetoes.length === 0
+      ? ''
+      : `
+    <div class="section-title">Hard veto — not ranked</div>
+    ${evaluation.vetoes
+      .map(
+        (veto) => `
+      <div class="flag">
+        <span class="pill critical">${veto.code}</span>
+        <span>
+          ${veto.reason}
+          <br /><span class="muted">source: ${veto.source} · observed: ${escapeAttr(veto.observedValue)} ·
+          ${new Date(veto.at).toLocaleString()} ·
+          ${veto.recheckable ? 'can clear on fresh evidence' : 'permanent'}</span>
+        </span>
+      </div>`,
+      )
+      .join('')}`;
+
+  const evidenceBlock = !evaluation
+    ? ''
+    : `
+    <div class="section-title">Evidence accounting</div>
+    <div class="stat-grid">
+      <div class="stat"><span>Status</span><b>${evaluation.eligibility}</b></div>
+      <div class="stat"><span>State</span><b>${evaluation.state}</b></div>
+      <div class="stat"><span>Coverage</span><b>${Math.round(evaluation.coverage.coverage * 100)}%</b></div>
+      <div class="stat"><span>Confidence</span><b>${Math.round(evaluation.coverage.confidence * 100)}%</b></div>
+      <div class="stat"><span>Measured</span><b>${evaluation.coverage.measured}/${evaluation.coverage.eligibleSignals}</b></div>
+      <div class="stat"><span>Unknown</span><b>${evaluation.coverage.unknown}</b></div>
+      <div class="stat"><span>Conflicted</span><b>${evaluation.coverage.conflicted}</b></div>
+      <div class="stat"><span>Invalid</span><b>${evaluation.coverage.invalid}</b></div>
+      <div class="stat"><span>Stale</span><b>${evaluation.coverage.stale}</b></div>
+    </div>
+    <p class="muted">
+      Score, coverage and confidence are separate. Coverage is how much of the score rests on real
+      observation; confidence is what those observations are worth after disagreement, age and
+      single-provider dependence. Most evidence here came from
+      <b>${evaluation.coverage.dominantProvider ?? 'no single provider'}</b>
+      (${Math.round(evaluation.coverage.providerConcentration * 100)}% of what is known).
+    </p>
+    ${
+      evaluation.conflicts.length
+        ? `<p class="muted">Providers disagreed on: <b>${evaluation.conflicts.join(', ')}</b>. The conservative reading was used.</p>`
+        : ''
+    }
+    ${
+      evaluation.issues.length
+        ? `<p class="muted">${evaluation.issues.length} provider field(s) rejected at the boundary: ${evaluation.issues
+            .slice(0, 5)
+            .map((i) => `<code>${i.field}</code> (${i.reason})`)
+            .join(', ')}.</p>`
+        : ''
+    }`;
+
+  const imp = token.impersonation;
+  const impersonationBlock = !imp
+    ? ''
+    : `
+    <div class="section-title">Impersonation screening (advisory)</div>
+    <p class="muted">
+      ${
+        imp.status === 'assessed'
+          ? `Probability <b>${imp.probability.toFixed(2)}</b> that the naming mimics an established token —
+             model <code>${imp.model ?? 'unknown'}</code>, assessed ${new Date(imp.at).toLocaleString()}.
+             Compared against ${imp.evidence.referenceMints.length} reference token(s) from list
+             <code>${imp.evidence.referenceListId}</code>.
+             This is a judgement about naming only: <b>not proof of fraud</b>, and it does not affect the score.`
+          : `<b>Not assessed</b> (${imp.reason}). This is not a clean bill of health — the check simply did not run.`
+      }
+    </p>`;
 
   const flags = token.score.flags.length
     ? token.score.flags
@@ -184,7 +329,7 @@ function drawerHtml(token, history) {
       <div class="stat"><span>Market cap</span><b>${fmtUsd(token.marketCap)}</b></div>
       <div class="stat"><span>Holders</span><b>${fmtNum(token.holders)}</b></div>
       <div class="stat"><span>Age</span><b>${fmtAge(token.ageHours)}</b></div>
-      <div class="stat"><span>1h</span><b class="${moveClass(token.priceChange.h1)}">${pct(token.priceChange.h1)}</b></div>
+      <div class="stat"><span>1h</span><b class="${moveClass(token.priceChange?.h1 ?? null)}">${pct(token.priceChange?.h1 ?? null)}</b></div>
       <div class="stat"><span>Buys 24h</span><b>${token.buyRatio24h === null ? '—' : `${(token.buyRatio24h * 100).toFixed(0)}%`}</b></div>
       <div class="stat"><span>Penalty</span><b>${token.score.penalty.toFixed(0)}%</b></div>
     </div>
@@ -197,6 +342,10 @@ function drawerHtml(token, history) {
 
     <div class="section-title">Score breakdown (base ${token.score.base.toFixed(0)})</div>
     ${components}
+    ${coverageBlock}
+    ${vetoBlock}
+    ${evidenceBlock}
+    ${impersonationBlock}
 
     <div class="section-title">Risk flags</div>
     ${flags}

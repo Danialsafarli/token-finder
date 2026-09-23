@@ -1,6 +1,6 @@
 import { tryGetJson } from '../util/http.ts';
 import { TtlCache } from '../util/cache.ts';
-import { toNumber } from '../util/num.ts';
+import { ValidationReport, validNumber, validString } from '../core/validate.ts';
 import type { RugcheckInfo } from '../types.ts';
 
 const BASE = 'https://api.rugcheck.xyz/v1';
@@ -9,10 +9,13 @@ const BASE = 'https://api.rugcheck.xyz/v1';
 const cache = new TtlCache<RugcheckInfo | null>(20 * 60_000);
 
 interface RawSummary {
-  score?: number;
-  score_normalised?: number;
-  risks?: { name?: string; level?: string; description?: string; score?: number }[];
+  score?: unknown;
+  score_normalised?: unknown;
+  risks?: unknown;
 }
+
+/** RugCheck's documented severity ladder. Anything else is not understood. */
+const RISK_LEVELS = new Set(['danger', 'warn', 'info', 'good']);
 
 /**
  * RugCheck's summary report: authority state, LP status, holder concentration
@@ -27,16 +30,48 @@ export async function summary(mint: string): Promise<RugcheckInfo | null> {
       nullOn: [400, 404, 422],
     });
     if (!data) return null;
+    return normalizeSummary(data);
+  });
+}
+
+/**
+ * Pure boundary validation for a RugCheck summary, split out so the regression
+ * corpus can exercise it without a network round trip.
+ */
+export function normalizeSummary(data: RawSummary): RugcheckInfo {
+  {
+    const report = new ValidationReport('rugcheck');
+    const rawRisks = Array.isArray(data.risks) ? (data.risks as Record<string, unknown>[]) : [];
+
+    const risks = rawRisks.flatMap((risk, index) => {
+      const name = validString(report, `risks[${index}].name`, risk.name, { maxLength: 120 });
+      if (name === null) return [];
+
+      const rawLevel = validString(report, `risks[${index}].level`, risk.level, { maxLength: 20 });
+      const level = rawLevel === null ? 'info' : rawLevel.toLowerCase();
+      if (!RISK_LEVELS.has(level)) {
+        // An unrecognised severity is not quietly downgraded to info: that
+        // would turn an unknown-but-possibly-critical finding into noise.
+        report.reject(`risks[${index}].level`, 'unrecognised severity', risk.level);
+        return [];
+      }
+
+      return [
+        {
+          name,
+          level,
+          description:
+            validString(report, `risks[${index}].description`, risk.description, { maxLength: 300 }) ?? '',
+          score: validNumber(report, `risks[${index}].score`, risk.score, { min: 0 }) ?? 0,
+        },
+      ];
+    });
 
     return {
-      score: toNumber(data.score),
-      scoreNormalised: toNumber(data.score_normalised),
-      risks: (data.risks ?? []).map((risk) => ({
-        name: risk.name ?? 'unknown',
-        level: (risk.level ?? 'info').toLowerCase(),
-        description: risk.description ?? '',
-        score: toNumber(risk.score) ?? 0,
-      })),
+      score: validNumber(report, 'score', data.score, { min: 0 }),
+      scoreNormalised: validNumber(report, 'score_normalised', data.score_normalised, { min: 0, max: 100 }),
+      risks,
+      issues: report.issues,
     };
-  });
+  }
 }

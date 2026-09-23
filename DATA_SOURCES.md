@@ -129,3 +129,67 @@ Principle: no single provider should decide a ranking where independent verifica
 Cross-validation rules to add: treat provider **disagreement as a risk signal** rather than
 picking a winner; require two independent sources before any safety component earns full
 credit; propagate an explicit `UNKNOWN` state end-to-end instead of coercing to a neutral number.
+
+## TypeSafe (Jev) — optional, advisory only
+
+| | |
+|---|---|
+| Endpoint | `POST https://api.typesafe.ai/v1/systemone` |
+| Auth | `Authorization: Bearer $TYPESAFE_API_KEY` — server-side only |
+| Used for | one Noul question: does this token's naming impersonate an established token? |
+| Default | **off** (`TYPESAFE_ENABLED=false`) |
+| Budget | `TYPESAFE_MAX_PER_SCAN` (default 10), reset each scan |
+| Cache | 6h in-process, keyed by mint + sanitised naming + reference-list id |
+| Rate limit | 60 rpm self-imposed in `util/http.ts` |
+
+Unlike every other source here, this one returns a **judgement, not a measurement**. It is
+therefore kept out of the score entirely and surfaces only as an advisory flag.
+
+Failure semantics differ from the other providers too. The rest fail soft to `null`, which
+scoring reads as UNKNOWN. This one fails to an explicit `not_assessed` record carrying the
+reason, because the question "was this checked?" has to stay answerable — a missing assessment
+must never be mistaken for a clean one.
+
+**Not verified against the live API.** No credentials were available, so the request and
+response shapes come from the published API reference and the integration has only been
+exercised against mocked responses. `node src/cli.ts typesafe-check` makes one minimal request
+to confirm credentials and connectivity once a key is configured.
+
+## Provider boundary and trust (Foundation Hardening II)
+
+Every field listed in this document now passes an explicit validator before it can
+reach scoring. The per-provider field rules are tabulated in
+**[PIPELINE.md](PIPELINE.md) §1**; the short version is that a field which is *absent*
+stays UNKNOWN and earns nothing, while a field which is *present but impossible* is
+rejected, recorded as a `FieldIssue`, and reported as INVALID — a different state, and
+never mistaken for zero or for safe.
+
+Provider trust, used when two providers speak to the same fact:
+
+| Provider | Trust | Why |
+|---|---|---|
+| Helius | 1.00 | reads the chain directly; on authority it is ground truth, not a report about it |
+| RugCheck | 0.95 | second-hand, but the only source that asserts named danger conditions |
+| DexScreener | 0.90 | direct venue observation, but only the venues it indexes |
+| Jupiter | 0.85 | second-hand; its `audit` block is the one observed to carry nulls where RugCheck carries a finding |
+
+### These providers do not measure the same liquidity
+
+DexScreener sums the pairs it indexes. Jupiter aggregates a wider venue set. On a live
+23-token sample the two differed by tens of percent on most tokens — **that is scope,
+not disagreement**. Treating a 5% gap as a contradiction marked 18 of 23 tokens
+CONFLICTED and made the flag meaningless, so the conflict threshold is 3x.
+
+Two consequences, both deliberate:
+
+- The **resolved** `liquidityUsd` is always the lower of the two, agreement or not: an
+  exit faces the depth that is really there.
+- **Turnover divides by DexScreener's own depth**, not the resolved figure, because the
+  volume came from those pairs. Mixing them describes a venue that does not exist.
+
+### Freshness
+
+Each observation carries when it was seen, and each metric has its own window (see
+PIPELINE.md §2). RugCheck and Helius results are cached for 20 and 10 minutes
+respectively, so they can legitimately be older than the market data in the same
+snapshot — which is exactly why freshness is per-metric rather than per-scan.

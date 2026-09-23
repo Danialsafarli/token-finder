@@ -5,7 +5,7 @@ import { fmtUsd } from '../util/num.ts';
 import { discover } from './discover.ts';
 import { analyze } from './analyze.ts';
 import { store } from './store.ts';
-import type { MonitorEvent, RiskLevel, TokenSnapshot } from '../types.ts';
+import type { MonitorEvent, RiskLevel, TokenSnapshot, TokenState } from '../types.ts';
 
 /** Emits "event" (MonitorEvent) and "scan" (ScanResult); the server relays both over SSE. */
 export const bus = new EventEmitter();
@@ -50,13 +50,34 @@ function diff(next: TokenSnapshot, previous: TokenSnapshot | null): MonitorEvent
 
   if (previous === null) {
     const score = next.score.total;
+    const eligibility = next.evaluation?.eligibility;
+
+    // A rejected token is never an alert, however well it scores on whatever
+    // the gate did not veto. This is the case a penalty multiplier cannot hold.
+    if (eligibility === 'REJECTED') {
+      const veto = next.evaluation?.vetoes[0];
+      events.push(
+        emit('risk_flag', next, 'critical', `${next.symbol} rejected: ${veto?.reason ?? 'failed the safety gate'}`, {
+          code: veto?.code ?? 'REJECTED',
+          vetoes: next.evaluation?.vetoes.map((v) => v.code) ?? [],
+        }),
+      );
+      return events;
+    }
+
     // Everything new would drown the feed, so only surface the plausible ones.
-    if (score >= config.minScoreAlert) {
+    // An alert additionally requires enough evidence to stand behind: a score
+    // assembled from a third of the inputs is not a finding worth waking on.
+    const wellEvidenced = next.score.coverage >= config.minCoverageAlert;
+    if (score >= config.minScoreAlert && wellEvidenced && eligibility === 'QUALIFIED') {
       events.push(
         emit('discovered', next, 'medium', `New token ${next.symbol} scored ${score} (${next.score.grade}).`, {
           score,
+          coverage: next.score.coverage,
         }),
       );
+      // A high score on thin evidence still gets tracked at info level rather
+      // than dropped, so it is visible without being alerted on.
     } else if (score >= config.minScoreAlert - 20) {
       events.push(emit('discovered', next, 'info', `Tracking ${next.symbol} at ${score} (${next.score.grade}).`, { score }));
     }
@@ -78,8 +99,15 @@ function diff(next: TokenSnapshot, previous: TokenSnapshot | null): MonitorEvent
     );
   }
 
-  // A liquidity collapse is the clearest on-chain signature of a rug.
-  if (previous.liquidityUsd >= 5_000 && next.liquidityUsd < previous.liquidityUsd * 0.6) {
+  // A liquidity collapse is the clearest on-chain signature of a rug. Both
+  // readings must be measured: a provider dropping out looks identical to a
+  // drain if null is read as zero, and would fire a false critical alert.
+  if (
+    previous.liquidityUsd !== null &&
+    next.liquidityUsd !== null &&
+    previous.liquidityUsd >= 5_000 &&
+    next.liquidityUsd < previous.liquidityUsd * 0.6
+  ) {
     const pct = (1 - next.liquidityUsd / previous.liquidityUsd) * 100;
     events.push(
       emit(
@@ -103,6 +131,23 @@ function diff(next: TokenSnapshot, previous: TokenSnapshot | null): MonitorEvent
     }
   }
 
+  const wasState = previous.evaluation?.state;
+  const nowState = next.evaluation?.state;
+  if (wasState !== undefined && nowState !== undefined && wasState !== nowState) {
+    const rejected = nowState === 'REJECTED';
+    events.push(
+      emit(
+        rejected ? 'risk_flag' : 'score_down',
+        next,
+        rejected ? 'critical' : 'info',
+        `${next.symbol} moved ${wasState} -> ${nowState}${
+          rejected ? `: ${next.evaluation?.vetoes[0]?.reason ?? 'failed the safety gate'}` : ''
+        }.`,
+        { from: wasState, to: nowState },
+      ),
+    );
+  }
+
   const before = new Set(previous.score.flags.map((flag) => flag.code));
   for (const flag of next.score.flags) {
     if (before.has(flag.code)) continue;
@@ -121,7 +166,16 @@ export async function runScan(): Promise<ScanResult> {
   const started = Date.now();
   try {
     const candidates = await discover();
-    const snapshots = await analyze(candidates);
+
+    // Prior lifecycle state per mint, so a token moves QUALIFIED -> SCANNING ->
+    // whatever the fresh evidence says, rather than being reborn each scan.
+    const priorStates = new Map<string, TokenState>();
+    for (const token of store.tokens()) {
+      const state = token.evaluation?.state;
+      if (state !== undefined) priorStates.set(token.mint, state);
+    }
+
+    const snapshots = await analyze(candidates, { priorStates });
 
     const events: MonitorEvent[] = [];
     let fresh = 0;

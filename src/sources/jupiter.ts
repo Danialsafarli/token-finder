@@ -1,5 +1,14 @@
 import { tryGetJson, pool } from '../util/http.ts';
-import { toNumber } from '../util/num.ts';
+import {
+  ValidationReport,
+  validBoolean,
+  validCount,
+  validNumber,
+  validPercent,
+  validString,
+  validTimestampMs,
+  validUsd,
+} from '../core/validate.ts';
 import type { JupiterInfo } from '../types.ts';
 
 const BASE = 'https://lite-api.jup.ag/tokens/v2';
@@ -8,63 +17,68 @@ interface RawToken {
   id?: string;
   name?: string;
   symbol?: string;
-  decimals?: number;
-  isVerified?: boolean;
-  tags?: string[];
-  organicScore?: number;
-  organicScoreLabel?: string;
-  holderCount?: number;
-  liquidity?: number;
-  usdPrice?: number;
-  mcap?: number;
-  fdv?: number;
-  firstPool?: { createdAt?: string | number };
+  decimals?: unknown;
+  isVerified?: unknown;
+  tags?: unknown;
+  organicScore?: unknown;
+  organicScoreLabel?: unknown;
+  holderCount?: unknown;
+  liquidity?: unknown;
+  usdPrice?: unknown;
+  mcap?: unknown;
+  fdv?: unknown;
+  firstPool?: { createdAt?: unknown };
   audit?: {
-    mintAuthorityDisabled?: boolean;
-    freezeAuthorityDisabled?: boolean;
-    topHoldersPercentage?: number;
-    devBalancePercentage?: number;
+    mintAuthorityDisabled?: unknown;
+    freezeAuthorityDisabled?: unknown;
+    topHoldersPercentage?: unknown;
+    devBalancePercentage?: unknown;
   };
   stats24h?: {
-    numBuys?: number;
-    numSells?: number;
-    numTraders?: number;
-    holderChange?: number;
+    numBuys?: unknown;
+    numSells?: unknown;
+    numTraders?: unknown;
+    holderChange?: unknown;
   };
 }
 
-function toMillis(value: string | number | undefined): number | null {
-  if (value === undefined) return null;
-  if (typeof value === 'number') return value > 1e12 ? value : value * 1000;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
+/**
+ * Validates Jupiter's token record at the boundary.
+ *
+ * The audit booleans get {@link validBoolean}, which refuses anything that is
+ * not a real boolean. These are safety fields: a provider sending "false" as a
+ * string, or 0, is a provider we have stopped understanding, and guessing there
+ * is how a live mint authority silently becomes a revoked one.
+ */
+export function normalizeToken(raw: RawToken): JupiterInfo {
+  const report = new ValidationReport('jupiter');
 
-function normalize(raw: RawToken): JupiterInfo {
   return {
-    symbol: raw.symbol ?? null,
-    name: raw.name ?? null,
-    isVerified: raw.isVerified === true,
-    tags: raw.tags ?? [],
-    organicScore: toNumber(raw.organicScore),
-    organicScoreLabel: raw.organicScoreLabel ?? null,
-    holderCount: toNumber(raw.holderCount),
-    liquidityUsd: toNumber(raw.liquidity),
-    usdPrice: toNumber(raw.usdPrice),
-    mcap: toNumber(raw.mcap) ?? toNumber(raw.fdv),
-    firstPoolCreatedAt: toMillis(raw.firstPool?.createdAt),
+    symbol: validString(report, 'symbol', raw.symbol, { maxLength: 40 }),
+    name: validString(report, 'name', raw.name, { maxLength: 80 }),
+    isVerified: validBoolean(report, 'isVerified', raw.isVerified) === true,
+    tags: Array.isArray(raw.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : [],
+    organicScore: validNumber(report, 'organicScore', raw.organicScore, { min: 0, max: 100 }),
+    organicScoreLabel: validString(report, 'organicScoreLabel', raw.organicScoreLabel, { maxLength: 40 }),
+    holderCount: validCount(report, 'holderCount', raw.holderCount),
+    liquidityUsd: validUsd(report, 'liquidity', raw.liquidity),
+    usdPrice: validUsd(report, 'usdPrice', raw.usdPrice),
+    mcap: validUsd(report, 'mcap', raw.mcap) ?? validUsd(report, 'fdv', raw.fdv),
+    firstPoolCreatedAt: validTimestampMs(report, 'firstPool.createdAt', raw.firstPool?.createdAt),
     audit: {
-      mintAuthorityDisabled: raw.audit?.mintAuthorityDisabled ?? null,
-      freezeAuthorityDisabled: raw.audit?.freezeAuthorityDisabled ?? null,
-      topHoldersPercentage: toNumber(raw.audit?.topHoldersPercentage),
-      devBalancePercentage: toNumber(raw.audit?.devBalancePercentage),
+      mintAuthorityDisabled: validBoolean(report, 'audit.mintAuthorityDisabled', raw.audit?.mintAuthorityDisabled),
+      freezeAuthorityDisabled: validBoolean(report, 'audit.freezeAuthorityDisabled', raw.audit?.freezeAuthorityDisabled),
+      topHoldersPercentage: validPercent(report, 'audit.topHoldersPercentage', raw.audit?.topHoldersPercentage),
+      devBalancePercentage: validPercent(report, 'audit.devBalancePercentage', raw.audit?.devBalancePercentage),
     },
     stats24h: {
-      numBuys: toNumber(raw.stats24h?.numBuys),
-      numSells: toNumber(raw.stats24h?.numSells),
-      numTraders: toNumber(raw.stats24h?.numTraders),
-      holderChange: toNumber(raw.stats24h?.holderChange),
+      numBuys: validCount(report, 'stats24h.numBuys', raw.stats24h?.numBuys),
+      numSells: validCount(report, 'stats24h.numSells', raw.stats24h?.numSells),
+      numTraders: validCount(report, 'stats24h.numTraders', raw.stats24h?.numTraders),
+      // Holder count can genuinely fall, so this one is signed.
+      holderChange: validNumber(report, 'stats24h.holderChange', raw.stats24h?.holderChange),
     },
+    issues: report.issues,
   };
 }
 
@@ -74,7 +88,11 @@ export async function recentTokens(): Promise<{ mint: string; symbol?: string; n
   if (!Array.isArray(data)) return [];
   return data
     .filter((token) => typeof token.id === 'string')
-    .map((token) => ({ mint: token.id as string, symbol: token.symbol, name: token.name }));
+    .map((token) => ({
+      mint: token.id as string,
+      symbol: typeof token.symbol === 'string' ? token.symbol : undefined,
+      name: typeof token.name === 'string' ? token.name : undefined,
+    }));
 }
 
 /** Tokens with the strongest organic (non-wash) activity over an interval. */
@@ -100,7 +118,7 @@ export async function infoForMints(mints: string[]): Promise<Map<string, Jupiter
     );
     if (!Array.isArray(data)) return;
     for (const raw of data) {
-      if (typeof raw.id === 'string') byMint.set(raw.id, normalize(raw));
+      if (typeof raw.id === 'string') byMint.set(raw.id, normalizeToken(raw));
     }
   });
 

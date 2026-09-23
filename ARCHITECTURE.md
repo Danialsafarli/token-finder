@@ -3,13 +3,24 @@
 Audience: engineers working on Token Finder.
 **Part 1 describes what exists. Parts 2–5 are proposals and are NOT IMPLEMENTED.**
 
+> **Foundation Hardening II changed the analysis path substantially.** The stages
+> between discovery and ranking are now a documented pipeline with a provider
+> validation boundary, a canonical evidence model, deterministic cross-provider
+> resolution, a hard safety gate, separate coverage/confidence accounting, ranking
+> eligibility and a token lifecycle. See **[PIPELINE.md](PIPELINE.md)**, which is the
+> authoritative description of `src/core/`. The notes below are updated in place where
+> they described the old behaviour.
+
 ## Part 1 — Current architecture (as committed)
 
 ### Runtime shape
 
 Single Node 24 process, no build step, **zero runtime dependencies**. TypeScript is executed
 by native type stripping. `typescript` + `@types/node` are devDependencies used only by
-`npm run typecheck`.
+`npm run typecheck`. Tests run on `node:test` with no framework (`npm test`).
+
+The optional TypeSafe/Jev integration keeps this shape: it is a `fetch` call through the
+existing `util/http.ts` client, not an SDK dependency.
 
 ```
 src/cli.ts ── serve ──> src/server/index.ts ──> node:http ──> src/server/public/*
@@ -37,7 +48,13 @@ src/cli.ts ── serve ──> src/server/index.ts ──> node:http ──> sr
 | Stage | Status | What the code actually does |
 |---|---|---|
 | Token discovery | **IMPLEMENTED** | 5 feeds via `Promise.allSettled`; a failing feed logs and contributes nothing |
-| Normalization | **PARTIAL** | Per-source normalizers map raw JSON to `PairMetrics`/`JupiterInfo` with `toNumber` coercion. **No schema validation, no `UNKNOWN` state** — absent values become `0`, `null` or a neutral default |
+| Provider validation | **DONE** | `src/core/validate.ts` type- and range-checks every consumed field at the boundary. Impossible values (negative liquidity, NaN price, a pool older than Solana, a string in an authority boolean) are rejected and recorded as `FieldIssue`s rather than coerced |
+| Normalization | **DONE** | Per-source normalizers produce typed structs carrying their own `issues[]`. Absent stays UNKNOWN; present-but-impossible becomes INVALID. Neither earns points |
+| Cross-provider evidence | **DONE** | `src/core/resolve.ts` produces one canonical `TokenEvidence` set with state, source, freshness, confidence and every provider claim retained |
+| Safety gate | **DONE** | `src/core/gate.ts` evaluates seven veto rules before ranking. Never vetoes on UNKNOWN |
+| Coverage / confidence | **DONE** | `src/core/lifecycle.ts` reports both, separately from score |
+| Ranking eligibility | **DONE** | QUALIFIED / WATCH / INSUFFICIENT_DATA / REJECTED; eligibility outranks every sort key |
+| Lifecycle | **DONE** | Deterministic state machine, transitions validated, nothing irreversible |
 | Initial filter | **IMPLEMENTED** | Drops `liquidity < MIN_LIQUIDITY_USD` and `age > MAX_AGE_HOURS`; sorts by liquidity and truncates to `MAX_ANALYZE_PER_SCAN` (60) |
 | Market enrichment | **IMPLEMENTED** | Batched DexScreener pairs (30/call) + Jupiter search (100/call), run concurrently |
 | On-chain safety | **NOT IMPLEMENTED in practice** | `helius.ts` exists but returns `null` without a key. Measured contribution: 0 of 60 tokens. Untested against a real response |
@@ -103,15 +120,29 @@ date is manual: typecheck, two live scans, HTTP endpoint probes.
 
 ### Known defects carried by this baseline
 
-1. Missing market data scores as neutral rather than unknown — 9.6 fabricated points can push a
-   token over the alert threshold (`SCORING.md` §5.1).
-2. RugCheck `danger` authority findings never trigger the authority penalty; Jupiter `null`
-   earns partial credit (`SCORING.md` §5.2).
+1. ~~Missing market data scores as neutral rather than unknown~~ — **FIXED.** Unmeasured
+   values are `null` end to end and earn zero; `score.coverage`/`score.ceiling` state the
+   cost, and alerts require `coverage >= MIN_COVERAGE_ALERT` (`SCORING.md` §5.1).
+2. ~~RugCheck `danger` authority findings never trigger the authority penalty~~ — **FIXED.**
+   Authority is resolved across Jupiter, RugCheck and Helius; a stated danger wins over both
+   silence and a contradicting claim, and disagreement raises `provider_conflict`
+   (`SCORING.md` §5.2).
 3. `lpLockedPct` is received from RugCheck and discarded.
 4. `MonitorEvent` kind `'gone'` is declared in `types.ts` but never emitted — dead contract.
 5. `cli.ts analyze` overwrites a token's `sources` with `['cli']`, destroying discovery provenance.
 6. Helius/Birdeye code paths have never executed against a real response.
 7. `store.prune` deletes tokens silently; no event records that a token stopped being tracked.
+8. `pool()` in `util/http.ts` still uses `Promise.all`, so one rejected worker aborts the scan.
+9. ~~Snapshots written before evidence tracking carry no `coverage`/`unknown` field~~ —
+   state is now versioned (`STATE_VERSION = 2`) and the previous file is copied aside
+   before a migration. Legacy snapshots are still shown as "not recorded" until the next
+   scan replaces them; there is no in-place upgrade of old rows.
+10. ~~Still zero schema validation at the provider boundary~~ — **FIXED**, see
+    [PIPELINE.md](PIPELINE.md) §1.
+11. Coverage and veto thresholds are operator-tunable starting points, **not calibrated
+    against outcome data**. Nothing has been validated against whether a token rugged.
+12. Birdeye remains unexercised against a real response (no key).
+13. `cli.ts analyze` still overwrites `sources` with `['cli']`.
 
 ## Part 2 — Target architecture (PROPOSAL — NOT IMPLEMENTED)
 

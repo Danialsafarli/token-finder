@@ -1,7 +1,8 @@
 # Roadmap
 
 Audience: whoever plans and sequences Token Finder work.
-**Nothing below is implemented. This is a proposed sequence awaiting approval.**
+**Phase 1 is complete and Phase 2 is complete.** Everything from Phase 3 on is still a
+proposed sequence awaiting approval. See [PIPELINE.md](PIPELINE.md) for what was built.
 
 Ordering principle: correctness of the data model before breadth of features, and every
 safety mechanism before the capability it protects.
@@ -14,22 +15,45 @@ Known defects listed in `ARCHITECTURE.md` Part 1.
 
 ## Phase 1 — Data integrity (blocks everything else)
 
-1. Introduce an explicit `UNKNOWN` state through normalization, scoring and the UI. Missing
-   data must never coerce to `0` or a neutral default. Removes the fabricated-points defect.
-2. Schema-validate every provider response at the boundary; reject and log malformed payloads
-   rather than coercing them.
-3. Cross-validate providers; record disagreement as a first-class signal.
+1. **DONE** — explicit `UNKNOWN` through normalization, scoring, the API and the UI. Missing
+   data never coerces to `0` or a neutral default. Removes the fabricated-points defect
+   (`SCORING.md` §5.1), and adds `coverage`/`ceiling` so the cost of missing evidence is
+   visible on every token.
+2. **DONE** — every consumed provider field is type- and range-checked at the boundary
+   (`src/core/validate.ts`). Malformed values are rejected and recorded, never coerced.
+3. **DONE** — `src/core/resolve.ts` resolves every fact across providers, with
+   conservative rules for safety facts, and records disagreement as CONFLICTED with
+   every claim retained.
 4. Consume what we already receive: `lpLockedPct`, `dev`/`devMints`/`devMigrations`,
-   Jupiter organic-volume fields, `holderChange`/`liquidityChange`.
-5. First test suite (Phase T1 below) — without it, nothing after this is verifiable.
+   Jupiter organic-volume fields, `holderChange`/`liquidityChange`. **Still open.**
+5. **DONE** — 124 tests covering validation, resolution, gate, coverage, eligibility,
+   lifecycle and the Jev failure paths, over a deterministic 14-scenario fixture corpus.
 
-Exit criterion: no score contains a point derived from absent data.
+Exit criterion: no score contains a point derived from absent data. **Met**, and now
+enforced at the boundary as well as in the scorer.
 
-## Phase 2 — Safety gate
+### Not part of Phase 1: advisory impersonation screening
 
-Hard veto rules, evaluated before scoring and able to terminate a token. Requires a Helius key
-so authority state is read on-chain rather than taken on a provider's word. Unknown safety data
-⇒ rejection, not a pass.
+An optional Jev-backed naming check shipped alongside Phase 1 (`SCORING.md` §6). It is
+deliberately outside the scoring path: advisory flag only, off by default, fails to
+"not assessed" rather than to "safe". It does not satisfy any Phase 2 requirement.
+
+## Phase 2 — Safety gate (DONE)
+
+Seven veto rules, evaluated before ranking, able to remove a token entirely
+(`src/core/gate.ts`). Every veto carries code, reason, source, observed value,
+timestamp and whether it can clear.
+
+Two deliberate departures from the original sketch:
+
+- **A Helius key is not required.** Authority is resolved across Jupiter, RugCheck and
+  Helius, and a RugCheck `danger` finding is enough to veto on its own. Helius makes the
+  reading stronger; it is not a precondition for having a gate.
+- **Unknown safety data does not cause rejection.** The original note said "unknown ⇒
+  rejection, not a pass". In practice that would reject most keyless-mode tokens, since
+  Jupiter's audit block is frequently null. Unknown instead earns **zero credit** and
+  lowers coverage, which keeps it out of QUALIFIED without pretending we found something
+  dangerous. Vetoes require a provider to have actually asserted the danger.
 
 ## Phase 3 — Persistence
 
