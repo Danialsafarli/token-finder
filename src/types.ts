@@ -3,9 +3,45 @@
 import type { FieldIssue } from './core/validate.ts';
 import type { Evidence, EvidenceState, TokenEvidence } from './core/evidence.ts';
 import type { ProviderFailure, ProviderFailureKind } from './util/failure.ts';
+import type { ExtensionPolicy, TokenProgram } from './core/token-program.ts';
 
 export type { FieldIssue, Evidence, EvidenceState, TokenEvidence };
 export type { ProviderFailure, ProviderFailureKind };
+export type { ExtensionPolicy, TokenProgram };
+
+/**
+ * One Token-2022 mint extension as observed on the mint account.
+ *
+ * `active` is the only field that speaks about danger, and it is deliberately
+ * tri-state. `true` means the dangerous condition is live now; `false` means
+ * the extension is present but disarmed - a permanent delegate renounced to
+ * `None`, a default account state of `initialized`; `null` means the extension
+ * was present and its configuration could not be read, which is UNKNOWN and
+ * never vetoes.
+ */
+export interface MintExtension {
+  /** jsonParsed extension name exactly as the node reported it. */
+  id: string;
+  /** Human label, or the raw id when the extension is not recognised. */
+  label: string;
+  policy: ExtensionPolicy;
+  active: boolean | null;
+  /** Why this policy, in terms of what a holder stands to lose. */
+  rationale: string;
+  /** Whether the issuer can clear the dangerous condition. */
+  recheckable: boolean;
+  /** Audit detail, e.g. "delegate renounced to None" or "4.00% fee". */
+  detail: string | null;
+  /**
+   * The policy-relevant scalar for extensions whose danger is a matter of
+   * degree - currently only the transfer fee, in basis points.
+   *
+   * Null for every other extension, and null when the figure could not be
+   * read. A `CONDITIONAL_VETO` with a null magnitude never clears its
+   * threshold: an unreadable fee schedule is not a low one.
+   */
+  magnitude: number | null;
+}
 
 export interface TokenCandidate {
   mint: string;
@@ -81,6 +117,32 @@ export interface RugcheckInfo {
 }
 
 export interface OnChainInfo {
+  /**
+   * Base58 owner program of the mint account, null when it was not read.
+   * This, and only this, decides {@link OnChainInfo.tokenProgram}: the program
+   * is never inferred backwards from whether extensions were found, because a
+   * Token-2022 mint with no extensions is indistinguishable from a legacy one
+   * by that test.
+   */
+  programId: string | null;
+  tokenProgram: TokenProgram;
+  /**
+   * Parsed mint extensions.
+   *
+   * `null` means the mint was never inspected. `[]` means it was inspected and
+   * carried none - but only trust that together with
+   * {@link OnChainInfo.extensionsComplete}, because an Agave node before 4.2
+   * returns an empty array when it meets a single extension type it does not
+   * recognise, hiding every other extension on the mint.
+   */
+  extensions: MintExtension[] | null;
+  /**
+   * False when the extension list is known to be partial: an
+   * `unparseableExtension` marker, or an extension name this build does not
+   * recognise. When false, "extension absent" is not a conclusion that can be
+   * drawn, and the evidence layer reports UNKNOWN rather than safe.
+   */
+  extensionsComplete: boolean;
   /** Base58 authority address, or null when the chain reports it revoked. */
   mintAuthority: string | null;
   freezeAuthority: string | null;
@@ -91,9 +153,31 @@ export interface OnChainInfo {
    */
   mintAuthorityStated: boolean;
   freezeAuthorityStated: boolean;
+  /**
+   * Mint decimals. SPL stores this as a `u8`, so the domain is 0-255 - it is
+   * not the EVM 0-18 range, and a mint outside that range would previously
+   * have been rejected here and then silently mixed raw and UI units.
+   */
   decimals: number | null;
+  /**
+   * Total supply in whole tokens, for display only.
+   *
+   * Nothing in scoring divides by this. Concentration is computed from raw
+   * base units on both sides of the ratio, so no code path can mix a raw
+   * numerator with a UI denominator.
+   */
   supply: number | null;
-  /** Share of supply held by the largest accounts, 0-1. Pool accounts included. */
+  /** Raw (base-unit) total supply as a decimal string; a u64 exceeds `number`. */
+  rawSupply: string | null;
+  /** Raw base-unit sum of the ten largest accounts, decimal string. */
+  rawTop10: string | null;
+  /** How many largest-account entries the node returned. */
+  largestAccountsCount: number | null;
+  /**
+   * Share of supply held by the largest accounts, 0-1. Pool accounts included.
+   * Computed as an exact integer ratio of raw base units, then converted to a
+   * bounded `number` once.
+   */
   top10Share: number | null;
   largestHolderShare: number | null;
   issues: FieldIssue[];
@@ -206,7 +290,15 @@ export type VetoCode =
   | 'UNTRADEABLE'
   | 'LIQUIDITY_TOO_LOW'
   | 'CATASTROPHIC_CONCENTRATION'
-  | 'MALFORMED_TOKEN';
+  | 'MALFORMED_TOKEN'
+  // Token-2022 mint extensions. Each describes a power a third party holds
+  // over the holder's position right now, not a market condition.
+  | 'PERMANENT_DELEGATE_ACTIVE'
+  | 'TRANSFER_HOOK_ACTIVE'
+  | 'MINT_PAUSABLE'
+  | 'DEFAULT_ACCOUNT_STATE_FROZEN'
+  | 'NON_TRANSFERABLE'
+  | 'EXTREME_TRANSFER_FEE';
 
 /**
  * What kind of claim a veto is making about time.

@@ -87,8 +87,31 @@ Coverage: **60 of 60**. Risks list non-empty for 15 of 60.
 
 `POST https://mainnet.helius-rpc.com/?api-key=` returned **401 Unauthorized**. With no key,
 `onchainInfo()` returns `null` before making any call. Measured: `onchain present: 0 of 60`.
-Every on-chain code path — `getAccountInfo` authority parsing, `getTokenLargestAccounts`
-concentration — is **unexercised and untested against a real response.**
+
+Since then the parsing has been split out of the network call (`parseMint` in
+`src/sources/helius.ts`) and verified against **real mainnet mint accounts** fetched from
+the public Solana RPC:
+
+| Mint | Result |
+|---|---|
+| USDC, BONK, TRUMP | `LEGACY_SPL_TOKEN`, extensions MEASURED-and-empty |
+| PYUSD | `TOKEN_2022`, 8 extensions decoded, permanent delegate **set** -> `PERMANENT_DELEGATE_ACTIVE` |
+
+That run also confirmed the jsonParsed `state` field names this build expects
+(`permanentDelegate.delegate`, `transferFeeConfig.newerTransferFee.transferFeeBasisPoints`,
+`mintCloseAuthority.closeAuthority`), and surfaced one real gap —
+`confidentialTransferFeeConfig` was unregistered, correctly degraded to `UNKNOWN_POLICY`
+and marked the read incomplete rather than passing silently. It is now registered.
+
+**Still unexercised against a live response:** `getTokenLargestAccounts`. The public RPC
+rate-limits it unconditionally (HTTP 429 on every attempt), so holder concentration has
+**not** been verified end-to-end against the chain. It is covered by unit tests over
+literal RPC payloads, which is not the same thing. Note the observed degradation is the
+intended one: with the holder call failing, supply parsed correctly and concentration
+came back `null`, not `0`.
+
+That BONK run is also the concrete case for exact arithmetic: its on-chain supply is
+`8799438501691764747`, which `Number()` renders as `8799438501691764736`.
 
 ### Birdeye — UNAVAILABLE DATA
 

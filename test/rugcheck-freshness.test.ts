@@ -30,7 +30,7 @@ import {
 } from '../src/core/evidence.ts';
 import { normalizePair } from '../src/sources/dexscreener.ts';
 import { normalizeToken } from '../src/sources/jupiter.ts';
-import { fixtureByName } from './fixtures.ts';
+import { fixtureByName, legacyOnchain } from './fixtures.ts';
 import type { JupiterInfo, OnChainInfo, RugcheckInfo, TokenEvidence } from '../src/types.ts';
 
 const NOW = Date.now();
@@ -69,17 +69,7 @@ function buildEvidence(options: BuildOptions = {}): TokenEvidence {
   } as never);
 
   const onchain: OnChainInfo | null = options.onchainRevoked
-    ? {
-        mintAuthority: null,
-        freezeAuthority: null,
-        mintAuthorityStated: true,
-        freezeAuthorityStated: true,
-        decimals: 9,
-        supply: 1_000_000,
-        top10Share: null,
-        largestHolderShare: null,
-        issues: [],
-      }
+    ? legacyOnchain()
     : null;
 
   const rugcheck: RugcheckInfo = {

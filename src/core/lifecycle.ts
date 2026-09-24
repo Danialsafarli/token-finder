@@ -29,6 +29,19 @@ export const COVERAGE_WEIGHTS: Partial<
   // as `liquidityUsd`, kept separately only so turnover divides by the depth of
   // the venue that reported the volume. Counting it here would inflate how much
   // we appear to know from one measurement.
+  //
+  // `tokenProgram` is absent for the same reason: it is the key needed to read
+  // the extension list, not an independent observation, and counting both
+  // would charge twice for one call to one provider.
+  //
+  // `mintExtensions` IS counted, at the same weight as freeze authority,
+  // because it answers a question of the same severity - whether a third party
+  // can take or trap the position - and because leaving it out would make "we
+  // could not tell whether this mint has a permanent delegate" cost nothing.
+  // Missing safety evidence has to reduce coverage or the number means less
+  // than it claims. Note the consequence: with no Helius key configured this
+  // signal is UNAVAILABLE for every token, and coverage is correspondingly
+  // lower than it was before this weight existed.
   liquidityUsd: 0.18,
   volume24h: 0.07,
   priceChange: 0.12,
@@ -41,6 +54,7 @@ export const COVERAGE_WEIGHTS: Partial<
   rugcheckRisk: 0.052,
   organicScore: 0.026,
   tradable: 0.07,
+  mintExtensions: 0.052,
 };
 
 /** Confidence lost when one provider supplies most of the evidence. */

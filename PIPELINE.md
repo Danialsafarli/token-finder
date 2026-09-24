@@ -212,6 +212,12 @@ because it is the same underlying fact.
 | `LIQUIDITY_TOO_LOW` | current-state | measured liquidity below `MIN_LIQUIDITY_USD` | dexscreener / jupiter | yes |
 | `CATASTROPHIC_CONCENTRATION` | current-state | Jupiter-measured top holders >= `CATASTROPHIC_CONCENTRATION_PCT` (90) | jupiter only | yes |
 | `MALFORMED_TOKEN` | current-state | a *critical* field failed validation | validation | yes |
+| `PERMANENT_DELEGATE_ACTIVE` | current-state | Token-2022 permanent delegate is **set** (not renounced) | helius | yes — it can be renounced |
+| `TRANSFER_HOOK_ACTIVE` | current-state | Token-2022 transfer hook has a program id set | helius | yes |
+| `MINT_PAUSABLE` | current-state | mint is paused, or a pause authority exists | helius | yes |
+| `DEFAULT_ACCOUNT_STATE_FROZEN` | current-state | new token accounts are created frozen | helius | yes |
+| `NON_TRANSFERABLE` | current-state | the mint forbids transfers outright | helius | **no** — no authority can turn it off |
+| `EXTREME_TRANSFER_FEE` | current-state | transfer fee >= `TRANSFER_FEE_VETO_BPS` (5000 = 50%) | helius | yes |
 
 **Nature decides how staleness is treated.** A `current-state` veto requires FRESH or
 AGING evidence: an old reading of a changeable fact — an authority that may since have
@@ -231,6 +237,99 @@ Design rules:
 - **Concentration vetoes only on Jupiter's figure.** Helius `top10Share` includes AMM
   pool vaults, so vetoing on it would reject healthy tokens whose liquidity simply sits
   in a pool account. The `pool-vault-concentration-not-vetoed` fixture pins this.
+
+### Token-2022 extensions
+
+Before this existed, Token Finder read every mint as legacy SPL: it asked for
+`mintAuthority` and `freezeAuthority`, found both revoked, and called the token safe.
+A Token-2022 mint can revoke both and still let a third party take tokens out of any
+wallet holding it. Those powers live in *extensions*, and nothing looked at them.
+
+`src/core/token-program.ts` holds the registry. Each extension is classified by what it
+can do to a holder **right now**, not by how alarming its name is:
+
+| Policy | Meaning |
+|---|---|
+| `HARD_VETO` | a third party can currently take, trap or block the position |
+| `CONDITIONAL_VETO` | dangerous past a named threshold, tolerable below it |
+| `PENALTY_ONLY` | reduces what a holder can realise without preventing exit |
+| `INFORMATIONAL` | worth recording, no effect on safety |
+| `NO_CURRENT_RISK_EFFECT` | present but disarmed, so it asserts nothing about danger |
+| `UNKNOWN_POLICY` | not recognised — never vetoes, and marks coverage incomplete |
+
+**The permanent delegate is the case the whole design turns on.** The *extension* is
+permanent: it must be initialised before `InitializeMint` and can never be removed. The
+*delegate* is not — it can be reassigned, or set to `None`, after which nobody can sign
+as it. Verified against the SPL Extension Guide, Light Protocol's
+`RESTRICTED_T22_EXTENSIONS.md` ("Can be set to `None` to permanently renounce"), Anza's
+Pinocchio layout (`delegate: MaybeNull<Address>`) and Anchor's `OptionalNonZeroPubkey`
+constraint. So:
+
+- extension present, delegate **set** -> current-state veto, **re-checkable**
+- extension present, delegate **renounced** -> no veto at all
+- extension present, delegate **unreadable** -> UNKNOWN: no veto, and no reassurance
+
+Reading "permanent" as "can never clear" would have produced a non-re-checkable
+historical veto that is simply wrong, and would have rejected issuers who had already
+given the power up. The same verification also *removed* a veto that looked obvious:
+`PermissionedBurn` restricts burning to a co-signing authority rather than granting
+seizure, and it does not touch transfers, so it is `INFORMATIONAL`.
+
+**Extension evidence is only MEASURED when the read is complete.** Three cases must
+never collapse together, and the model keeps them apart:
+
+| Case | `tokenProgram` | `mintExtensions` |
+|---|---|---|
+| legacy mint — extensions do not apply | `LEGACY_SPL_TOKEN` | MEASURED, `[]` |
+| Token-2022, every extension decoded | `TOKEN_2022` | MEASURED |
+| Token-2022, one extension undecodable | `TOKEN_2022` | **UNKNOWN** |
+| Helius not configured or unreachable | UNAVAILABLE | UNAVAILABLE |
+
+Completeness is **measured, not assumed**. A bare SPL mint is 82 bytes; any extension
+makes the account larger. So `space == 82` proves no extension exists, and `space > 82`
+with an empty extension list proves the node did not decode them — which matters,
+because an Agave node before 4.2 returned `"extensions": []` when it met a single
+extension type it did not recognise, hiding every extension on the mint.
+
+An extension name this build does not know never vetoes (the gate never fires on
+UNKNOWN) but is recorded and marks the read incomplete. Silently skipping it would let
+a future extension with real powers pass as a clean mint.
+
+`observedExtensions` is kept alongside the Evidence for the same reason
+`rugcheckFindings` is: an extension positively observed still vetoes even when the
+surrounding picture is partial. Not knowing whether there are *others* is no reason to
+ignore the permanent delegate in hand.
+
+**Token program is read only from the mint account's `owner`.** It is never inferred
+from whether extensions were found — a Token-2022 mint with no extensions is
+indistinguishable from a legacy one by that test.
+
+### Holder concentration is exact integer arithmetic
+
+Concentration is a ratio of raw base units on both sides. `uiAmount` is not read at all.
+Three separate reasons, only one of which is precision:
+
+- **`uiAmount` is nullable, and null entries used to be dropped from the holder list.**
+  A dropped holder understates concentration — failing toward *safety*, the one
+  direction a safety metric must never fail in. Now an unreadable balance withdraws the
+  whole set and concentration becomes non-measured.
+- **`uiAmount == amount / 10^decimals` does not hold** under `ScaledUiAmount` or
+  `InterestBearing`, which rebase the displayed figure while leaving raw balances
+  untouched. Reading raw amounts makes those extensions irrelevant to concentration,
+  which is correct.
+- **A `u64` exceeds exact `number` range.** BONK's on-chain supply is
+  `8799438501691764747`; through `Number()` it becomes `8799438501691764736`. Real
+  token, real loss.
+
+`decimals` is a `u8` (0–255), not the EVM 0–18 range. Bounding it at 18 rejected legal
+mints, after which supply stayed in raw base units while holder balances were read in
+UI units — and the resulting ratio came out near zero, so **a token that could not be
+measured read as perfectly distributed**. `decimals` now plays no part in the ratio at
+all, so no code path can mix units.
+
+Division truncates downward, so a computed share above 1 is a genuine contradiction
+between the supply reading and the balances, not a rounding artefact. It is rejected
+rather than capped.
 
 The critical RugCheck list is deliberately short. Most `danger` findings (low
 liquidity, unlocked LP) are already penalties and scoring inputs; promoting all of them
@@ -252,6 +351,28 @@ Never multiplied together, never collapsed:
 `unknown`, `conflicted`, `invalid`, `stale`, `unavailable`. It also reports
 `providerConcentration` and `dominantProvider` — a token whose entire profile comes
 from one source is one outage, or one wrong field, away from being a different token.
+
+### `mintExtensions` is coverage-weighted, and that lowered every coverage figure
+
+Adding Token-2022 extensions as a coverage signal (weight `0.052`, the same as freeze
+authority, because it answers a question of the same severity) changed numbers that
+already existed. That is deliberate: leaving it out would mean "we could not tell whether
+this mint has a permanent delegate" cost nothing, and missing safety evidence has to
+reduce coverage or the number means less than it claims.
+
+The cost, measured across the fixture corpus rather than estimated:
+
+| | value |
+|---|---|
+| coverage-weight total | 1.000 -> 1.052 |
+| max attainable coverage with **no Helius key** | **0.9506** |
+| largest per-token coverage delta observed | **-0.0495** |
+| fixtures whose eligibility changed | **0 of 14** |
+| previously-qualifying band now dropping to WATCH | coverage in [0.600, 0.6312) |
+
+`tokenProgram` is deliberately **not** weighted. It is the key needed to interpret the
+extension list, not an independent observation, and counting both would charge twice for
+one call to one provider — the same reasoning that keeps `venueLiquidityUsd` out.
 
 ## 6. Ranking eligibility and the lifecycle
 

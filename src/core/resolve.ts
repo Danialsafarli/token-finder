@@ -64,14 +64,17 @@ import {
   unknown,
   type Claim,
   type Evidence,
+  type Freshness,
   type RugcheckFinding,
   type TokenEvidence,
 } from './evidence.ts';
 import type { ProviderFailure } from '../util/failure.ts';
 import { canAffectScore, classifyRisk, decaysWhenStale } from './rugcheck-signals.ts';
+import type { TokenProgram } from './token-program.ts';
 import type {
   FieldIssue,
   JupiterInfo,
+  MintExtension,
   OnChainInfo,
   PairMetrics,
   RugcheckInfo,
@@ -424,6 +427,44 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
     FREEZE_AUTHORITY_RISK,
   );
 
+  // --- token program and mint extensions -----------------------------------
+  // Both come from Helius alone: they are facts about the mint account, and no
+  // other provider reports them. There is therefore never a conflict here, only
+  // presence or absence.
+  const programClaims: Claim<TokenProgram>[] = [];
+  if (onchain && onchain.tokenProgram !== 'UNKNOWN') {
+    programClaims.push(claim<TokenProgram>('helius', onchain.tokenProgram, observedAt.onchain));
+  }
+  const tokenProgram = resolve<TokenProgram>(withDown('helius', programClaims), {
+    metric: 'tokenProgram',
+    now,
+  });
+
+  // Everything actually seen, complete read or not. A permanent delegate we
+  // observed still vetoes even if we cannot rule out further extensions.
+  const observedExtensions: MintExtension[] = onchain?.extensions ?? [];
+  const mintExtensionsComplete = onchain?.extensionsComplete ?? false;
+  const mintExtensionsFreshness: Freshness =
+    onchain == null ? 'UNKNOWN' : freshnessOf('mintExtensions', observedAt.onchain, now);
+  const mintExtensionsObservedAt = onchain == null ? null : observedAt.onchain;
+
+  // The coverage-bearing fact is narrower: only a complete read can answer
+  // "does this mint carry a seizure power" in the negative, so a partial list
+  // is UNKNOWN rather than a short list of nothing to worry about.
+  const extensionClaims: Claim<MintExtension[]>[] = [];
+  if (onchain?.extensions != null && mintExtensionsComplete) {
+    extensionClaims.push(
+      claim<MintExtension[]>('helius', onchain.extensions, observedAt.onchain),
+    );
+  }
+  const mintExtensions = resolve<MintExtension[]>(withDown('helius', extensionClaims), {
+    metric: 'mintExtensions',
+    now,
+    // One provider, so agreement is never in question; this keeps the default
+    // reference equality from ever reading as a disagreement.
+    equal: () => true,
+  });
+
   const mintAuthorityRevoked = resolve<boolean>(mintClaims, {
     metric: 'mintAuthorityRevoked',
     now,
@@ -584,6 +625,12 @@ export function resolveEvidence(input: ResolveInput): TokenEvidence {
     historicalDangerEvidence,
     providerFailures: failures,
     rugcheckFindings,
+    tokenProgram,
+    mintExtensions,
+    observedExtensions,
+    mintExtensionsComplete,
+    mintExtensionsFreshness,
+    mintExtensionsObservedAt,
     liquidityUsd,
     venueLiquidityUsd,
     volume24h,

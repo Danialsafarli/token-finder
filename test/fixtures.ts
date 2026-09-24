@@ -10,6 +10,13 @@
  * Each scenario names the property it exists to pin down.
  */
 
+import {
+  LEGACY_SPL_TOKEN_PROGRAM_ID,
+  ruleFor,
+  TOKEN_2022_PROGRAM_ID,
+} from '../src/core/token-program.ts';
+import type { MintExtension, OnChainInfo } from '../src/types.ts';
+
 /** Raw shapes, deliberately typed loosely: fixtures must be able to be wrong. */
 export interface RawFixture {
   name: string;
@@ -84,6 +91,33 @@ function cleanRugcheck(overrides: Record<string, unknown> = {}): Record<string, 
   return { score: 120, score_normalised: 8, risks: [], ...overrides };
 }
 
+/**
+ * An ordinary legacy SPL mint, both authorities revoked, as the raw fixture
+ * shape. Extension coverage is structural here: the legacy program has no
+ * extension mechanism, so "none" is a fact about the program, not a short read.
+ */
+function rawLegacyOnchain(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    programId: LEGACY_SPL_TOKEN_PROGRAM_ID,
+    tokenProgram: 'LEGACY_SPL_TOKEN',
+    extensions: [],
+    extensionsComplete: true,
+    mintAuthority: null,
+    freezeAuthority: null,
+    mintAuthorityStated: true,
+    freezeAuthorityStated: true,
+    decimals: 9,
+    supply: 1_000_000,
+    rawSupply: '1000000000000000',
+    rawTop10: null,
+    largestAccountsCount: null,
+    top10Share: null,
+    largestHolderShare: null,
+    issues: [],
+    ...overrides,
+  };
+}
+
 export const FIXTURES: RawFixture[] = [
   {
     name: 'healthy-established',
@@ -91,7 +125,10 @@ export const FIXTURES: RawFixture[] = [
     dexPairs: [healthyPair()],
     jupiter: healthyJupiter(),
     rugcheck: cleanRugcheck(),
-    onchain: null,
+    // A fully-covered token now includes a chain read: the owner program is
+    // what says which token model applies, and without it the extension
+    // question is open. An ordinary legacy SPL mint answers it structurally.
+    onchain: rawLegacyOnchain(),
   },
 
   {
@@ -206,17 +243,12 @@ export const FIXTURES: RawFixture[] = [
       },
     }),
     rugcheck: cleanRugcheck(),
-    onchain: {
-      mintAuthority: null,
-      freezeAuthority: null,
-      mintAuthorityStated: true,
-      freezeAuthorityStated: true,
-      decimals: 9,
-      supply: 1_000_000,
+    onchain: rawLegacyOnchain({
       top10Share: 0.97,
       largestHolderShare: 0.8,
-      issues: [],
-    },
+      rawTop10: '970000000000000',
+      largestAccountsCount: 10,
+    }),
   },
 
   {
@@ -328,4 +360,68 @@ export function fixtureByName(name: string): RawFixture {
   const found = FIXTURES.find((fixture) => fixture.name === name);
   if (!found) throw new Error(`no fixture named ${name}`);
   return found;
+}
+
+/**
+ * A legacy SPL mint with both authorities revoked and no extensions.
+ *
+ * The control case for every Token-2022 test: an ordinary mint whose extension
+ * evidence is MEASURED-and-empty because the legacy program has no extension
+ * mechanism at all, not because a read came back short.
+ */
+export function legacyOnchain(overrides: Partial<OnChainInfo> = {}): OnChainInfo {
+  return {
+    programId: LEGACY_SPL_TOKEN_PROGRAM_ID,
+    tokenProgram: 'LEGACY_SPL_TOKEN',
+    extensions: [],
+    extensionsComplete: true,
+    mintAuthority: null,
+    freezeAuthority: null,
+    mintAuthorityStated: true,
+    freezeAuthorityStated: true,
+    decimals: 9,
+    supply: 1_000_000,
+    rawSupply: '1000000000000000',
+    rawTop10: null,
+    largestAccountsCount: null,
+    top10Share: null,
+    largestHolderShare: null,
+    issues: [],
+    ...overrides,
+  };
+}
+
+/** A Token-2022 mint carrying the given extensions, fully decoded. */
+export function token2022Onchain(
+  extensions: MintExtension[],
+  overrides: Partial<OnChainInfo> = {},
+): OnChainInfo {
+  return legacyOnchain({
+    programId: TOKEN_2022_PROGRAM_ID,
+    tokenProgram: 'TOKEN_2022',
+    extensions,
+    extensionsComplete: true,
+    ...overrides,
+  });
+}
+
+/** Builds one extension record from its registry rule, as helius.ts would. */
+export function extensionFixture(
+  id: string,
+  active: boolean | null,
+  overrides: Partial<MintExtension> = {},
+): MintExtension {
+  const rule = ruleFor(id);
+  if (rule === null) throw new Error(`no extension rule for ${id}`);
+  return {
+    id,
+    label: rule.label,
+    policy: rule.policy,
+    active,
+    rationale: rule.rationale,
+    recheckable: rule.recheckable,
+    detail: null,
+    magnitude: null,
+    ...overrides,
+  };
 }

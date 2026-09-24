@@ -26,8 +26,13 @@ Known defects listed in `ARCHITECTURE.md` Part 1.
    every claim retained.
 4. Consume what we already receive: `lpLockedPct`, `dev`/`devMints`/`devMigrations`,
    Jupiter organic-volume fields, `holderChange`/`liquidityChange`. **Still open.**
-5. **DONE** — 124 tests covering validation, resolution, gate, coverage, eligibility,
-   lifecycle and the Jev failure paths, over a deterministic 14-scenario fixture corpus.
+5. **DONE** — 265 tests covering validation, resolution, gate, coverage, eligibility,
+   lifecycle, Token-2022 extension policy, holder math and the Jev failure paths, over a
+   deterministic 14-scenario fixture corpus.
+6. **DONE** — Token-2022 awareness. The mint's owning program and extension list are
+   read from the chain, six extensions can veto, and holder concentration is exact
+   integer arithmetic over raw base units. Before this a Token-2022 mint with a
+   permanent delegate scored as a clean token.
 
 Exit criterion: no score contains a point derived from absent data. **Met**, and now
 enforced at the boundary as well as in the scorer.

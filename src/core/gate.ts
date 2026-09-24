@@ -27,12 +27,21 @@
  * - **Every veto carries its evidence.** Code, reason, source, observed value,
  *   timestamp, and whether it can clear. A ranking decision a person cannot
  *   audit is not a safety feature.
- * - **Thresholds reuse existing documented config where one exists.** The only
- *   new number is the catastrophic-concentration bar, justified below.
+ * - **Thresholds reuse existing documented config where one exists.** Two are
+ *   new: the catastrophic-concentration bar, justified below, and
+ *   `TRANSFER_FEE_VETO_BPS`, justified where it is defined. Neither is
+ *   calibrated against outcome data, and both say so.
  */
 
-import { isEvidenceScorable, isUsable, type Evidence, type TokenEvidence } from './evidence.ts';
-import type { Veto } from '../types.ts';
+import {
+  isCurrentEnough,
+  isEvidenceScorable,
+  isUsable,
+  type Evidence,
+  type TokenEvidence,
+} from './evidence.ts';
+import { TRANSFER_FEE_VETO_BPS } from './token-program.ts';
+import type { Veto, VetoCode } from '../types.ts';
 
 export interface GateConfig {
   /** Liquidity below which an exit is not realistically possible. */
@@ -95,6 +104,86 @@ function show(value: unknown): string {
 }
 
 /**
+ * Which veto code each disqualifying extension raises.
+ *
+ * An extension with no entry here cannot veto, whatever its policy. That is
+ * deliberate: the mapping is the list of powers this build claims to
+ * understand well enough to reject a token over, and it is shorter than the
+ * list of extensions it can parse.
+ */
+const EXTENSION_VETO_CODES: Record<string, VetoCode> = {
+  permanentdelegate: 'PERMANENT_DELEGATE_ACTIVE',
+  transferhook: 'TRANSFER_HOOK_ACTIVE',
+  pausableconfig: 'MINT_PAUSABLE',
+  defaultaccountstate: 'DEFAULT_ACCOUNT_STATE_FROZEN',
+  nontransferable: 'NON_TRANSFERABLE',
+  transferfeeconfig: 'EXTREME_TRANSFER_FEE',
+};
+
+/**
+ * Vetoes arising from Token-2022 mint extensions.
+ *
+ * Reads {@link TokenEvidence.observedExtensions} rather than the
+ * coverage-bearing `mintExtensions` Evidence, for the same reason the RugCheck
+ * gate reads the raw finding list: an extension we positively observed is a
+ * fact about this mint whether or not we managed to enumerate the rest. Not
+ * knowing if there are others is no reason to ignore the one in hand.
+ *
+ * The three rules the rest of the gate lives by all hold here:
+ *
+ * - **UNKNOWN never vetoes.** `active === null` means the extension was present
+ *   and its configuration could not be read. That earns no veto, and no
+ *   reassurance either - it is recorded and it lowers coverage.
+ * - **Disarmed is not dangerous.** A permanent delegate renounced to `None`
+ *   (`active === false`) fires nothing. Vetoing on the extension's mere
+ *   presence would reject mints whose issuer has already given the power up,
+ *   which is the opposite of what the policy should encourage.
+ * - **Stale evidence cannot assert a current fact.** Every extension veto is
+ *   current-state - each describes a power somebody holds *now* - so all of
+ *   them require a current observation.
+ */
+export function evaluateExtensionGate(evidence: TokenEvidence): Veto[] {
+  // Which extensions exist is fixed at mint initialisation, but whether they
+  // are armed is not, so an old reading cannot speak for the present.
+  if (!isCurrentEnough(evidence.mintExtensionsFreshness)) return [];
+
+  const vetoes: Veto[] = [];
+  // Not `mintExtensions.observedAt`: that is null on an incomplete read, and
+  // an incomplete read is exactly the case where a veto can still fire.
+  const at = evidence.mintExtensionsObservedAt ?? Date.now();
+
+  for (const extension of evidence.observedExtensions) {
+    // Present but disarmed, or present and unreadable. Neither is a veto.
+    if (extension.active !== true) continue;
+
+    const code = EXTENSION_VETO_CODES[extension.id.toLowerCase()];
+    if (code === undefined) continue;
+
+    // The one conditional policy: a transfer fee is a cost until it is large
+    // enough to be a trap. An unreadable fee schedule cannot clear the bar,
+    // because we do not know what it says.
+    if (extension.policy === 'CONDITIONAL_VETO') {
+      const bps = extension.magnitude;
+      if (bps === null || bps < TRANSFER_FEE_VETO_BPS) continue;
+    } else if (extension.policy !== 'HARD_VETO') {
+      continue;
+    }
+
+    vetoes.push({
+      code,
+      nature: 'current-state',
+      reason: `${extension.label}: ${extension.rationale}`,
+      source: evidence.mintExtensions.source ?? 'helius',
+      observedValue: extension.detail ?? `${extension.label} active`,
+      at,
+      recheckable: extension.recheckable,
+    });
+  }
+
+  return vetoes;
+}
+
+/**
  * Evaluates every veto rule against resolved evidence.
  *
  * Returns all vetoes that fire, not just the first: an operator looking at a
@@ -105,7 +194,7 @@ export function evaluateGate(
   evidence: TokenEvidence,
   config: GateConfig = DEFAULT_GATE_CONFIG,
 ): Veto[] {
-  const vetoes: Veto[] = [];
+  const vetoes: Veto[] = [...evaluateExtensionGate(evidence)];
 
   // --- authorities ---------------------------------------------------------
   // `false` means the authority is still live. UNKNOWN never reaches here
@@ -238,6 +327,10 @@ const CRITICAL_FIELDS = [
   'top10Share',
   'mintAuthority',
   'freezeAuthority',
+  // The program that owns the mint decides how every other on-chain field is
+  // to be read. An unparseable owner means we do not know which token model
+  // applies, which is not a condition to score through.
+  'programId',
   'audit.mintAuthorityDisabled',
   'audit.freezeAuthorityDisabled',
 ];

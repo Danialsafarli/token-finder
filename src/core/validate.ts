@@ -211,3 +211,67 @@ export function validPriceChangePct(
 export function validCount(report: ValidationReport, field: string, raw: unknown): number | null {
   return validNumber(report, field, raw, { min: 0, integer: true });
 }
+
+/**
+ * Mint decimals.
+ *
+ * SPL stores this as a `u8` - `InitializeMint2 { decimals: u8 }` - so the
+ * domain is 0-255. It is emphatically not the EVM 0-18 convention, and the
+ * difference was not academic: bounding it at 18 rejected legal mints, after
+ * which supply stayed in raw base units while holder balances were read in UI
+ * units, and the resulting concentration ratio came out near zero. A mint that
+ * could not be measured therefore read as maximally well distributed.
+ */
+export function validDecimals(
+  report: ValidationReport,
+  field: string,
+  raw: unknown,
+): number | null {
+  return validNumber(report, field, raw, { min: 0, max: 255, integer: true });
+}
+
+/** The ceiling on any SPL amount: balances and supply are both `u64`. */
+const U64_MAX = 18_446_744_073_709_551_615n;
+
+/**
+ * A raw token amount or supply, kept as an exact integer.
+ *
+ * `number` silently loses integers above 2^53, and a token with 9 decimals
+ * passes that after a billion whole tokens - which is an ordinary supply for a
+ * new launch. Every raw amount therefore travels as a BigInt and is only
+ * converted to `number` after being reduced to a bounded ratio.
+ *
+ * Follows the module rule exactly: absent returns null with no issue (UNKNOWN);
+ * present-but-impossible returns null WITH an issue (INVALID).
+ */
+export function validRawAmount(
+  report: ValidationReport,
+  field: string,
+  raw: unknown,
+): bigint | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+
+  let text: string;
+  if (typeof raw === 'string') {
+    text = raw.trim();
+  } else if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) return report.reject(field, 'non-finite raw amount', raw);
+    if (!Number.isInteger(raw)) return report.reject(field, 'raw amount is not an integer', raw);
+    // A float this large already lost precision before we saw it, so there is
+    // no honest way to recover the intended integer.
+    if (!Number.isSafeInteger(raw)) {
+      return report.reject(field, 'raw amount exceeds exact integer range as a number', raw);
+    }
+    text = String(raw);
+  } else {
+    return report.reject(field, `expected a raw amount, got ${typeof raw}`, raw);
+  }
+
+  if (!/^\d+$/.test(text)) {
+    return report.reject(field, 'not a non-negative integer string', raw);
+  }
+
+  const value = BigInt(text);
+  if (value > U64_MAX) return report.reject(field, 'exceeds u64', raw);
+  return value;
+}

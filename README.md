@@ -200,14 +200,24 @@ Full detail: **[PIPELINE.md](PIPELINE.md)**.
   zero minutes later, and a score cannot see an intent to rug.
 - Holder concentration from Helius includes AMM pool vaults, so `top10Share` is
   an upper bound, not a clean insider metric. Jupiter's audit figure is used
-  first where available.
+  first where available. The ratio itself is exact: raw base units on both
+  sides, `uiAmount` never consulted, `decimals` never in the arithmetic.
+- **Token-2022 extension support is partial, and deliberately so.** The mint's
+  owning program and its extension list are read, and six extensions can veto:
+  permanent delegate, transfer hook, pausable, default-frozen accounts,
+  non-transferable, and an extreme transfer fee. Others are recorded as
+  informational. An extension this build does not recognise never vetoes and
+  marks extension coverage incomplete, so it lowers the token's coverage rather
+  than passing silently. **Without a Helius key none of this runs at all** and
+  extension evidence is UNAVAILABLE for every token.
 - Third-party endpoints change. Each adapter in `src/sources/` fails soft, so a
   changed endpoint degrades the scan rather than breaking it — if a feed goes
   quiet, check it there first.
-- **Test coverage is partial.** 124 tests cover provider validation, evidence resolution,
-  the safety gate, coverage, eligibility, the lifecycle and the Jev failure paths, over a
-  deterministic 14-scenario fixture corpus. Discovery, the HTTP layer, the store and the
-  dashboard still have no tests. See [ROADMAP.md](ROADMAP.md) for the rest.
+- **Test coverage is partial.** 265 tests cover provider validation, evidence resolution,
+  the safety gate, coverage, eligibility, the lifecycle, Token-2022 extension policy,
+  holder math and the Jev failure paths, over a deterministic 14-scenario fixture corpus.
+  Discovery, the HTTP layer, the store and the dashboard still have no tests. See
+  [ROADMAP.md](ROADMAP.md) for the rest.
 - **Stale evidence cannot lower a current score.** A RugCheck finding only
   charges its penalty while it is current, is classified as something age does
   not touch, and is not contradicted by canonical on-chain state. Suppressed

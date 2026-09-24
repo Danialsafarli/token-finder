@@ -13,7 +13,7 @@ import { evaluateGate, evaluateRugcheckGate } from '../src/core/gate.ts';
 import { normalizePair } from '../src/sources/dexscreener.ts';
 import { normalizeToken } from '../src/sources/jupiter.ts';
 import { normalizeSummary } from '../src/sources/rugcheck.ts';
-import { fixtureByName } from './fixtures.ts';
+import { fixtureByName, legacyOnchain } from './fixtures.ts';
 import type { JupiterInfo, OnChainInfo, RugcheckInfo } from '../src/types.ts';
 
 const NOW = Date.now();
@@ -180,17 +180,7 @@ describe('the stale-danger scenario end to end', () => {
     } as never);
 
     const onchain: OnChainInfo | null = options.withOnchain
-      ? {
-          mintAuthority: null,
-          freezeAuthority: null,
-          mintAuthorityStated: true,
-          freezeAuthorityStated: true,
-          decimals: 9,
-          supply: 1_000_000,
-          top10Share: null,
-          largestHolderShare: null,
-          issues: [],
-        }
+      ? legacyOnchain()
       : null;
 
     return resolveEvidence({

@@ -23,6 +23,8 @@
 import type { FieldIssue } from './validate.ts';
 import type { ProviderFailure } from '../util/failure.ts';
 import type { RiskNature } from './rugcheck-signals.ts';
+import type { TokenProgram } from './token-program.ts';
+import type { MintExtension } from '../types.ts';
 
 export type EvidenceState =
   | 'MEASURED'
@@ -110,6 +112,13 @@ export const FRESHNESS: Record<string, FreshnessWindow> = {
   // "revoked" stays true; an old reading of "live" is still worth acting on.
   mintAuthorityRevoked: { freshMs: 24 * 3_600_000, agingMs: 7 * 24 * 3_600_000 },
   freezeAuthorityRevoked: { freshMs: 24 * 3_600_000, agingMs: 7 * 24 * 3_600_000 },
+  // Which extensions exist is fixed when the mint is initialised, but how they
+  // are configured is not: a permanent delegate can be renounced, a pause
+  // toggled, a fee re-set. So this ages on the same schedule as authority -
+  // the set is immutable, the danger it currently represents is not.
+  mintExtensions: { freshMs: 24 * 3_600_000, agingMs: 7 * 24 * 3_600_000 },
+  // `tokenProgram` is deliberately absent, so it falls through to NEVER_STALE.
+  // A mint account's owning program is fixed for the life of the account.
 };
 
 /** Launch time is immutable, so it is never stale. */
@@ -512,6 +521,53 @@ export interface TokenEvidence {
    * suppression withholds the penalty, never the evidence.
    */
   rugcheckFindings: RugcheckFinding[];
+  /**
+   * Which token program owns the mint. Read only from the account's owner
+   * field, never inferred from whether extensions were found.
+   *
+   * Not coverage-weighted: it is the key needed to interpret
+   * {@link TokenEvidence.mintExtensions}, not an independent signal, and
+   * counting both would double-count one observation.
+   */
+  tokenProgram: Evidence<TokenProgram>;
+  /**
+   * The mint's Token-2022 extensions, as a coverage-bearing fact.
+   *
+   * MEASURED only when the list is known to be *complete* - a legacy SPL mint
+   * (which has no extension mechanism), or a Token-2022 mint whose every
+   * extension was decoded. A partial read is UNKNOWN, because the question
+   * this answers is "does this mint carry a power that can take the position",
+   * and a partial list cannot answer it in the negative.
+   *
+   * This is what separates the three cases that must never collapse together:
+   * extension absent (MEASURED, `[]`), extension data unavailable (UNAVAILABLE
+   * or UNKNOWN), and legacy mint where extensions do not apply (MEASURED,
+   * `[]`, with {@link TokenEvidence.tokenProgram} saying which).
+   */
+  mintExtensions: Evidence<MintExtension[]>;
+  /**
+   * Every extension actually observed, complete read or not.
+   *
+   * Kept alongside the Evidence for the same reason
+   * {@link TokenEvidence.rugcheckFindings} is: a positively observed danger
+   * must still be able to veto even when the surrounding picture is partial.
+   * Not knowing whether there are *other* extensions is no reason to ignore
+   * the permanent delegate we did see.
+   */
+  observedExtensions: MintExtension[];
+  /** Whether {@link TokenEvidence.observedExtensions} is the whole list. */
+  mintExtensionsComplete: boolean;
+  /**
+   * Age of the extension observation itself, which exists even when the read
+   * was incomplete and the Evidence above is therefore UNKNOWN.
+   */
+  mintExtensionsFreshness: Freshness;
+  /**
+   * When the extensions were observed. Kept separately from
+   * `mintExtensions.observedAt`, which is null on an incomplete read - a veto
+   * raised from a partial list still has to carry an honest timestamp.
+   */
+  mintExtensionsObservedAt: number | null;
   liquidityUsd: Evidence<number>;
   /**
    * DexScreener-only depth, used solely as the turnover denominator so the

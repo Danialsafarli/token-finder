@@ -58,7 +58,8 @@ src/cli.ts ── serve ──> src/server/index.ts ──> node:http ──> sr
 | Provider validation | **DONE** | `src/core/validate.ts` type- and range-checks every consumed field at the boundary. Impossible values (negative liquidity, NaN price, a pool older than Solana, a string in an authority boolean) are rejected and recorded as `FieldIssue`s rather than coerced |
 | Normalization | **DONE** | Per-source normalizers produce typed structs carrying their own `issues[]`. Absent stays UNKNOWN; present-but-impossible becomes INVALID. Neither earns points |
 | Cross-provider evidence | **DONE** | `src/core/resolve.ts` produces one canonical `TokenEvidence` set with state, source, freshness, confidence and every provider claim retained |
-| Safety gate | **DONE** | `src/core/gate.ts` evaluates seven veto rules before ranking. Never vetoes on UNKNOWN |
+| Safety gate | **DONE** | `src/core/gate.ts` evaluates thirteen veto rules before ranking. Never vetoes on UNKNOWN |
+| Token-2022 awareness | **DONE** | `src/core/token-program.ts` classifies mint extensions by what they can do to a holder now. Six can veto; an unrecognised one never vetoes and marks coverage incomplete. Requires a Helius key — without one, extension evidence is UNAVAILABLE |
 | Coverage / confidence | **DONE** | `src/core/lifecycle.ts` reports both, separately from score |
 | Ranking eligibility | **DONE** | QUALIFIED / WATCH / INSUFFICIENT_DATA / REJECTED; eligibility outranks every sort key |
 | Lifecycle | **DONE** | Deterministic state machine, transitions validated, nothing irreversible |

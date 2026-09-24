@@ -1,6 +1,34 @@
 export const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 
+/**
+ * Fixed-point scale for converting an exact integer ratio to a `number`.
+ *
+ * 1e9 keeps nine decimal places of the share - far finer than any threshold
+ * this project compares against (60%, 90%) - while the intermediate
+ * `numerator * RATIO_SCALE` stays well inside BigInt's exact range for u64
+ * inputs. The conversion to `number` happens exactly once, at the end, on a
+ * value already known to be small.
+ */
+const RATIO_SCALE = 1_000_000_000n;
+
+/**
+ * Exact ratio of two raw token amounts, as a `number` in 0-1 (or above 1 when
+ * the inputs genuinely disagree - the caller decides what that means).
+ *
+ * Both sides must be raw base units. Passing a raw numerator and a UI
+ * denominator is the unit-mixing bug this signature exists to make awkward:
+ * there is no overload that takes a `number`.
+ *
+ * Returns null for a non-positive denominator rather than Infinity or NaN,
+ * neither of which survives a comparison meaningfully.
+ */
+export function exactRatio(numerator: bigint, denominator: bigint): number | null {
+  if (denominator <= 0n) return null;
+  if (numerator < 0n) return null;
+  return Number((numerator * RATIO_SCALE) / denominator) / Number(RATIO_SCALE);
+}
+
 export const clamp01 = (value: number): number => clamp(value, 0, 1);
 
 export function toNumber(value: unknown): number | null {
