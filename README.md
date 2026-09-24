@@ -142,6 +142,7 @@ has its own queue in `src/util/http.ts`; 429s set a cooldown for that host only.
 | [DATA_SOURCES.md](DATA_SOURCES.md) | Measured live validation of all five providers, the fields we actually receive, and the proposed provider strategy. |
 | [SCORING.md](SCORING.md) | Full scoring audit: every component, weight and penalty, with measured weaknesses. |
 | [PIPELINE.md](PIPELINE.md) | **The analysis path as implemented**: provider validation, evidence model, cross-provider resolution, safety gate, coverage/confidence, eligibility and lifecycle. |
+| [TECHNICAL_INTELLIGENCE.md](TECHNICAL_INTELLIGENCE.md) | **PLANNED / FUTURE — not implemented.** Design specification and research record for a future chart-structure analysis layer. No code implements any of it. |
 | [ROADMAP.md](ROADMAP.md) | Proposed development sequence and test strategy. |
 
 Parts of those documents describe proposals; they are labelled **NOT IMPLEMENTED** where so.

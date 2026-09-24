@@ -73,6 +73,43 @@ Rebuild on Phase 1 and 4 outputs. Per-component provenance (which provider, how 
 confidence). Calibrate grades against recorded outcomes instead of asserting thresholds.
 Regression-test against a frozen fixture corpus (Phase T4).
 
+## Phase 6a — Technical Intelligence Engine (PLANNED, specified)
+
+Chart structure and pattern analysis as an **independent intelligence layer** —
+never merged into the Risk Score, consumed only by a future Decision Engine.
+
+Full specification: **[TECHNICAL_INTELLIGENCE.md](TECHNICAL_INTELLIGENCE.md)**.
+
+Why it sits here, after Persistence and after Bot/Sybil Intelligence:
+
+- **It needs candles, which the project does not have.** DexScreener publishes no
+  OHLCV endpoint; it returns aggregate `m5`/`h1`/`h6`/`h24` scalars. A new
+  pool-level OHLCV provider is the largest single piece of this phase.
+- **It needs vetted volume.** Volume confirmation is load-bearing for most
+  patterns, and wash trading is documented above 70% of reported volume on
+  unregulated venues. Confirming patterns on unvetted volume would make the
+  engine actively misleading, so Bot/Sybil/Bundler Intelligence must land first.
+- **It needs durable history.** Pattern lifecycles, pivot history and a backtest
+  corpus do not fit a whole-file JSON store, so Persistence must land first.
+
+**Recommended change to the sequence:** pull the **OHLCV data layer earlier**,
+in parallel with Persistence rather than inside this phase. It is the most
+uncertain piece of work, Momentum v2 would independently benefit from real
+candles, and — decisively — the backtest corpus can only accumulate in
+wall-clock time. Starting collection during Persistence means this phase begins
+with history to validate against instead of a cold start.
+
+Initial scope is deliberately small (Tier 1 in the specification): market
+structure labelling, break of structure, change of character, ranges,
+compression/expansion, support/resistance zones, and the breakout / retest /
+reclaim / **failed-breakout** lifecycle. Classical chart patterns come later and
+only for tokens old enough to have the history — at the median analysed age of
+~26 hours a token has one daily candle.
+
+Exit criterion: detection quality measured against labelled fixtures, and
+forward-return behaviour measured against an unconditional baseline. **No
+profitability claim without that evidence.**
+
 ## Phase 6 — Realtime ingestion
 
 Helius websocket/gRPC for pool-init events; polled feeds become reconciliation, not the

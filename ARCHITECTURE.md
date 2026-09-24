@@ -3,6 +3,13 @@
 Audience: engineers working on Token Finder.
 **Part 1 describes what exists. Parts 2–5 are proposals and are NOT IMPLEMENTED.**
 
+> **A future subsystem is specified separately.** Technical Intelligence — chart
+> structure, pivots, support/resistance and pattern detection — is designed in
+> **[TECHNICAL_INTELLIGENCE.md](TECHNICAL_INTELLIGENCE.md)**. It is **PLANNED and
+> NOT IMPLEMENTED**: nothing in `src/` refers to it, there is no OHLCV provider,
+> and it would sit outside the Risk Score as an independent layer consumed only
+> by a future Decision Engine.
+
 > **Foundation Hardening II changed the analysis path substantially.** The stages
 > between discovery and ranking are now a documented pipeline with a provider
 > validation boundary, a canonical evidence model, deterministic cross-provider
