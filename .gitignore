@@ -1,11 +1,116 @@
+# ---------------------------------------------------------------------------
+# Secrets and credentials
+#
+# The app reads every key from the environment (src/config.ts) and nothing else
+# is allowed to. `.env.example` IS committed on purpose: it documents the
+# variable names with empty values and must never gain a real one.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# Key material of any kind.
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+credentials*
+secrets*
+private-key*
+auth-token*
+
+# Solana wallet material. Nothing here signs anything today, but the roadmap
+# reaches trading, and `id.json` / `*-keypair.json` are the default filenames
+# the Solana CLI writes a private key to. Ignoring them before they can exist
+# is the cheap half of that problem.
+id.json
+*keypair*.json
+wallet*.json
+*.wallet
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
 node_modules/
+
+# ---------------------------------------------------------------------------
+# Runtime state — generated, not source
+#
+# `data/` holds scan results: token snapshots, history and monitor events,
+# written continuously by the app. It is reproducible by running a scan, it
+# grows without bound, and it is not source. `data/.gitkeep` keeps the
+# directory itself in the repo so a fresh clone can write into it.
+#
+# There are no source fixtures in `data/`. Test fixtures live in `test/`
+# (test/fixtures.ts) and are committed.
+# ---------------------------------------------------------------------------
 data/*.json
 !data/.gitkeep
-.env
-*.log
-
-# Runtime state. Collected scans and migration backups are local data, not source.
 data/*.backup-*.json
+data/*.sqlite
+data/*.sqlite-*
+data/*.db
 
-# Knowledge-graph tooling output (graphify), not part of the project source.
+# Isolated data directories used by smoke runs (TOKEN_FINDER_DATA_DIR).
+data-*/
+.scratch/
+
+# ---------------------------------------------------------------------------
+# Build and tooling output
+#
+# There is no build step today — tsconfig sets `noEmit` and Node runs the
+# TypeScript directly. These entries are defensive: running `tsc` without
+# `--noEmit` would otherwise scatter .js files into the source tree.
+# ---------------------------------------------------------------------------
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+.cache/
+.tmp/
+tmp/
+temp/
+
+# Knowledge-graph tooling output (graphify). Generated from the source, not
+# part of it.
 graphify-out/
+
+# ---------------------------------------------------------------------------
+# Agent skills installed by the skills CLI (`npx skills add`)
+#
+# `skills-lock.json` IS committed: it records each skill's source repository and
+# content hash, so an install is reproducible and its provenance is auditable.
+#
+# The skill content is not committed. `.agents/skills/` is a vendored copy of a
+# third-party repository, and `.claude/skills/` holds an absolute symlink that
+# is only valid on the machine that created it. A fresh clone re-creates both:
+#
+#     npx skills add solana-foundation/solana-dev-skill
+# ---------------------------------------------------------------------------
+.agents/
+.claude/skills/
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ---------------------------------------------------------------------------
+# Editor and OS
+#
+# No shared editor config exists in this repo. If one is added later, negate
+# the specific file rather than un-ignoring the directory, e.g.:
+#   !.vscode/extensions.json
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
