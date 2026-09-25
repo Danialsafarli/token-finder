@@ -45,7 +45,7 @@ src/cli.ts ── serve ──> src/server/index.ts ──> node:http ──> sr
                              │         ├── sources/helius.ts        key-gated, inactive
                              │         └── sources/birdeye.ts       key-gated, inactive
                              v
-                        core/store.ts ──> data/state.json (whole-file rewrite)
+                        core/store.ts ──> persist/ ──> data/token-finder.sqlite
                              │
                         EventEmitter "bus" ──> SSE /api/stream ──> dashboard
 ```
@@ -101,10 +101,15 @@ to `null`. `tryGetJson` converts every failure into `null` and a debug log.
 RugCheck 20 min / 2000 entries, Helius 10 min. **Does not survive process restart** — measured:
 a second CLI scan took 122.8 s vs. 123.0 s cold, i.e. no benefit.
 
-**Persistence** (`core/store.ts`) — the entire state is one JSON file, `data/state.json`,
-rewritten in full via temp-file + `rename` on a 1.5 s debounce, plus flush on `exit`/`SIGINT`/
-`SIGTERM`. Holds `tokens`, `history` (240 points/token), `events` (cap 500), `lastScanAt`,
-`scanCount`. Measured: 173,773 bytes for 60 tokens with 61 history points.
+**Persistence** (`core/store.ts` over `src/persist/`) — SQLite via the built-in
+`node:sqlite`, WAL mode, zero runtime dependencies. `store.ts` keeps the public API it had as
+a JSON store, so nothing downstream was rewritten; underneath, current state is a
+write-through cache over the `tokens` table and history is queried from normalized tables.
+Nine tables, `PRAGMA user_version` migrations, snapshot deduplication with guaranteed
+retention of state transitions, and an age-based retention policy. `data/state.json` is now
+**legacy import input only** and is never written again. Full detail:
+**[PERSISTENCE.md](PERSISTENCE.md)**. Measured: 100-token scan persists in ~45 ms; the real
+2,104-token JSON corpus imported in ~2 s to a 14.2 MB database.
 
 **Error handling** — sources fail soft to `null`; `discover` uses `allSettled`; the server
 wraps every request. **Gap:** `pool()` uses `Promise.all`, so if any worker in `analyze()`

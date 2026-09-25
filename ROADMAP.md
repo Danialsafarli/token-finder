@@ -60,11 +60,33 @@ Two deliberate departures from the original sketch:
   lowers coverage, which keeps it out of QUALIFIED without pretending we found something
   dangerous. Vetoes require a provider to have actually asserted the danger.
 
-## Phase 3 — Persistence
+## Phase 3 — Persistence — **DONE**
 
-SQLite via `node:sqlite`, WAL mode. Migrate tokens, snapshots, score history, events. Add the
-append-only audit table now, before anything needs to write to it. Persistent provider cache
-keyed by `(mint, provider, fetched_at)`.
+SQLite via the built-in `node:sqlite`, WAL mode, **zero runtime dependencies added**. Nine
+tables behind a repository boundary (`src/persist/`); no SQL outside it. `PRAGMA user_version`
+migrations, ordered and append-only. Tokens, verdict/market/holder/pool history, canonical
+per-metric evidence, provider failures, events.
+
+Legacy `data/state.json` is imported once — backed up first, in one transaction, at most once,
+never fabricating the `evaluation` that v1 did not record — and is thereafter **legacy input
+only**. SQLite is canonical.
+
+Snapshot deduplication (material change, transition, 30-minute heartbeat) keeps a two-minute
+scan loop from writing ~700 identical rows per token per day, and **state transitions are
+never pruned**. Age-based retention, all thresholds configurable.
+
+Full detail: **[PERSISTENCE.md](PERSISTENCE.md)**.
+
+Still open from the original scope: the append-only **audit table** (nothing writes to it yet,
+and an empty table is not a foundation) and the **persistent provider cache** keyed by
+`(mint, provider, fetched_at)` — the in-memory TTL cache still serves that need. History
+downsampling is also deferred; §13 of PERSISTENCE.md says why.
+
+## Phase 3a — Transaction ingestion (NEXT)
+
+Signature, slot, block time, wallet, mint, pool, base/quote amounts, direction, source.
+PERSISTENCE.md §16 sketches the schema and the conventions it must carry over — raw `u64`
+amounts as TEXT, chain time never conflated with ingestion time. **Not started.**
 
 ## Phase 4 — Analysis depth
 

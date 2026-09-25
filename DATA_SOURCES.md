@@ -119,6 +119,15 @@ That BONK run is also the concrete case for exact arithmetic: its on-chain suppl
 `newListings()` returns `[]` when unkeyed. Measured: `birdeye:new: 0 candidates`.
 The `overview()` path is likewise unexercised.
 
+### Where provider observations are now kept
+
+Provider failures, per-metric canonical evidence (state, source, freshness,
+confidence) and the market/holder/pool readings behind each verdict are
+persisted to SQLite from this phase forward - see **[PERSISTENCE.md](PERSISTENCE.md)**.
+Raw provider bodies are deliberately **not** stored, and credentials are
+redacted before any write: some provider URLs carry the key in the query string
+and an undici error embeds the URL it failed on.
+
 ### Rate limits encountered
 
 **No provider returned any rate-limit header** — not `x-ratelimit-*`, `ratelimit-*`, or

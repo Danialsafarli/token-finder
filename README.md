@@ -104,9 +104,15 @@ stored one and raises events: `discovered`, `score_up`, `score_down`,
 `risk_flag`. Scans chain rather than stack, so a slow scan delays the next one
 instead of overlapping it.
 
-**5. Store** (`src/core/store.ts`) keeps everything in `data/state.json`,
-written through a temp file so a crash cannot truncate it. Each token keeps up
-to 240 history points for the dashboard sparklines.
+**5. Store** (`src/core/store.ts` over `src/persist/`) persists to SQLite at
+`data/token-finder.sqlite` using Node's built-in `node:sqlite` — no runtime
+dependency. Current state is cached in memory for the dashboard; history lives
+in normalized tables and accumulates across restarts. Snapshots are recorded
+when something material changes, on a state transition, or on a 30-minute
+heartbeat, so a two-minute scan loop does not write ~700 identical rows per
+token per day. **State transitions are never pruned.** An existing
+`data/state.json` is imported once, backed up first, and never written again.
+See **[PERSISTENCE.md](PERSISTENCE.md)**.
 
 ## Dashboard
 
@@ -139,6 +145,7 @@ has its own queue in `src/util/http.ts`; 429s set a cooldown for that host only.
 | File | Contents |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | What exists today, stage by stage, plus the proposed target architecture, trading modes, decision engine, persistence and performance model. |
+| [PERSISTENCE.md](PERSISTENCE.md) | **The storage layer as implemented**: SQLite schema, migrations, legacy JSON import, snapshot deduplication, retention, failure behaviour and how to extend it for transaction ingestion. |
 | [DATA_SOURCES.md](DATA_SOURCES.md) | Measured live validation of all five providers, the fields we actually receive, and the proposed provider strategy. |
 | [SCORING.md](SCORING.md) | Full scoring audit: every component, weight and penalty, with measured weaknesses. |
 | [PIPELINE.md](PIPELINE.md) | **The analysis path as implemented**: provider validation, evidence model, cross-provider resolution, safety gate, coverage/confidence, eligibility and lifecycle. |
