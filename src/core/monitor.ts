@@ -169,6 +169,9 @@ export async function runScan(): Promise<ScanResult> {
   scanning = true;
 
   const started = Date.now();
+  // Opens a scan row so every snapshot written below is attributable to this
+  // batch. Degrades to a null scan id when persistence is unavailable.
+  store.beginScan(started);
   try {
     const candidates = await discover();
 
@@ -199,10 +202,12 @@ export async function runScan(): Promise<ScanResult> {
       const previous = store.token(snapshot.mint);
       if (previous === null) fresh += 1;
       events.push(...diff(snapshot, previous));
-      store.upsert(snapshot);
+      // The resolved evidence travels with the snapshot so persistence can
+      // record why this verdict was reached, not just what it was.
+      store.upsert(snapshot, analysis.evidence.get(snapshot.mint) ?? null);
     }
 
-    store.finishScan(started);
+    store.finishScan(started, { analyzed: snapshots.length, fresh });
     store.save();
 
     const result: ScanResult = {

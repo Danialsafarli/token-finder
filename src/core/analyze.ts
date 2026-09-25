@@ -17,7 +17,7 @@ import {
   settleState,
   type EligibilityConfig,
 } from './lifecycle.ts';
-import { isUsable } from './evidence.ts';
+import { isUsable, type TokenEvidence } from './evidence.ts';
 import type {
   Evaluation,
   JupiterInfo,
@@ -42,6 +42,15 @@ export interface AnalyzeResult {
   failures: TokenFailure[];
   /** Batch-level provider failures, e.g. a whole market feed being down. */
   providerFailures: ProviderFailure[];
+  /**
+   * Resolved evidence per mint, so persistence can record *why* a verdict was
+   * reached - which provider supplied each metric, how fresh it was, and
+   * whether it was measured, conflicted or merely absent.
+   *
+   * Additive and optional to consume: `TokenSnapshot` is unchanged, so nothing
+   * that ignores this field behaves differently.
+   */
+  evidence: Map<string, TokenEvidence>;
 }
 
 export interface AnalyzeOptions {
@@ -89,7 +98,9 @@ export async function analyze(
   candidates: TokenCandidate[],
   options: AnalyzeOptions = {},
 ): Promise<AnalyzeResult> {
-  if (candidates.length === 0) return { snapshots: [], failures: [], providerFailures: [] };
+  if (candidates.length === 0) {
+    return { snapshots: [], failures: [], providerFailures: [], evidence: new Map() };
+  }
 
   const mints = candidates.map((candidate) => candidate.mint);
   const sourcesByMint = new Map(candidates.map((c) => [c.mint, c.sources]));
@@ -121,7 +132,7 @@ export async function analyze(
 
   if (pairsByMint.size === 0 && jupByMint.size === 0 && providerFailures.length === 2) {
     log.error('both market providers failed; no evidence to analyse this scan');
-    return { snapshots: [], failures: [], providerFailures };
+    return { snapshots: [], failures: [], providerFailures, evidence: new Map() };
   }
 
   // Observation times for freshness. Batch fetches complete together, so one
@@ -179,6 +190,9 @@ export async function analyze(
   // Screening runs only on this list - candidates that already cleared
   // discovery, liquidity and age.
   typesafe.resetScanBudget();
+
+  /** Populated per token inside the pool below; see AnalyzeResult.evidence. */
+  const evidenceByMint = new Map<string, TokenEvidence>();
 
   const settled = await poolSettled(deep, 4, async (draft): Promise<TokenSnapshot> => {
     const { candidate, pairs, jup } = draft;
@@ -239,7 +253,7 @@ export async function analyze(
     const safetyObservedAt = Date.now();
 
     // --- cross-provider evidence -------------------------------------------
-    const evidence = resolveEvidence({
+    const evidence: TokenEvidence = resolveEvidence({
       pairs,
       jupiter: jup,
       rugcheck: rug,
@@ -254,6 +268,7 @@ export async function analyze(
       failures: [...providerFailures, ...tokenFailures],
       now: safetyObservedAt,
     });
+    evidenceByMint.set(candidate.mint, evidence);
 
     // --- safety gate --------------------------------------------------------
     const vetoes = [
@@ -353,5 +368,5 @@ export async function analyze(
     );
   }
 
-  return { snapshots, failures, providerFailures };
+  return { snapshots, failures, providerFailures, evidence: evidenceByMint };
 }

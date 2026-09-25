@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,7 +95,11 @@ function listTokens(url: URL): TokenSnapshot[] {
   // rejected token cannot appear above a qualified one.
   const rank: Record<string, number> = { QUALIFIED: 0, WATCH: 1, INSUFFICIENT_DATA: 2, REJECTED: 3 };
   const tier = (token: TokenSnapshot): number =>
-    token.evaluation === null ? 1 : (rank[token.evaluation.eligibility] ?? 1);
+    // `== null` on purpose: snapshots imported from the v1 JSON store have no
+    // `evaluation` key at all, so the value is `undefined`, not `null`. The
+    // declared type says `Evaluation | null`, which is why a strict check
+    // looked right and still threw on every legacy row.
+    token.evaluation == null ? 1 : (rank[token.evaluation.eligibility] ?? 1);
 
   const sorter = SORTERS[sort] ?? SORTERS.score;
   return tokens
@@ -158,7 +162,10 @@ function coverageSummary(): {
 
   for (const token of tokens) {
     const evaluation = token.evaluation;
-    if (evaluation === null) continue;
+    // `== null` for the same reason as the sort tier above: legacy snapshots
+    // carry `undefined` here, and a strict check let them through to the
+    // property access below.
+    if (evaluation == null) continue;
     byState[evaluation.state] = (byState[evaluation.state] ?? 0) + 1;
     byEligibility[evaluation.eligibility] = (byEligibility[evaluation.eligibility] ?? 0) + 1;
     if (evaluation.conflicts.length > 0) conflicted++;
@@ -315,7 +322,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   await serveStatic(path, res);
 }
 
-export function serve(options: { monitor?: boolean } = {}): void {
+export function serve(options: { monitor?: boolean } = {}): Server {
   const server = createServer((req, res) => {
     handle(req, res).catch((error: unknown) => {
       log.error('request failed:', error instanceof Error ? error.message : error);
@@ -335,4 +342,9 @@ export function serve(options: { monitor?: boolean } = {}): void {
     log.step(`monitor every ${config.scanIntervalSec}s`);
     startMonitor();
   }
+
+  // Returned so a caller that started the server can stop it. Tests need this:
+  // exiting the process with the listener still open trips a libuv teardown
+  // assertion on Windows.
+  return server;
 }

@@ -4,7 +4,7 @@ import { fmtAge, fmtPct, fmtUsd } from './util/num.ts';
 import { discover } from './core/discover.ts';
 import { analyze } from './core/analyze.ts';
 import { runScan, startMonitor } from './core/monitor.ts';
-import { store } from './core/store.ts';
+import { formatBytes, store } from './core/store.ts';
 import { serve } from './server/index.ts';
 import * as dexscreener from './sources/dexscreener.ts';
 import type { TokenSnapshot } from './types.ts';
@@ -18,6 +18,7 @@ token-finder - discover, analyze, rank and monitor new Solana tokens
   node src/cli.ts watch            run the monitor in the terminal, no dashboard
   node src/cli.ts analyze <mint>   deep-dive one token (mint address or symbol)
   node src/cli.ts reset            clear stored tokens, history and events
+  node src/cli.ts db               database size, schema version and row counts
   node src/cli.ts typesafe-check   one request to verify TypeSafe credentials
 
 Options come from .env - see .env.example.
@@ -197,6 +198,50 @@ async function cmdWatch(): Promise<void> {
   startMonitor();
 }
 
+/**
+ * Database health, for an operator who wants to know whether history is
+ * actually being collected. Read-only: it reports and never repairs.
+ */
+function cmdDb(): void {
+  const failure = store.persistenceFailure();
+  if (failure !== null) {
+    log.error(`persistence is DEGRADED: ${failure.kind} during ${failure.operation}`);
+    log.error(failure.message);
+    log.warn('analysis still runs; history is NOT being recorded');
+    process.exitCode = 1;
+    return;
+  }
+
+  const d = store.diagnostics();
+  if (d === null) {
+    log.error('no database is open');
+    process.exitCode = 1;
+    return;
+  }
+
+  const when = (ms: number | null): string =>
+    ms === null ? '-' : new Date(ms).toISOString();
+
+  log.ok(`database ${d.path}`);
+  console.log(`  size            ${formatBytes(d.sizeBytes)}`);
+  console.log(
+    `  schema          v${d.schemaVersion} of v${d.targetSchemaVersion}` +
+      (d.schemaCurrent ? '' : log.paint('yellow', '  (NOT CURRENT)')),
+  );
+  console.log(`  integrity       ${d.integrity.ok ? 'ok' : log.paint('red', d.integrity.detail)}`);
+  console.log(`  oldest snapshot ${when(d.oldestSnapshotAt)}`);
+  console.log(`  newest snapshot ${when(d.newestSnapshotAt)}`);
+  console.log(`  transitions     ${d.transitionCount} (never pruned)`);
+  console.log('  rows');
+  for (const [table, count] of Object.entries(d.rowCounts)) {
+    console.log(`    ${pad(table, 20)} ${String(count).padStart(9)}`);
+  }
+  console.log('  legacy import');
+  console.log(`    completed     ${d.legacyImport.completedAt ?? 'never'}`);
+  console.log(`    source        ${d.legacyImport.source ?? '-'}`);
+  console.log(`    counts        ${d.legacyImport.counts ?? '-'}`);
+}
+
 async function main(): Promise<void> {
   const [command = 'serve', ...rest] = process.argv.slice(2);
 
@@ -212,6 +257,10 @@ async function main(): Promise<void> {
 
     case 'rank':
       cmdRank(Number(rest[0] ?? 25));
+      break;
+
+    case 'db':
+      cmdDb();
       break;
 
     case 'watch':

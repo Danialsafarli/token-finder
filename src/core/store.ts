@@ -1,188 +1,331 @@
-import { copyFileSync, readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+/**
+ * Runtime state, backed by SQLite.
+ *
+ * The public surface of this module is unchanged from the JSON-file version
+ * that preceded it. That is deliberate: the dashboard, the CLI and the monitor
+ * all read `store.tokens()`, `store.history(mint)` and friends, and a
+ * persistence change is not a reason to refactor them. What changed is
+ * underneath.
+ *
+ * ## Shape
+ *
+ * ```
+ *   monitor / server / cli
+ *          |  store.*          <- this module: the only thing they know about
+ *          v
+ *      Repository             <- domain operations (src/persist/repository.ts)
+ *          v
+ *      node:sqlite
+ * ```
+ *
+ * No SQL appears outside `src/persist/`.
+ *
+ * ## Current state is cached; history is not
+ *
+ * `tokens()` is called on every dashboard request and the corpus runs to a few
+ * thousand tokens. Reading and parsing every payload per request would make
+ * persistence the bottleneck, so current snapshots are held in a write-through
+ * map: SQLite is the source of truth and is what a restart reads, memory is a
+ * read cache that is updated on the same call that writes the row. History is
+ * never cached - it is queried, because it is large, append-only and read
+ * rarely.
+ *
+ * ## Degradation
+ *
+ * If the database cannot be opened, the store keeps working in memory and says
+ * so once. Analysis stays correct; nothing is persisted; nothing pretends to
+ * be. `persistenceFailure()` exposes the reason so a status endpoint can report
+ * it rather than showing an empty history that looks like a quiet market.
+ *
+ * ## state.json
+ *
+ * Read once, for the one-time import, and never written again. SQLite is the
+ * canonical store from that point. The legacy file and its backups are left on
+ * disk untouched - see PERSISTENCE.md.
+ */
+
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
 import { config, DATA_DIR } from '../config.ts';
 import { log } from '../util/logger.ts';
+import { closeDatabase, openDatabase } from '../persist/db.ts';
+import { Repository, type SnapshotPolicy } from '../persist/repository.ts';
+import { importLegacyState } from '../persist/legacy-import.ts';
+import { applyRetention, type RetentionPolicy } from '../persist/retention.ts';
+import { diagnose, formatBytes, type DatabaseDiagnostics } from '../persist/diagnostics.ts';
+import type { PersistenceFailure } from '../persist/errors.ts';
+import type { TokenEvidence } from './evidence.ts';
 import type { HistoryPoint, MonitorEvent, TokenSnapshot } from '../types.ts';
 
-const FILE = resolve(DATA_DIR, 'state.json');
+const LEGACY_FILE = resolve(DATA_DIR, 'state.json');
 
-/**
- * Bumped when the snapshot shape changes in a way older readers cannot
- * interpret. Version 2 added `evaluation` (gate, coverage, lifecycle) and made
- * several market fields nullable to carry UNKNOWN.
- */
-const STATE_VERSION = 2;
+export const DB_PATH = resolve(DATA_DIR, config.dbFile);
 
-interface State {
-  version: number;
-  lastScanAt: number | null;
-  scanCount: number;
-  tokens: Record<string, TokenSnapshot>;
-  history: Record<string, HistoryPoint[]>;
+const SNAPSHOT_POLICY: SnapshotPolicy = {
+  materialScoreDelta: config.snapshotScoreDelta,
+  materialRelativeDelta: config.snapshotRelativeDelta,
+  materialCoverageDelta: config.snapshotCoverageDelta,
+  heartbeatMs: config.snapshotHeartbeatMin * 60_000,
+};
+
+const RETENTION: RetentionPolicy = {
+  historyDays: config.retentionHistoryDays,
+  tokenDays: config.retentionTokenDays,
+  diagnosticsDays: config.retentionDiagnosticsDays,
+  maxEvents: config.maxEvents,
+};
+
+interface Runtime {
+  db: DatabaseSync | null;
+  repo: Repository | null;
+  failure: PersistenceFailure | null;
+  /** Current snapshots, write-through cache over the `tokens` table. */
+  tokens: Map<string, TokenSnapshot>;
   events: MonitorEvent[];
+  scanId: number | null;
+  /** Mirrors the scans table so a degraded store still counts its own work. */
+  scanCount: number;
+  lastScanAt: number | null;
 }
 
-function emptyState(): State {
-  return {
-    version: STATE_VERSION,
-    lastScanAt: null,
-    scanCount: 0,
-    tokens: {},
-    history: {},
+function boot(dbPath: string = DB_PATH): Runtime {
+  const runtime: Runtime = {
+    db: null,
+    repo: null,
+    failure: null,
+    tokens: new Map(),
     events: [],
+    scanId: null,
+    scanCount: 0,
+    lastScanAt: null,
   };
-}
 
-/**
- * Copies the current state aside before a version migration overwrites it.
- *
- * Collected scan history is genuinely useful and cannot be recovered from
- * anywhere else, so a schema change never destroys it in place.
- */
-function backupBeforeMigration(fromVersion: number): void {
-  if (!existsSync(FILE)) return;
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const target = resolve(DATA_DIR, `state.v${fromVersion}.backup-${stamp}.json`);
-  try {
-    copyFileSync(FILE, target);
-    log.warn(`state.json migrated from v${fromVersion} to v${STATE_VERSION}; previous file kept at ${target}`);
-  } catch (error) {
-    log.error('could not back up state before migration:', error instanceof Error ? error.message : error);
+  const opened = openDatabase({ path: dbPath });
+  if (opened.db === null || opened.failure !== null) {
+    runtime.failure = opened.failure;
+    log.error(
+      `persistence unavailable (${opened.failure?.kind ?? 'unknown'}): ${opened.failure?.message ?? ''} - analysis continues, history is NOT being recorded`,
+    );
+    return runtime;
   }
-}
 
-function load(): State {
-  if (!existsSync(FILE)) return emptyState();
-  try {
-    const parsed = JSON.parse(readFileSync(FILE, 'utf8')) as Partial<State>;
-    const found = typeof parsed.version === 'number' ? parsed.version : 1;
+  runtime.db = opened.db;
+  runtime.repo = new Repository(opened.db, SNAPSHOT_POLICY);
+  if (opened.applied.length > 0) {
+    log.ok(`database schema migrated to v${opened.schemaVersion} (applied: ${opened.applied.join(', ')})`);
+  }
 
-    if (found !== STATE_VERSION) {
-      backupBeforeMigration(found);
-      // Snapshots are carried forward as-is. Those written before v2 have no
-      // `evaluation`, which every reader treats as "not recorded" rather than
-      // inventing one; the next scan replaces them.
+  const imported = importLegacyState(opened.db, { legacyPath: LEGACY_FILE });
+  if (imported.status === 'imported') {
+    log.ok(`legacy state imported: ${imported.detail}; original kept at ${LEGACY_FILE}`);
+    if (imported.skippedTokens.length > 0) {
+      log.warn(`${imported.skippedTokens.length} legacy token(s) could not be imported`);
     }
-
-    return { ...emptyState(), ...parsed, version: STATE_VERSION };
-  } catch (error) {
-    log.warn('state.json is unreadable, starting fresh:', error instanceof Error ? error.message : error);
-    return emptyState();
+  } else if (imported.status === 'failed') {
+    log.error(`legacy import failed: ${imported.detail}`);
   }
+
+  runtime.tokens = new Map(runtime.repo.allTokens().map((token) => [token.mint, token]));
+  runtime.events = runtime.repo.events(config.maxEvents);
+  runtime.scanCount = runtime.repo.scanCount();
+  runtime.lastScanAt = runtime.repo.lastScanAt();
+
+  return runtime;
 }
 
-let state = load();
-let dirty = false;
-let flushTimer: NodeJS.Timeout | null = null;
-
-/** Write through a temp file so a crash mid-write cannot truncate the state. */
-function flush(): void {
-  if (!dirty) return;
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    const tmp = `${FILE}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state), 'utf8');
-    renameSync(tmp, FILE);
-    dirty = false;
-  } catch (error) {
-    log.error('failed to persist state:', error instanceof Error ? error.message : error);
-  }
-}
-
-function markDirty(): void {
-  dirty = true;
-  if (flushTimer) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    flush();
-  }, 1500);
-  flushTimer.unref?.();
-}
+let runtime = boot();
 
 export const store = {
   get lastScanAt(): number | null {
-    return state.lastScanAt;
+    return runtime.lastScanAt;
   },
 
   get scanCount(): number {
-    return state.scanCount;
+    return runtime.scanCount;
   },
 
   token(mint: string): TokenSnapshot | null {
-    return state.tokens[mint] ?? null;
+    return runtime.tokens.get(mint) ?? null;
   },
 
   tokens(): TokenSnapshot[] {
-    return Object.values(state.tokens);
+    return [...runtime.tokens.values()];
   },
 
   history(mint: string): HistoryPoint[] {
-    return state.history[mint] ?? [];
+    return runtime.repo?.historyPoints(mint, config.historyPoints) ?? [];
   },
 
   events(limit = 100): MonitorEvent[] {
-    return state.events.slice(0, limit);
+    return runtime.events.slice(0, limit);
   },
 
-  /** Replaces a snapshot and appends one history point. */
-  upsert(snapshot: TokenSnapshot): void {
-    state.tokens[snapshot.mint] = snapshot;
+  /**
+   * Opens a scan so every snapshot written during it is attributable.
+   *
+   * Safe to skip: a snapshot with a null `scan_id` is still valid history, it
+   * just cannot be grouped with its batch.
+   */
+  beginScan(startedAt: number): void {
+    runtime.scanId = runtime.repo?.recordScanStart(startedAt) ?? null;
+  },
 
-    const points = state.history[snapshot.mint] ?? [];
-    points.push({
-      at: snapshot.at,
-      priceUsd: snapshot.priceUsd,
-      liquidityUsd: snapshot.liquidityUsd,
-      volume24h: snapshot.volume24h,
-      score: snapshot.score.total,
-    });
-    state.history[snapshot.mint] = points.slice(-config.historyPoints);
+  /**
+   * Replaces the current snapshot and, when the change earns a row, appends
+   * history.
+   *
+   * `evidence` is optional and additive: when the caller has the resolved
+   * `TokenEvidence` it is recorded alongside the snapshot, so a stored verdict
+   * can later be explained by metric, provider, freshness and state.
+   */
+  upsert(snapshot: TokenSnapshot, evidence?: TokenEvidence | null): void {
+    runtime.tokens.set(snapshot.mint, snapshot);
 
-    markDirty();
+    const repo = runtime.repo;
+    if (repo === null) return;
+
+    const result = repo.saveTokenSnapshot(snapshot, { scanId: runtime.scanId });
+    if (result.failure !== null) {
+      noteFailure(result.failure);
+      return;
+    }
+    if (result.snapshotId !== null && evidence != null) {
+      repo.saveEvidence(result.snapshotId, snapshot.mint, snapshot.at, evidence);
+    }
   },
 
   addEvent(event: Omit<MonitorEvent, 'id' | 'at'> & { at?: number }): MonitorEvent {
     const full: MonitorEvent = { ...event, id: randomUUID(), at: event.at ?? Date.now() };
-    state.events.unshift(full);
-    if (state.events.length > config.maxEvents) state.events.length = config.maxEvents;
-    markDirty();
+    runtime.events.unshift(full);
+    if (runtime.events.length > config.maxEvents) runtime.events.length = config.maxEvents;
+    runtime.repo?.saveEvent(full);
     return full;
   },
 
-  finishScan(at: number): void {
-    state.lastScanAt = at;
-    state.scanCount += 1;
-    markDirty();
-  },
+  /**
+   * Closes the scan opened by {@link beginScan}.
+   *
+   * `stats` describes what this scan did. Without it the row would record the
+   * size of the whole corpus as though it had all been analysed, which is a
+   * different and much larger number.
+   */
+  finishScan(at: number, stats?: { analyzed: number; fresh: number }): void {
+    runtime.lastScanAt = at;
+    runtime.scanCount += 1;
 
-  /** Drops tokens and history not seen for `maxAgeMs`, keeping state.json small. */
-  prune(maxAgeMs: number): number {
-    const cutoff = Date.now() - maxAgeMs;
-    let removed = 0;
-    for (const [mint, snapshot] of Object.entries(state.tokens)) {
-      if (snapshot.at >= cutoff) continue;
-      delete state.tokens[mint];
-      delete state.history[mint];
-      removed += 1;
+    const repo = runtime.repo;
+    if (repo !== null && runtime.scanId !== null) {
+      const finished = Date.now();
+      repo.recordScanFinish(runtime.scanId, finished, {
+        analyzed: stats?.analyzed ?? 0,
+        fresh: stats?.fresh ?? 0,
+        durationMs: finished - at,
+      });
     }
-    if (removed > 0) markDirty();
-    return removed;
+    runtime.scanId = null;
   },
 
+  /**
+   * Applies the retention policy.
+   *
+   * The argument is the legacy signature's max-age in milliseconds, kept so
+   * existing callers do not change. It bounds how long a token may go unseen;
+   * the richer per-stream policy comes from config. State transitions are never
+   * removed, whatever is passed here.
+   */
+  prune(maxAgeMs: number): number {
+    const repo = runtime.repo;
+    if (repo === null) return 0;
+
+    const policy: RetentionPolicy = {
+      ...RETENTION,
+      tokenDays: Math.max(RETENTION.tokenDays, maxAgeMs / (24 * 3_600_000)),
+    };
+    const db = runtime.db;
+    if (db === null) return 0;
+    const result = applyRetention(db, policy);
+    if (result.failure !== null) {
+      noteFailure(result.failure);
+      return 0;
+    }
+
+    // Keep the read cache consistent with what the database now holds.
+    if (result.tokens > 0) {
+      const live = new Set(repo.allTokens().map((token) => token.mint));
+      for (const mint of runtime.tokens.keys()) {
+        if (!live.has(mint)) runtime.tokens.delete(mint);
+      }
+    }
+    return result.tokens;
+  },
+
+  /** Diagnostics for the CLI and a future status endpoint. */
+  diagnostics(): DatabaseDiagnostics | null {
+    return runtime.db === null ? null : diagnose(runtime.db, DB_PATH);
+  },
+
+  /** Non-null when persistence is degraded. */
+  persistenceFailure(): PersistenceFailure | null {
+    return runtime.failure;
+  },
+
+  /** Drops every stored row. Used by `cli reset`. */
   reset(): void {
-    state = emptyState();
-    markDirty();
-    flush();
+    runtime.tokens.clear();
+    runtime.events = [];
+    runtime.scanCount = 0;
+    runtime.lastScanAt = null;
+    runtime.scanId = null;
+
+    const result = runtime.repo?.reset();
+    if (result?.failure != null) noteFailure(result.failure);
   },
 
-  save: flush,
+  /**
+   * Retained for call-site compatibility.
+   *
+   * Writes are committed as they happen now, so there is nothing to flush. A
+   * WAL checkpoint is taken so the main database file is current for anything
+   * reading it out of band.
+   */
+  save(): void {
+    runtime.repo?.checkpoint();
+  },
+
+  /** Test seam: reopen against a different path. Not used in production. */
+  __reopen(dbPath: string): void {
+    closeDatabase(runtime.db);
+    runtime = boot(dbPath);
+  },
+
+  /** Test seam: close the handle without ending the process. */
+  __close(): void {
+    closeDatabase(runtime.db);
+    runtime.db = null;
+    runtime.repo = null;
+  },
 };
 
-process.on('exit', flush);
+/** Logs a persistence failure once per kind, so a broken disk is not a log flood. */
+const reported = new Set<string>();
+function noteFailure(failure: PersistenceFailure): void {
+  runtime.failure = failure;
+  if (reported.has(failure.kind)) return;
+  reported.add(failure.kind);
+  log.error(`persistence ${failure.kind} during ${failure.operation}: ${failure.message}`);
+}
+
+export { formatBytes };
+
+function closeQuietly(): void {
+  closeDatabase(runtime.db);
+}
+
+process.on('exit', closeQuietly);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
-    flush();
+    closeQuietly();
     process.exit(0);
   });
 }
