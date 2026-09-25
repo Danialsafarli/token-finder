@@ -59,8 +59,6 @@ function str(key: string): string | null {
  */
 function safeFileName(value: string | null, fallback: string): string {
   if (value === null) return fallback;
-  // Separators of either flavour, any parent reference, a Windows drive
-  // prefix, or an embedded NUL.
   // Separators of either flavour, any parent reference, a Windows drive prefix,
   // an embedded NUL, or a bare `.` - none of which is a filename.
   const unsafe = /[\\/]|\.\.|^[A-Za-z]:|\x00|^\.$/;
@@ -103,10 +101,10 @@ export const config = {
   /**
    * Database filename inside DATA_DIR.
    *
-   * Path separators and `..` are stripped rather than honoured: this is a
-   * filename, not a path. Allowing a path here would let an environment
-   * variable point the database at a tracked source file and have the app
-   * overwrite it on first run.
+   * A path here is rejected in favour of the default, not rewritten to its
+   * basename: this is a filename, not a path. Honouring a path would let an
+   * environment variable point the database at a tracked source file and have
+   * the app overwrite it on first run.
    */
   dbFile: safeFileName(str('TOKEN_FINDER_DB_FILE'), 'token-finder.sqlite'),
 
