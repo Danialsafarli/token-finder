@@ -10,6 +10,7 @@
  */
 
 import { HttpError } from './http-error.ts';
+import { redactSecrets } from './redact.ts';
 
 export type ProviderFailureKind =
   /** The request exceeded its deadline. */
@@ -103,8 +104,11 @@ function kindOf(error: unknown): ProviderFailureKind {
 /** Trims an error to something safe to log and store. */
 export function describeError(error: unknown): string {
   if (error instanceof HttpError) return `HTTP ${error.status}`;
-  if (error instanceof Error) return error.message.slice(0, 200);
-  return String(error).slice(0, 200);
+  // Everything below is arbitrary text from a library we do not control, and
+  // it is persisted in `provider_failures`. An undici error reads "request to
+  // <url> failed", so the credential has to be stripped before it lands.
+  if (error instanceof Error) return redactSecrets(error.message).slice(0, 200);
+  return redactSecrets(String(error)).slice(0, 200);
 }
 
 /** A provider that was never configured, so it cannot answer at all. */
