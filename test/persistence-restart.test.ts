@@ -37,6 +37,9 @@ function runInChild(
   body: string,
   timeoutMs = 60_000,
   portOverride?: number,
+  // Credentials must be set before `config` is read, which only a fresh process
+  // can do - the config module is a one-time snapshot of the environment.
+  extraEnv: Record<string, string> = {},
 ): string {
   const tag = Math.random().toString(36).slice(2);
   const scriptPath = join(dataDir, `worker-${tag}.ts`);
@@ -60,6 +63,7 @@ function runInChild(
       ...process.env,
       TOKEN_FINDER_DATA_DIR: dataDir,
       ...(portOverride === undefined ? {} : { PORT: String(portOverride) }),
+      ...extraEnv,
       // Keep the child off the network and out of the real config.
       TYPESAFE_ENABLED: 'false',
     },
@@ -323,6 +327,47 @@ describe('scale', () => {
     assert.ok(result.ms < 1_000, `history query took ${result.ms.toFixed(0)}ms`);
     console.log(
       `      deep history: ${result.stored} stored, ${result.points} returned in ${result.ms.toFixed(1)}ms`,
+    );
+  });
+});
+
+describe('credential redaction end to end', () => {
+  test('a configured API key cannot reach any column of the database', () => {
+    const dir = tempDir();
+    const key = 'HELIUSKEY_QQQQQQQQQQQQQQQQQQQQ';
+
+    // Planted in every free-text sink the store writes: the payload, the
+    // provider-failure row, both token identity columns, and an event's message,
+    // symbol and data.
+    const raw = runInChild(
+      dir,
+      `import { readFileSync } from 'node:fs';
+       import { join } from 'node:path';
+       const snap = snapshot({ mint: 'RedactProbe' });
+       snap.symbol = 'SYM ${key}';
+       snap.name = 'Name ${key}';
+       snap.evaluation.providerFailures = [
+         { provider: 'helius', kind: 'NETWORK_ERROR',
+           message: 'request to https://mainnet.helius-rpc.com/?api-key=${key} failed',
+           at: 1, retryable: true },
+       ];
+       store.upsert(snap);
+       store.addEvent({ kind: 'risk_flag', mint: 'RedactProbe', symbol: '${key}',
+                        level: 'info', message: 'leak ${key}',
+                        data: { note: '${key}' } });
+       store.save();
+       const file = join(${JSON.stringify(dir)}, 'token-finder.sqlite');
+       const bytes = readFileSync(file);
+       out({ leaked: bytes.includes(Buffer.from('${key}', 'utf8')) });`,
+      60_000,
+      undefined,
+      { HELIUS_API_KEY: key },
+    );
+
+    assert.equal(
+      (JSON.parse(raw) as { leaked: boolean }).leaked,
+      false,
+      'the configured key reached the database file',
     );
   });
 });

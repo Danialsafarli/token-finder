@@ -412,7 +412,18 @@ must be interpolated deliberately, not accidentally.
   string (Helius takes `?api-key=`), and an undici error reads
   `request to <url> failed`. That text reaches `provider_failures` **and** the
   `tokens.payload` JSON, so the payload is redacted as a whole.
-- Raw headers are never stored. Raw provider bodies are never stored.
-- Tests assert the database file contains no configured secret, checked as
-  bytes rather than through a query.
+- **Every free-text column** goes through redaction, not just the payload: the
+  provider-failure message, both token identity columns, an event's message,
+  symbol and data, and rendered evidence values. None of those is reachable
+  with a credential today - token names come from providers, event messages are
+  built from symbols and scores - but the guarantee is that no column *can*
+  carry one, not that none currently does.
+- Raw headers are never stored. Raw provider bodies are never stored. Birdeye
+  and TypeSafe pass their keys in headers rather than URLs, and headers are
+  never logged or persisted.
+- Two tests pin this: one plants credential-shaped URL parameters in every sink
+  in-process, and one runs a child process with `HELIUS_API_KEY` actually
+  configured and asserts the key is absent from the database file, checked as
+  bytes rather than through a query. Both were verified to fail when the
+  redaction is removed.
 - The database path cannot be steered into a tracked source directory (§3).

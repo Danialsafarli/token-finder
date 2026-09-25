@@ -141,8 +141,8 @@ export function decideSnapshot(
 /** Renders an evidence value as text without inventing a type discriminator. */
 function renderEvidenceValue(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  if (typeof value === 'object') return JSON.stringify(value).slice(0, 500);
-  return String(value).slice(0, 500);
+  const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  return redactSecrets(text).slice(0, 500);
 }
 
 const boolInt = (value: boolean): number => (value ? 1 : 0);
@@ -396,8 +396,12 @@ export class Repository {
       )
       .run(
         snapshot.mint,
-        snapshot.symbol,
-        snapshot.name,
+        // Redacted for the same reason as the payload below. These come from
+        // provider metadata today, which cannot carry our credentials - but the
+        // guarantee this layer makes is that no column can, not that no column
+        // currently does.
+        redactSecrets(snapshot.symbol),
+        redactSecrets(snapshot.name),
         // `first_seen_at` is only written on insert; the upsert above never
         // touches it, so the earliest sighting survives every later scan.
         recordedAt,
@@ -606,9 +610,12 @@ export class Repository {
           event.at,
           event.kind,
           event.mint,
-          event.symbol,
+          redactSecrets(event.symbol),
           event.level,
-          event.message,
+          // `data` was redacted here from the start and `message` was not,
+          // which is exactly the kind of inconsistency that turns into a leak
+          // the first time an event quotes a provider error.
+          redactSecrets(event.message),
           event.data === undefined ? null : redactSecrets(JSON.stringify(event.data)),
         );
     } catch {

@@ -1118,6 +1118,47 @@ describe('security', () => {
     assert.equal(bytes.includes(Buffer.from(key, 'utf8')), false);
   });
 
+  test('every free-text column passes through redaction', () => {
+    // The first pass redacted the payload, the failure message and event data,
+    // but left `events.message`, `tokens.symbol`, `tokens.name` and rendered
+    // evidence values raw. None was reachable with a credential, but the
+    // guarantee is that no column CAN carry one.
+    //
+    // Credential-shaped URL parameters are what redaction masks without needing
+    // the value configured, so that is what is planted in every sink here. The
+    // configured-value guarantee is covered end to end by the child-process
+    // test in persistence-restart.test.ts, which can set the env before the
+    // config module is read.
+    const h = harness();
+    const secret = 'URLSECRET_ABCDEFGHIJKLMNOP';
+    const snap = snapshot({ mint: 'AllSinks' });
+    snap.symbol = `S https://h.io/?api-key=${secret}`;
+    snap.name = `N https://h.io/?token=${secret}`;
+    snap.evaluation!.providerFailures = [
+      { provider: 'helius', kind: 'NETWORK_ERROR', message: `request to https://h.io/?api-key=${secret} failed`, at: 1, retryable: true },
+    ];
+    h.repo.saveTokenSnapshot(snap);
+    h.repo.saveEvent(
+      event({
+        id: 'e1',
+        message: `see https://z.io/?secret=${secret}`,
+        symbol: `E https://z.io/?key=${secret}`,
+        data: { url: `https://z.io/?access_token=${secret}` },
+      }),
+    );
+    h.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    h.close();
+
+    const bytes = readFileSync(h.path);
+    assert.equal(
+      bytes.includes(Buffer.from(secret, 'utf8')),
+      false,
+      'a credential-shaped URL parameter reached a column unmasked',
+    );
+    // The surrounding diagnostic text survives, so the row is still useful.
+    assert.ok(bytes.includes(Buffer.from('h.io', 'utf8')));
+  });
+
   test('no secret-shaped material is written by an ordinary snapshot', () => {
     const h = harness();
     h.repo.saveTokenSnapshot(snapshot({ mint: 'M' }));
