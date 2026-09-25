@@ -50,6 +50,26 @@ function str(key: string): string | null {
   return value ? value : null;
 }
 
+/**
+ * Reduces a configured value to a bare filename.
+ *
+ * Anything containing a path separator, a drive letter or a parent reference
+ * is rejected in favour of the default: silently rewriting it to its basename
+ * would honour half of what was asked for, which is worse than ignoring it.
+ */
+function safeFileName(value: string | null, fallback: string): string {
+  if (value === null) return fallback;
+  // Separators of either flavour, any parent reference, a Windows drive
+  // prefix, or an embedded NUL.
+  // Separators of either flavour, any parent reference, a Windows drive prefix,
+  // an embedded NUL, or a bare `.` - none of which is a filename.
+  const unsafe = /[\\/]|\.\.|^[A-Za-z]:|\x00|^\.$/;
+  return unsafe.test(value) ? fallback : value;
+}
+
+/** Exported for the security test; not part of the runtime surface. */
+export const safeFileNameForTest = safeFileName;
+
 function bool(key: string, fallback: boolean): boolean {
   const value = process.env[key]?.trim().toLowerCase();
   if (value === undefined || value === '') return fallback;
@@ -74,6 +94,37 @@ export const config = {
   /** Hard cap on model requests per scan, so screening cost stays bounded. */
   typesafeMaxPerScan: Math.max(0, num('TYPESAFE_MAX_PER_SCAN', 10)),
   typesafeTimeoutMs: Math.max(1000, num('TYPESAFE_TIMEOUT_MS', 8000)),
+
+  // --- persistence -------------------------------------------------------
+  // The database lives inside DATA_DIR, which TOKEN_FINDER_DATA_DIR already
+  // controls, so tests and smoke runs get an isolated file for free. Only the
+  // filename is configurable: allowing an absolute path here would let the
+  // database be pointed at a tracked source directory.
+  /**
+   * Database filename inside DATA_DIR.
+   *
+   * Path separators and `..` are stripped rather than honoured: this is a
+   * filename, not a path. Allowing a path here would let an environment
+   * variable point the database at a tracked source file and have the app
+   * overwrite it on first run.
+   */
+  dbFile: safeFileName(str('TOKEN_FINDER_DB_FILE'), 'token-finder.sqlite'),
+
+  /** Score movement, in points, that makes a new snapshot worth storing. */
+  snapshotScoreDelta: Math.max(0, num('SNAPSHOT_SCORE_DELTA', 1)),
+  /** Relative move in price, liquidity or volume that is material, 0-1. */
+  snapshotRelativeDelta: Math.max(0, num('SNAPSHOT_RELATIVE_DELTA', 0.02)),
+  /** Coverage movement that is material, 0-1. */
+  snapshotCoverageDelta: Math.max(0, num('SNAPSHOT_COVERAGE_DELTA', 0.05)),
+  /** Store an otherwise unchanged token anyway after this many minutes. */
+  snapshotHeartbeatMin: Math.max(1, num('SNAPSHOT_HEARTBEAT_MIN', 30)),
+
+  /** Days of non-transition history kept. Transitions are never deleted. */
+  retentionHistoryDays: Math.max(1, num('RETENTION_HISTORY_DAYS', 90)),
+  /** Days a token may go unseen before it and its history are dropped. */
+  retentionTokenDays: Math.max(1, num('RETENTION_TOKEN_DAYS', 180)),
+  /** Days of provider-failure diagnostics kept. */
+  retentionDiagnosticsDays: Math.max(1, num('RETENTION_DIAGNOSTICS_DAYS', 14)),
 
   /** How often the monitor re-scans, in seconds. */
   scanIntervalSec: Math.max(30, num('SCAN_INTERVAL_SEC', 120)),
