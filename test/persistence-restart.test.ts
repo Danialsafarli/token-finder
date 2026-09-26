@@ -386,8 +386,8 @@ describe('dashboard compatibility', () => {
         lastScanAt: 1700000000000,
         scanCount: 1,
         tokens: {
-          LegacyApiMint00000000000000000000000: {
-            mint: 'LegacyApiMint00000000000000000000000',
+          LegacyApiMint11111111111111111111111: {
+            mint: 'LegacyApiMint11111111111111111111111',
             symbol: 'OLD',
             name: 'Legacy Token',
             sources: [],
@@ -424,11 +424,20 @@ describe('dashboard compatibility', () => {
       )});
        const server = serve({ monitor: false });
        await new Promise((r) => setTimeout(r, 1500));
-       const paths = ['/api/status', '/api/tokens?limit=5', '/api/coverage', '/api/events'];
+       const base = 'http://127.0.0.1:${port}';
+       const mint = 'LegacyApiMint11111111111111111111111';
+       const paths = ['/api/status', '/api/tokens?limit=5', '/api/coverage', '/api/events', '/api/board', '/api/changes', '/api/system', '/api/tokens/' + mint, '/api/tokens/' + mint + '/history'];
        const codes = {};
-       for (const p of paths) codes[p] = (await fetch('http://127.0.0.1:${port}' + p)).status;
-       const body = await (await fetch('http://127.0.0.1:${port}/api/tokens?limit=5')).json();
-       out({ codes, tokens: Array.isArray(body.tokens) ? body.tokens.length : -1 });
+       for (const p of paths) codes[p] = (await fetch(base + p)).status;
+       const live = await (await fetch(base + '/api/tokens?limit=5')).json();
+       const board = await (await fetch(base + '/api/board')).json();
+       const dossier = await (await fetch(base + '/api/tokens/' + mint)).json();
+       out({
+         codes,
+         live: Array.isArray(live.tokens) ? live.tokens.length : -1,
+         universe: board.universe,
+         dossier: { mint: dossier.token?.mint ?? null, universe: dossier.placement?.universe ?? null },
+       });
        // Close the listener rather than calling process.exit: exiting with it
        // open trips a libuv teardown assertion on Windows.
        server.close();`,
@@ -436,10 +445,21 @@ describe('dashboard compatibility', () => {
       port,
     );
 
-    const result = JSON.parse(raw) as { codes: Record<string, number>; tokens: number };
+    const result = JSON.parse(raw) as {
+      codes: Record<string, number>;
+      live: number;
+      universe: { live: number; stale: number; unevaluated: number; total: number };
+      dossier: { mint: string | null; universe: string | null };
+    };
     for (const [path, code] of Object.entries(result.codes)) {
       assert.equal(code, 200, `${path} returned ${code}`);
     }
-    assert.equal(result.tokens, 1, 'the legacy token is served, not skipped');
+    // A v1 snapshot was never evaluated under the current rules, so it is not
+    // ranked - but it is counted, and still served on its own.
+    assert.equal(result.live, 0, 'an unevaluated legacy token is not in the live universe');
+    assert.equal(result.universe.unevaluated, 1, 'the legacy token is counted, not silently dropped');
+    assert.equal(result.universe.total, 1);
+    assert.equal(result.dossier.mint, 'LegacyApiMint11111111111111111111111', 'the legacy token is served, not skipped');
+    assert.equal(result.dossier.universe, 'UNEVALUATED');
   });
 });

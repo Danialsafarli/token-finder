@@ -1,12 +1,42 @@
+/**
+ * The local dashboard server.
+ *
+ * Zero runtime dependencies: `node:http`, static files, JSON DTOs and one SSE
+ * stream. Three layers, in order, for every request:
+ *
+ *   1. security   Host allowlist (DNS rebinding), security headers, and a
+ *                 same-origin check on anything that changes state
+ *   2. api        frontend-facing DTOs from ./dto.ts - never raw snapshots
+ *   3. static     the buildless frontend, with an SPA fallback so a deep link
+ *                 such as /t/<mint>/evidence loads the app
+ *
+ * The live ranking universe is decided by core/ranking.ts and nowhere else;
+ * every count and list below goes through it.
+ */
+
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { dirname, extname, resolve } from 'node:path';
+import { basename, dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config, hasBirdeye, hasHelius, hasTypesafe } from '../config.ts';
+import { gzip } from 'node:zlib';
+import { config, hasBirdeye, hasHelius } from '../config.ts';
 import { log } from '../util/logger.ts';
 import { store } from '../core/store.ts';
-import { bus, isScanning, runScan, startMonitor } from '../core/monitor.ts';
-import type { TokenSnapshot } from '../types.ts';
+import { bus, isScanning, lastScanResult, runScan, startMonitor, type ScanResult } from '../core/monitor.ts';
+import { capabilities, globallyUnavailableMetrics, type Capability } from '../core/capabilities.ts';
+import { countUniverse, FRESH_WITHIN_MS, liveTokens } from '../core/ranking.ts';
+import { vetoLabel, metricLabel } from './present.ts';
+import {
+  boardResponse,
+  changeView,
+  dossier,
+  eventView,
+  historyResponse,
+  parseBoardQuery,
+  type DtoContext,
+} from './dto.ts';
+import { hostAllowed, isLoopbackBind, sameOrigin, SECURITY_HEADERS } from './security.ts';
+import type { MonitorEvent } from '../types.ts';
 
 const PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), 'public');
 
@@ -17,324 +47,418 @@ const MIME: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
 };
+
+const MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{16,64}$/;
+
+function send(res: ServerResponse, status: number, headers: Record<string, string>, body: string | Buffer): void {
+  res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
+  res.end(body);
+}
+
+/** JSON below this size is sent as is; compressing it costs more than it saves. */
+const COMPRESS_MIN_BYTES = 1024;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const text = JSON.stringify(body);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
+  const json = JSON.stringify(body);
+  const headers: Record<string, string> = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', vary: 'accept-encoding' };
+  const accepts = String(res.req?.headers['accept-encoding'] ?? '');
+  if (json.length < COMPRESS_MIN_BYTES || !/\bgzip\b/.test(accepts)) return send(res, status, headers, json);
+  // Asynchronous, so the multi-megabyte compatibility endpoint does not stall
+  // the event loop (and the live stream with it) while it compresses.
+  gzip(json, (error, compressed) => {
+    if (error) return send(res, status, headers, json);
+    send(res, status, { ...headers, 'content-encoding': 'gzip' }, compressed);
   });
-  res.end(text);
 }
 
-type SortKey = 'score' | 'liquidity' | 'volume' | 'age' | 'momentum' | 'holders';
+// ---------------------------------------------------------------------------
+// Shared context
+// ---------------------------------------------------------------------------
 
-/** Unknown sorts last in every direction rather than masquerading as zero. */
-const SORTERS: Record<SortKey, (a: TokenSnapshot, b: TokenSnapshot) => number> = {
-  score: (a, b) => b.score.total - a.score.total,
-  liquidity: (a, b) => (b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1),
-  volume: (a, b) => (b.volume24h ?? -1) - (a.volume24h ?? -1),
-  age: (a, b) => (a.ageHours ?? Infinity) - (b.ageHours ?? Infinity),
-  momentum: (a, b) => (b.priceChange?.h1 ?? -Infinity) - (a.priceChange?.h1 ?? -Infinity),
-  holders: (a, b) => (b.holders ?? -1) - (a.holders ?? -1),
-};
-
-/**
- * Ranking eligibility filter.
- *
- * A numeric score is not a licence to appear in the ranking. REJECTED and
- * INSUFFICIENT_DATA tokens are held out by default so a vetoed token cannot
- * sit near the top on the strength of whatever the gate did not veto. They
- * remain reachable with `?eligibility=all` for inspection.
- *
- * Legacy snapshots carry no evaluation; they are shown, because hiding data
- * from before the gate existed would silently shrink the board.
- */
-const DEFAULT_VISIBLE: readonly string[] = ['QUALIFIED', 'WATCH'];
-
-function listTokens(url: URL): TokenSnapshot[] {
-  const sort = (url.searchParams.get('sort') ?? 'score') as SortKey;
-  const minScore = Number(url.searchParams.get('minScore') ?? 0);
-  const maxAge = Number(url.searchParams.get('maxAgeH') ?? config.maxAgeHours);
-  const minLiquidity = Number(url.searchParams.get('minLiquidity') ?? 0);
-  const query = (url.searchParams.get('q') ?? '').trim().toLowerCase();
-  const hideRisky = url.searchParams.get('hideRisky') === '1';
-  const minCoverage = Number(url.searchParams.get('minCoverage') ?? 0);
-  const eligibilityParam = (url.searchParams.get('eligibility') ?? '').trim().toUpperCase();
-  const limit = Math.min(Number(url.searchParams.get('limit') ?? 100), 500);
-
-  let tokens = store.tokens();
-
-  tokens = tokens.filter((token) => {
-    const eligibility = token.evaluation?.eligibility;
-    if (eligibility !== undefined) {
-      if (eligibilityParam === 'ALL') {
-        // no eligibility filtering
-      } else if (eligibilityParam.length > 0) {
-        if (eligibility !== eligibilityParam) return false;
-      } else if (!DEFAULT_VISIBLE.includes(eligibility)) {
-        return false;
-      }
-    }
-    if (Number.isFinite(minScore) && token.score.total < minScore) return false;
-    if (Number.isFinite(maxAge) && token.ageHours !== null && token.ageHours > maxAge) return false;
-    if (Number.isFinite(minCoverage) && token.score.coverage < minCoverage) return false;
-    // A liquidity floor cannot be met by a token whose liquidity is unmeasured.
-    if (Number.isFinite(minLiquidity) && minLiquidity > 0 && (token.liquidityUsd ?? -1) < minLiquidity)
-      return false;
-    if (hideRisky && token.score.flags.some((flag) => flag.level === 'critical')) return false;
-    if (query) {
-      const haystack = `${token.symbol} ${token.name} ${token.mint}`.toLowerCase();
-      if (!haystack.includes(query)) return false;
-    }
-    return true;
-  });
-
-  // Eligibility outranks every sort key, so even with ?eligibility=all a
-  // rejected token cannot appear above a qualified one.
-  const rank: Record<string, number> = { QUALIFIED: 0, WATCH: 1, INSUFFICIENT_DATA: 2, REJECTED: 3 };
-  const tier = (token: TokenSnapshot): number =>
-    // `== null` on purpose: snapshots imported from the v1 JSON store have no
-    // `evaluation` key at all, so the value is `undefined`, not `null`. The
-    // declared type says `Evaluation | null`, which is why a strict check
-    // looked right and still threw on every legacy row.
-    token.evaluation == null ? 1 : (rank[token.evaluation.eligibility] ?? 1);
-
-  const sorter = SORTERS[sort] ?? SORTERS.score;
-  return tokens
-    .sort((a, b) => tier(a) - tier(b) || sorter(a, b))
-    .slice(0, limit);
+/** Providers seen failing in the last scan or in the last 30 minutes of history. */
+function failingProviders(now: number): Set<string> {
+  const failing = new Set<string>();
+  for (const failure of lastScanResult()?.providerFailures ?? []) failing.add(failure.provider);
+  for (const summary of store.providerFailureSummary(now - 30 * 60_000)) failing.add(summary.provider);
+  return failing;
 }
 
-/**
- * Corpus-wide evidence coverage: how much of the ranking rests on real data,
- * and which components are most often missing. This is the number that tells
- * an operator whether the board is trustworthy today.
- */
-function coverageSummary(): {
-  tokens: number;
-  scored: number;
-  legacySnapshots: number;
-  meanCoverage: number;
-  meanConfidence: number;
-  fullyCovered: number;
-  belowAlertThreshold: number;
-  byState: Record<string, number>;
-  byEligibility: Record<string, number>;
-  vetoes: Record<string, number>;
-  tokensWithConflicts: number;
-  unknownByComponent: Record<string, number>;
-  explanation: string;
-} {
-  const tokens = store.tokens();
-  const unknownByComponent: Record<string, number> = {};
-  let sum = 0;
-  let scored = 0;
-  let legacy = 0;
-  let fullyCovered = 0;
-  let belowAlertThreshold = 0;
-
-  for (const token of tokens) {
-    // Snapshots written before evidence tracking carry no coverage. They are
-    // counted separately rather than folded in as 0, which would understate
-    // the corpus until the next scan replaces them.
-    if (typeof token.score.coverage !== 'number') {
-      legacy++;
-      continue;
-    }
-    scored++;
-    sum += token.score.coverage;
-    const unknown = token.score.unknown ?? [];
-    if (unknown.length === 0) fullyCovered++;
-    if (token.score.coverage < config.minCoverageAlert) belowAlertThreshold++;
-    for (const key of unknown) {
-      unknownByComponent[key] = (unknownByComponent[key] ?? 0) + 1;
-    }
-  }
-
-  const byState: Record<string, number> = {};
-  const byEligibility: Record<string, number> = {};
-  const vetoCounts: Record<string, number> = {};
-  let conflicted = 0;
-  let meanConfidence = 0;
-  let confidenceCount = 0;
-
-  for (const token of tokens) {
-    const evaluation = token.evaluation;
-    // `== null` for the same reason as the sort tier above: legacy snapshots
-    // carry `undefined` here, and a strict check let them through to the
-    // property access below.
-    if (evaluation == null) continue;
-    byState[evaluation.state] = (byState[evaluation.state] ?? 0) + 1;
-    byEligibility[evaluation.eligibility] = (byEligibility[evaluation.eligibility] ?? 0) + 1;
-    if (evaluation.conflicts.length > 0) conflicted++;
-    for (const veto of evaluation.vetoes) {
-      vetoCounts[veto.code] = (vetoCounts[veto.code] ?? 0) + 1;
-    }
-    meanConfidence += evaluation.coverage.confidence;
-    confidenceCount++;
-  }
-
+function currentContext(now = Date.now()): { context: DtoContext; caps: Capability[] } {
+  const caps = capabilities({
+    helius: hasHelius(),
+    birdeye: hasBirdeye(),
+    typesafeEnabled: config.typesafeEnabled,
+    failingProviders: failingProviders(now),
+  });
   return {
-    tokens: tokens.length,
-    scored,
-    legacySnapshots: legacy,
-    meanCoverage: scored > 0 ? Math.round((sum / scored) * 1000) / 1000 : 0,
-    meanConfidence: confidenceCount > 0 ? Math.round((meanConfidence / confidenceCount) * 1000) / 1000 : 0,
-    fullyCovered,
-    belowAlertThreshold,
-    byState,
-    byEligibility,
-    vetoes: vetoCounts,
-    tokensWithConflicts: conflicted,
-    unknownByComponent,
-    explanation:
-      'Score, coverage and confidence are three different things and are never multiplied together. Score is how good the token looks; coverage is how much of that rests on real observation (missing evidence scores zero, so 70% coverage caps the score at 70 before penalties); confidence is how much the observations are worth once provider disagreement, staleness and single-provider dependence are accounted for. Unknown is never treated as zero, and never as safe.',
+    caps,
+    context: {
+      now,
+      windowMs: config.liveWindowMin * 60_000,
+      globallyOff: globallyUnavailableMetrics(caps),
+      minCoverageQualify: config.minCoverageQualify,
+      minCoverageWatch: config.minCoverageWatch,
+      minLiquidityUsd: config.minLiquidityUsd,
+      catastrophicConcentrationPct: config.catastrophicConcentrationPct,
+      helius: hasHelius(),
+    },
   };
 }
 
-async function serveStatic(pathname: string, res: ServerResponse): Promise<void> {
-  // Resolving './<path>' against the public dir keeps traversal attempts
-  // inside a path the startsWith check below can reject.
-  const requested = pathname === '/' ? '/index.html' : decodeURIComponent(pathname);
-  const file = resolve(PUBLIC_DIR, `.${requested}`);
+function statusBody(now = Date.now()): unknown {
+  const { caps } = currentContext(now);
+  const universe = countUniverse(store.tokens(), now, config.liveWindowMin * 60_000);
+  const failure = store.persistenceFailure();
+  return {
+    serverTime: now,
+    scanning: isScanning(),
+    lastScanAt: store.lastScanAt,
+    scanCount: store.scanCount,
+    scanIntervalSec: config.scanIntervalSec,
+    window: { liveMinutes: config.liveWindowMin, freshMinutes: Math.round(FRESH_WITHIN_MS / 60_000) },
+    universe: { live: universe.live, stale: universe.stale, unevaluated: universe.unevaluated, total: universe.total },
+    counts: universe.byEligibility,
+    persistence: { healthy: failure === null, kind: failure?.kind ?? null },
+    capabilitiesOff: caps.filter((capability) => capability.state === 'OFF' && capability.metrics.length > 0).length,
+    capabilitiesDegraded: caps.filter((capability) => capability.state === 'DEGRADED').length,
+  };
+}
 
-  if (!file.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403).end('Forbidden');
+/**
+ * Coverage over the LIVE universe only.
+ *
+ * Previously this counted "legacy" tokens by whether `score.coverage` existed
+ * while the ranking filtered on `evaluation` - two predicates that disagreed by
+ * 1,758 tokens. Both now come from core/ranking.ts.
+ */
+function coverageBody(now = Date.now()): unknown {
+  const all = store.tokens();
+  const windowMs = config.liveWindowMin * 60_000;
+  const universe = countUniverse(all, now, windowMs);
+  const live = liveTokens(all, now, windowMs);
+
+  const buckets = [
+    { label: 'Under 35%', min: 0, max: 0.35, count: 0 },
+    { label: '35–60%', min: 0.35, max: 0.6, count: 0 },
+    { label: '60–80%', min: 0.6, max: 0.8, count: 0 },
+    { label: '80–100%', min: 0.8, max: 1.0001, count: 0 },
+  ];
+  const vetoes: Record<string, { label: string; count: number }> = {};
+  const unknown: Record<string, { label: string; count: number }> = {};
+  let coverageSum = 0;
+  let confidenceSum = 0;
+
+  for (const token of live) {
+    const report = token.evaluation!.coverage;
+    coverageSum += report.coverage;
+    confidenceSum += report.confidence;
+    const bucket = buckets.find((b) => report.coverage >= b.min && report.coverage < b.max);
+    if (bucket) bucket.count++;
+    for (const veto of token.evaluation!.vetoes) {
+      vetoes[veto.code] ??= { label: vetoLabel(veto.code), count: 0 };
+      vetoes[veto.code]!.count++;
+    }
+    for (const entry of token.ledger ?? []) {
+      if (entry.weight > 0 && entry.state !== 'MEASURED' && entry.state !== 'CONFLICTED') {
+        unknown[entry.metric] ??= { label: metricLabel(entry.metric), count: 0 };
+        unknown[entry.metric]!.count++;
+      }
+    }
+  }
+
+  return {
+    universe: { live: universe.live, stale: universe.stale, unevaluated: universe.unevaluated, total: universe.total },
+    byEligibility: universe.byEligibility,
+    meanCoverage: live.length ? Math.round((coverageSum / live.length) * 1000) / 1000 : null,
+    meanConfidence: live.length ? Math.round((confidenceSum / live.length) * 1000) / 1000 : null,
+    distribution: buckets.map(({ label, count }) => ({ label, count })),
+    vetoes: Object.entries(vetoes)
+      .map(([code, value]) => ({ code, ...value }))
+      .sort((a, b) => b.count - a.count),
+    unknownSignals: Object.entries(unknown)
+      .map(([metric, value]) => ({ metric, ...value }))
+      .sort((a, b) => b.count - a.count),
+    ledgerTokens: live.filter((token) => token.ledger && token.ledger.length > 0).length,
+  };
+}
+
+function systemBody(now = Date.now()): unknown {
+  const { caps } = currentContext(now);
+  const diagnostics = store.diagnostics();
+  const failure = store.persistenceFailure();
+  const scan = lastScanResult();
+  return {
+    serverTime: now,
+    capabilities: caps,
+    scan: {
+      scanning: isScanning(),
+      lastScanAt: store.lastScanAt,
+      scanCount: store.scanCount,
+      intervalSec: config.scanIntervalSec,
+      last: scan
+        ? {
+            at: scan.at,
+            durationMs: scan.durationMs,
+            candidates: scan.candidates,
+            analyzed: scan.analyzed,
+            fresh: scan.fresh,
+            tokenFailures: scan.tokenFailures.length,
+            providerFailures: scan.providerFailures.map((f) => ({ provider: f.provider, kind: f.kind, message: f.message.slice(0, 160) })),
+          }
+        : null,
+    },
+    providers: store.providerFailureSummary(now - 60 * 60_000),
+    window: { liveMinutes: config.liveWindowMin, freshMinutes: Math.round(FRESH_WITHIN_MS / 60_000) },
+    coverage: coverageBody(now),
+    persistence: {
+      healthy: failure === null,
+      failure: failure ? { kind: failure.kind, operation: failure.operation, message: failure.message.slice(0, 200), at: failure.at } : null,
+      database: diagnostics
+        ? {
+            // The filename only: the absolute path is local detail with no use in a UI.
+            file: basename(diagnostics.path),
+            sizeBytes: diagnostics.sizeBytes,
+            schemaVersion: diagnostics.schemaVersion,
+            schemaCurrent: diagnostics.schemaCurrent,
+            integrity: diagnostics.integrity.ok ? 'ok' : 'failed',
+            rows: diagnostics.rowCounts,
+            oldestSnapshotAt: diagnostics.oldestSnapshotAt,
+            newestSnapshotAt: diagnostics.newestSnapshotAt,
+            transitions: diagnostics.transitionCount,
+            legacyImportAt: diagnostics.legacyImport.completedAt,
+          }
+        : null,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Static files
+// ---------------------------------------------------------------------------
+
+async function serveStatic(pathname: string, res: ServerResponse): Promise<void> {
+  let requested: string;
+  try {
+    requested = decodeURIComponent(pathname);
+  } catch {
+    send(res, 400, { 'content-type': 'text/plain; charset=utf-8' }, 'Bad request');
+    return;
+  }
+
+  // Deep links (/t/<mint>, /changes, /system) have no extension: they are app
+  // routes, answered with the shell so the router can take over.
+  const isRoute = extname(requested) === '';
+  const file = isRoute ? resolve(PUBLIC_DIR, 'index.html') : resolve(PUBLIC_DIR, `.${requested}`);
+
+  if (file !== PUBLIC_DIR && !file.startsWith(PUBLIC_DIR + sep)) {
+    send(res, 403, { 'content-type': 'text/plain; charset=utf-8' }, 'Forbidden');
+    return;
+  }
+  const type = MIME[extname(file)];
+  if (!type) {
+    send(res, 404, { 'content-type': 'text/plain; charset=utf-8' }, 'Not found');
     return;
   }
 
   try {
     const body = await readFile(file);
-    res.writeHead(200, {
-      'content-type': MIME[extname(file)] ?? 'application/octet-stream',
-      'cache-control': 'no-cache',
-    });
-    res.end(body);
+    send(res, 200, { 'content-type': type, 'cache-control': 'no-cache' }, body);
   } catch {
-    res.writeHead(404, { 'content-type': 'text/plain' }).end('Not found');
+    send(res, 404, { 'content-type': 'text/plain; charset=utf-8' }, 'Not found');
   }
 }
 
-/** Server-sent events: one connection per open dashboard tab. */
+// ---------------------------------------------------------------------------
+// Live stream
+// ---------------------------------------------------------------------------
+
+function scanSummary(result: ScanResult): unknown {
+  return {
+    at: result.at,
+    durationMs: result.durationMs,
+    analyzed: result.analyzed,
+    fresh: result.fresh,
+    providerFailures: result.providerFailures.map((failure) => failure.provider),
+  };
+}
+
 function stream(res: ServerResponse): void {
   res.writeHead(200, {
+    ...SECURITY_HEADERS,
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
   });
-  res.write(': connected\n\n');
 
   const send = (type: string, payload: unknown): void => {
     res.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`);
   };
+  // The client learns the current state on connect, so a reconnect after an
+  // outage shows reality immediately rather than after the next poll.
+  send('hello', statusBody());
 
-  const onEvent = (payload: unknown): void => send('alert', payload);
-  const onScan = (payload: unknown): void => send('scan', payload);
+  const onStart = (payload: unknown): void => send('scan-start', payload);
+  const onScan = (result: ScanResult): void => send('scan', scanSummary(result));
+  const onFailed = (payload: unknown): void => send('scan-failed', payload);
+  const onEvent = (event: MonitorEvent): void => send('alert', eventView(event));
 
-  bus.on('event', onEvent);
+  bus.on('scan-start', onStart);
   bus.on('scan', onScan);
+  bus.on('scan-failed', onFailed);
+  bus.on('event', onEvent);
 
-  const keepAlive = setInterval(() => res.write(': ping\n\n'), 25_000);
-
+  const keepAlive = setInterval(() => res.write(': ping\n\n'), 20_000);
   res.on('close', () => {
     clearInterval(keepAlive);
-    bus.off('event', onEvent);
+    bus.off('scan-start', onStart);
     bus.off('scan', onScan);
+    bus.off('scan-failed', onFailed);
+    bus.off('event', onEvent);
   });
 }
 
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+  // DNS-rebinding defence first: nothing, not even static files, is served to
+  // a Host that is not this loopback origin.
+  if (!hostAllowed(req.headers.host, config.port, config.host)) {
+    send(res, 403, { 'content-type': 'text/plain; charset=utf-8' }, 'Forbidden host');
+    return;
+  }
+
+  const url = new URL(req.url ?? '/', 'http://localhost');
   const path = url.pathname;
-
-  if (path === '/api/status') {
-    sendJson(res, 200, {
-      lastScanAt: store.lastScanAt,
-      scanCount: store.scanCount,
-      scanning: isScanning(),
-      tracked: store.tokens().length,
-      // Booleans only. No key, or any prefix of one, is ever serialised here.
-      sources: {
-        helius: hasHelius(),
-        birdeye: hasBirdeye(),
-        typesafe: { configured: hasTypesafe(), enabled: config.typesafeEnabled },
-      },
-      coverage: coverageSummary(),
-      config: {
-        scanIntervalSec: config.scanIntervalSec,
-        minLiquidityUsd: config.minLiquidityUsd,
-        maxAgeHours: config.maxAgeHours,
-        minScoreAlert: config.minScoreAlert,
-        minCoverageAlert: config.minCoverageAlert,
-      },
-    });
-    return;
-  }
-
-  if (path === '/api/coverage') {
-    sendJson(res, 200, coverageSummary());
-    return;
-  }
-
-  if (path === '/api/tokens') {
-    sendJson(res, 200, { tokens: listTokens(url) });
-    return;
-  }
-
-  if (path.startsWith('/api/tokens/')) {
-    const mint = decodeURIComponent(path.slice('/api/tokens/'.length));
-    const token = store.token(mint);
-    if (!token) {
-      sendJson(res, 404, { error: 'not tracked' });
-      return;
-    }
-    sendJson(res, 200, { token, history: store.history(mint) });
-    return;
-  }
-
-  if (path === '/api/events') {
-    sendJson(res, 200, { events: store.events(Number(url.searchParams.get('limit') ?? 100)) });
-    return;
-  }
-
-  if (path === '/api/scan' && req.method === 'POST') {
-    if (isScanning()) {
-      sendJson(res, 409, { error: 'scan already running' });
-      return;
-    }
-    runScan().catch((error: unknown) => log.error('manual scan failed:', error));
-    sendJson(res, 202, { started: true });
-    return;
-  }
-
-  if (path === '/api/stream') {
-    stream(res);
-    return;
-  }
+  const method = req.method ?? 'GET';
 
   if (path.startsWith('/api/')) {
+    if (method !== 'GET' && method !== 'HEAD' && !(method === 'POST' && path === '/api/scan')) {
+      sendJson(res, 405, { error: 'method not allowed' });
+      return;
+    }
+
+    if (path === '/api/status') return sendJson(res, 200, statusBody());
+    if (path === '/api/system') return sendJson(res, 200, systemBody());
+    if (path === '/api/coverage') return sendJson(res, 200, coverageBody());
+
+    if (path === '/api/board') {
+      const { context, caps } = currentContext();
+      return sendJson(res, 200, boardResponse(store.tokens(), parseBoardQuery(url.searchParams), context, caps, FRESH_WITHIN_MS));
+    }
+
+    if (path === '/api/changes') {
+      const limit = Math.max(1, Math.min(300, Number(url.searchParams.get('limit') ?? 120) || 120));
+      const views = store.verdictChanges({ limit: 600 }).map(changeView);
+      const changed = views.filter((view) => view.kind === 'changed').slice(0, limit);
+      const first = views.filter((view) => view.kind === 'first');
+      const events = store
+        .events(200)
+        .filter((event) => event.kind !== 'discovered')
+        .slice(0, limit)
+        .map(eventView);
+      return sendJson(res, 200, { changed, first: { count: first.length, recent: first.slice(0, 40) }, events });
+    }
+
+    if (path === '/api/events') {
+      const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit') ?? 100) || 100));
+      return sendJson(res, 200, { events: store.events(limit).map(eventView) });
+    }
+
+    // Compatibility: full snapshots of the LIVE universe, for scripts. The
+    // dashboard uses /api/board.
+    if (path === '/api/tokens') {
+      const now = Date.now();
+      return sendJson(res, 200, { tokens: liveTokens(store.tokens(), now, config.liveWindowMin * 60_000) });
+    }
+
+    const tokenRoute = /^\/api\/tokens\/([^/]+)(\/history)?$/.exec(path);
+    if (tokenRoute) {
+      let mint: string;
+      try {
+        mint = decodeURIComponent(tokenRoute[1]!);
+      } catch {
+        return sendJson(res, 400, { error: 'bad mint' });
+      }
+      if (!MINT_PATTERN.test(mint)) return sendJson(res, 400, { error: 'bad mint' });
+      const token = store.token(mint);
+      if (!token) return sendJson(res, 404, { error: 'not tracked' });
+
+      if (tokenRoute[2]) {
+        return sendJson(
+          res,
+          200,
+          historyResponse(
+            mint,
+            store.verdictChanges({ mint, limit: 200 }),
+            store.tokenHistory(mint, { limit: 1000 }),
+            store.marketHistory(mint, { limit: 1000 }),
+            store.holderHistory(mint, { limit: 500 }),
+          ),
+        );
+      }
+      const { context } = currentContext();
+      return sendJson(res, 200, dossier(token, token.ledger ? [] : store.latestEvidence(mint), context));
+    }
+
+    if (path === '/api/scan' && method === 'POST') {
+      const origin = sameOrigin(req);
+      if (!origin.ok) return sendJson(res, 403, { error: `refused: ${origin.reason}` });
+      if (isScanning()) return sendJson(res, 409, { error: 'scan already running' });
+      runScan().catch((error: unknown) => log.error('manual scan failed:', error instanceof Error ? error.message : error));
+      return sendJson(res, 202, { started: true });
+    }
+
+    if (path === '/api/stream') {
+      stream(res);
+      return;
+    }
+
     sendJson(res, 404, { error: 'unknown endpoint' });
     return;
   }
 
+  if (method !== 'GET' && method !== 'HEAD') {
+    send(res, 405, { 'content-type': 'text/plain; charset=utf-8' }, 'Method not allowed');
+    return;
+  }
   await serveStatic(path, res);
 }
 
 export function serve(options: { monitor?: boolean } = {}): Server {
-  const server = createServer((req, res) => {
+  const handler = (req: IncomingMessage, res: ServerResponse): void => {
     handle(req, res).catch((error: unknown) => {
       log.error('request failed:', error instanceof Error ? error.message : error);
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' });
       else res.end();
     });
-  });
+  };
+  const server = createServer(handler);
 
-  server.listen(config.port, () => {
-    log.ok(`dashboard on ${log.paint('cyan', `http://localhost:${config.port}`)}`);
+  // `localhost` resolves to ::1 before 127.0.0.1 on many systems. With only the
+  // IPv4 loopback bound, every request from a `http://localhost` bookmark waited
+  // ~200 ms for the IPv6 attempt to fail. The default therefore binds both
+  // loopback addresses - still loopback only, never the LAN.
+  if (config.host === '127.0.0.1') {
+    const v6 = createServer(handler);
+    v6.on('error', () => {
+      // No IPv6 loopback on this machine; IPv4 alone still serves everything.
+    });
+    v6.listen(config.port, '::1');
+    server.on('close', () => v6.close());
+  }
+
+  server.listen(config.port, config.host, () => {
+    const shown = isLoopbackBind(config.host) ? 'localhost' : config.host;
+    log.ok(`dashboard on ${log.paint('cyan', `http://${shown}:${config.port}`)}`);
+    if (!isLoopbackBind(config.host)) {
+      log.warn(`listening on ${config.host} - the dashboard is reachable from other machines`);
+    }
     if (!hasHelius() && !hasBirdeye()) {
-      log.info('running on keyless sources only - add HELIUS_API_KEY or BIRDEYE_API_KEY for holder and on-chain depth');
+      log.info('no Helius key: on-chain checks (Token-2022 extensions, authority reads, exact holder math) are off');
     }
   });
 
