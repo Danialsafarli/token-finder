@@ -116,20 +116,40 @@ wraps every request. **Gap:** `pool()` uses `Promise.all`, so if any worker in `
 throws synchronously (e.g. `scoreToken` on malformed input) the **entire scan aborts**.
 `runScan` catches it in `startMonitor`, so the loop survives, but that scan yields nothing.
 
-**SSE / realtime** — `EventEmitter` bus; `/api/stream` registers `alert` and `scan` listeners
-per connection, 25 s keep-alive ping, cleanup on `close`. Realtime is *within* the app only —
+**SSE / realtime** — `EventEmitter` bus; `/api/stream` sends `hello` on connect and
+relays `scan-start`, `scan`, `scan-failed` and `alert`. A scan that throws still emits
+`scan-failed`, so the dashboard never shows a scan as running forever. 25 s keep-alive
+ping, cleanup on `close`. Realtime is *within* the app only —
 **all ingestion is polled REST; there is no websocket or gRPC feed from any provider.**
 
-**Dashboard** — table with 6 sort keys, filters (query, min score, max age, min liquidity,
-hide-critical), live event feed, detail drawer with per-component bars, all risk flags,
-score/price sparklines, outbound links. Refetches on `scan` events, 15 s status poll, 60 s
-token poll.
+**Dashboard** — four routed surfaces: Board `/`, Dossier `/t/:mint`, Changes `/changes`
+and System `/system`. It is buildless: plain ES modules served from `src/server/public/`,
+typed with JSDoc and checked by `tsconfig.web.json`. The decision and its alternatives are
+in [docs/adr/0001-frontend-architecture.md](docs/adr/0001-frontend-architecture.md).
+
+The layers:
+
+| Layer | Files | Owns |
+|---|---|---|
+| Ranking | `core/ranking.ts` | The one live-universe predicate, `placementOf`, and the verdict tiers. |
+| Evidence ledger | `core/ledger.ts` | A compact per-signal projection of `TokenEvidence`, stored on each snapshot. |
+| Capabilities | `core/capabilities.ts` | What this configuration can check: ON, DEGRADED, OFF or DISABLED. |
+| Language | `server/present.ts` | Every human-readable label and reason. Nothing else phrases a verdict. |
+| DTOs | `server/dto.ts` | View-shaped responses. The browser never receives a raw snapshot. |
+| Security | `server/security.ts` | Host allowlist, same-origin check, CSP and headers, URL guard. |
+| Rendering | `public/lib/html.js` | The single HTML sink: an escaping tagged template. |
+| Live state | `public/lib/live.js` | The SSE connection, a heartbeat, and the `connecting`/`live`/`reconnecting`/`offline` state machine. |
+
+The Board refetches on `scan`; every page listens for connection changes.
 
 **API key requirements** — none to run. `HELIUS_API_KEY` and `BIRDEYE_API_KEY` are optional
 and currently unset; both corresponding sources are inert.
 
-**Test coverage — zero.** No test files, no test runner, no `npm test` script. Verification to
-date is manual: typecheck, two live scans, HTTP endpoint probes.
+**Test coverage** — `npm test` runs 409 `node:test` tests (engine, persistence, DTOs, security
+boundary, render boundary). `npm run test:ui` runs 27 more in a real headless Chromium,
+driven over the DevTools protocol with real pointer, touch and key events and no npm
+dependency. `npm run lint` enforces the render and persistence boundaries. Discovery
+against live providers is still verified only manually.
 
 ### Known defects carried by this baseline
 

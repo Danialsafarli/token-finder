@@ -82,6 +82,29 @@ and an empty table is not a foundation) and the **persistent provider cache** ke
 `(mint, provider, fetched_at)` — the in-memory TTL cache still serves that need. History
 downsampling is also deferred; §13 of PERSISTENCE.md says why.
 
+## Phase A — Product foundation — **DONE (on `feature/product-foundation`, in review)**
+
+The product surface rebuilt on the engine without changing what the engine concludes.
+No scoring weight, veto, evidence state, provider precedence, Token-2022 policy or schema
+changed.
+
+- **Correctness:** one live-universe predicate for every ranking surface (PIPELINE.md §6);
+  history retention decoupled from display.
+- **Security:** loopback bind; Host allowlist against DNS rebinding; same-origin check on
+  `POST /api/scan`; a CSP with no `unsafe-inline`; an escaping render boundary and an
+  `http(s)`-only URL guard, enforced by lint.
+- **Surfaces:** Board, Dossier (evidence ledger, history, contract), Changes and System,
+  on view-shaped DTOs (a Board row is about 0.5 KB).
+- **Architecture:** buildless ES modules, recorded in
+  [docs/adr/0001](docs/adr/0001-frontend-architecture.md).
+- **Verification:** real-browser tests with real pointer, touch and key input; render-
+  and security-boundary tests.
+
+Not in scope, and not started: Buyer Intelligence, Bot/Sybil detection, Technical
+Intelligence, any trading or wallet code. The Dossier's tab registry reserves **Activity**,
+**Buyers** and **Technical** as unavailable entries. They are not rendered: a tab with
+nothing behind it would suggest an analysis that does not exist.
+
 ## Phase 3a — Transaction ingestion (NEXT)
 
 Signature, slot, block time, wallet, mint, pool, base/quote amounts, direction, source.
@@ -173,7 +196,11 @@ with strictly limited balance. Independent watchdog process.
 Only after sustained capped operation with zero safety-limit breaches. Monitored alerting and
 a documented incident runbook are part of the deliverable, not follow-up work.
 
-## Testing strategy (PROPOSAL — currently zero tests exist)
+## Testing strategy (original proposal)
+
+> **Status:** superseded in part. `npm test` runs 409 tests and `npm run test:ui` runs 27
+> real-browser tests; see the README. The tiers below are the original plan, kept for the
+> parts not yet covered.
 
 Runner: `node --test` keeps the zero-dependency property.
 

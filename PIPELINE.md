@@ -385,9 +385,37 @@ A numeric score is not a licence to appear in the ranking.
 | `WATCH` | coverage < `MIN_COVERAGE_QUALIFY` (0.6) |
 | `QUALIFIED` | clean gate, coverage at or above the qualify bar |
 
-`/api/tokens` shows `QUALIFIED` and `WATCH` by default; `?eligibility=all` reveals the
-rest. Eligibility outranks every sort key, so even then a rejected token cannot appear
-above a qualified one.
+Eligibility outranks every sort key: the Board groups rows by verdict in the order
+`QUALIFIED`, `WATCH`, `INSUFFICIENT_DATA`, `REJECTED` (`VERDICT_TIER` in
+`src/core/ranking.ts`) and sorts only within a group. A rejected token therefore cannot
+appear above a qualified one, whatever the sort.
+
+### The live universe
+
+A verdict is a statement about the present, so a verdict computed hours ago cannot sit on
+the live ranking as though it were current. One predicate, `placementOf(token, now,
+windowMs)` in `src/core/ranking.ts`, decides which tokens are live. Every surface uses it:
+the Board rows, the Board's counts and segment totals, `/api/coverage`, `/api/tokens`, the
+System page and `node src/cli.ts rank`. None of them keeps its own version of the rule.
+
+| Placement | Condition | Where it appears |
+|---|---|---|
+| `LIVE` | evaluated, and last evaluated within `LIVE_WINDOW_MIN` (90 min) | the Board, ranked |
+| `STALE` | evaluated, but longer ago than the window | search results, labelled as history; its Dossier says it is not on the live Board |
+| `UNEVALUATED` | never evaluated under the current rules (for example, imported v1 snapshots) | the same; counted, never ranked |
+
+Live tokens are further marked `FRESH` (evaluated within 30 minutes) or `AGING`.
+
+The default window equals `FRESHNESS.liquidityUsd.agingMs`. The reasoning: past the point where the engine would no
+longer trust the token's liquidity evidence, its verdict should not be on the live Board
+either. Leaving the live universe deletes nothing. History, snapshots and verdict changes
+stay, and the token's Dossier stays reachable.
+
+**Retention is decoupled from ranking.** `store.prune()` takes no argument and applies
+the store's own `RETENTION` policy. Before this, the monitor passed a value derived
+from the ranking's `maxAgeHours` into `prune`, where it could lengthen token retention.
+At the defaults it changed nothing, but a display setting should not be able to touch
+a deletion policy at all, and it no longer can.
 
 States: `DISCOVERED -> SCANNING -> {QUALIFIED | WATCH | INSUFFICIENT_DATA | REJECTED}`,
 and every resting state can re-enter `SCANNING`. Nothing is irreversible — a permanent

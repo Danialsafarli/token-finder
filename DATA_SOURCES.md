@@ -128,6 +128,26 @@ Raw provider bodies are deliberately **not** stored, and credentials are
 redacted before any write: some provider URLs carry the key in the query string
 and an undici error embeds the URL it failed on.
 
+### Keyed and keyless operation
+
+The tool runs with no API key, and the product says what that costs instead of hiding
+it. `src/core/capabilities.ts` is the one list of what this configuration can check. The
+System page renders it, and the Board and Dossier derive their notices from it.
+
+| Capability | Provider | Without its key |
+|---|---|---|
+| Market data | DexScreener + Jupiter | Keyless; always on. `DEGRADED` when either failed recently. |
+| Third-party safety reports | RugCheck | Keyless; always on. |
+| On-chain authority check | Helius | **Off.** Mint and freeze authority come from Jupiter and RugCheck reports only; nothing confirms them against the chain. |
+| Token-2022 extension analysis | Helius | **Off.** Extensions are not inspected. A permanent delegate or transfer hook cannot be detected, and is not vetoed for. `mintExtensions` and `tokenProgram` are `UNAVAILABLE` for every token. |
+| Exact holder concentration | Helius | **Off.** Concentration is Jupiter's reported figure, when Jupiter reports one. |
+| Birdeye listing discovery | Birdeye | **Off.** Discovery uses the Jupiter and DexScreener feeds. |
+| Impersonation screening | TypeSafe | `DISABLED` by design. Advisory only; never affects a verdict. |
+
+For a metric that is off for every token, the Dossier gives the reason as "Needs a Helius
+API key", not "no provider reported". The first reason describes the configuration; the
+second would falsely describe the token.
+
 ### Rate limits encountered
 
 **No provider returned any rate-limit header** — not `x-ratelimit-*`, `ratelimit-*`, or

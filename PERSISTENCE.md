@@ -312,6 +312,14 @@ conservative and the rules are stated in one place.
   history cascades with it.
 - Retention runs as one transaction, so a partial sweep cannot leave market
   history for a token whose verdict history was already deleted.
+- **Retention is independent of the live ranking.** Leaving the live Board
+  (`LIVE_WINDOW_MIN`, 90 minutes by default) is a display decision and deletes
+  nothing. Earlier code passed twice the ranking's `MAX_AGE_HOURS` into `prune`,
+  where it could raise the token retention period. At the defaults it had no
+  effect (14 days against 180), but it meant a display setting could quietly
+  change a deletion policy.
+  `store.prune()` now takes no argument, and only the table above decides what
+  is deleted. See [PIPELINE.md §6](PIPELINE.md#the-live-universe).
 
 **Not yet done:** downsampling old high-frequency history into lower resolution.
 It is lossy, easy to get subtly wrong, and there is no accumulated history to

@@ -12,6 +12,8 @@ and they are needed solely for `npm run typecheck`.
 node src/cli.ts serve       # dashboard on http://localhost:5173 + background monitor
 ```
 
+The dashboard listens on loopback only unless `HOST` says otherwise.
+
 ## Commands
 
 | Command | What it does |
@@ -26,7 +28,14 @@ node src/cli.ts serve       # dashboard on http://localhost:5173 + background mo
 | `node src/cli.ts typesafe-check` | One request to verify TypeSafe credentials and connectivity. |
 
 `npm run serve`, `npm run scan` and friends are the same thing.
-`npm test` runs the test suite; `npm run check` runs the typecheck and the tests together.
+
+| Script | What it runs |
+| --- | --- |
+| `npm run typecheck` | `tsc` over the server, then over the browser code (`tsconfig.web.json`, JSDoc-typed). |
+| `npm run lint` | `scripts/lint.mjs`: the render boundary, CSP-compatible markup and the persistence boundary. |
+| `npm test` | Unit and integration tests, plus the render-boundary tests for the browser code. |
+| `npm run test:ui` | The product in a real headless Chrome or Edge, driven by real pointer, touch and key input. Skips, saying so, when no Chromium browser is installed (`CHROME_PATH` overrides). |
+| `npm run check` | All four. |
 
 ## Configuration
 
@@ -38,6 +47,8 @@ without any API key.**
 | `HELIUS_API_KEY` | — | Adds on-chain mint/freeze authority and holder concentration. |
 | `BIRDEYE_API_KEY` | — | Adds Birdeye's new-listing feed. |
 | `PORT` | `5173` | Dashboard port. |
+| `HOST` | `127.0.0.1` | Bind address. The default also binds `::1`, so `localhost` answers on either stack. A non-loopback address exposes the dashboard to the network, and the server logs a warning when that happens. |
+| `LIVE_WINDOW_MIN` | `90` | How long a token stays on the live Board after its last evaluation. It matches the point at which market evidence stops being trusted. |
 | `SCAN_INTERVAL_SEC` | `120` | Seconds between monitor scans. |
 | `MIN_LIQUIDITY_USD` | `3000` | Candidates with less pooled liquidity are dropped. |
 | `MAX_AGE_HOURS` | `168` | Anything older is no longer treated as a new launch. |
@@ -116,22 +127,77 @@ See **[PERSISTENCE.md](PERSISTENCE.md)**.
 
 ## Dashboard
 
-Sortable table with live SSE updates, filters for score, age, liquidity and
-critical risk, a live event feed, and a detail drawer per token showing the
-score breakdown bar by bar, every risk flag, score and price sparklines, and
-links out to DexScreener, Jupiter, RugCheck and Solscan. Press `/` to search.
+Four surfaces, each with its own URL. The architecture is recorded in
+[docs/adr/0001-frontend-architecture.md](docs/adr/0001-frontend-architecture.md):
+plain ES modules, no build step, no framework.
+
+- **Board** (`/`) — the live ranking. It shows only tokens evaluated within
+  `LIVE_WINDOW_MIN`, grouped by verdict, so a rejected token can never sit above
+  a qualified one. There are segments (all, qualified, watch, rejected), search
+  and sort. A search also lists matching tokens that are *not* live, labelled as
+  history. When a capability is off (for example, no Helius key), the Board says
+  which checks no verdict includes. `/` focuses search, `j`/`k` move between rows
+  and `Enter` opens one.
+- **Dossier** (`/t/:mint`) — one token. The overview gives the verdict and the
+  reason for it; score, coverage and confidence as three separate numbers; every
+  signal that was not measured, and why; and the hard vetoes. Tabs:
+  - **Evidence**: every signal, each provider's claim, and which reading won.
+  - **History**: the verdict timeline, market series with gaps shown as gaps,
+    and every verdict change.
+  - **Contract & holders**: the token program, authorities, Token-2022
+    extensions with their policy, and holder concentration.
+- **Changes** (`/changes`) — what the conclusions did: verdict changes across
+  every token, market alerts and first assessments.
+- **System** (`/system`) — what this instance can and cannot check, provider
+  health, persistence health, and the rules the verdicts use.
+
+Freshness is always visible. The top bar shows the connection state (`Live`,
+`Reconnecting`, `Offline`) and the last scan. If the server stops answering, a
+banner says so and warns that the page may be out of date. The banner clears
+itself on reconnect.
 
 ## API
 
+The dashboard reads view-shaped DTOs (`src/server/dto.ts`), never raw
+snapshots. A Board row is about 0.5 KB: 200 rows come to about 100 KB, or about
+19 KB gzipped. Responses over 1 KB are gzipped when the client accepts it.
+
 | Endpoint | Returns |
 | --- | --- |
-| `GET /api/status` | Scan count, last scan, which keys are active (booleans), corpus evidence coverage. |
-| `GET /api/coverage` | Evidence coverage, confidence, lifecycle states, eligibility counts and vetoes across the corpus. |
-| `GET /api/tokens?sort=&minScore=&maxAgeH=&minLiquidity=&minCoverage=&eligibility=&q=&hideRisky=&limit=` | Filtered ranking. Shows `QUALIFIED` and `WATCH` by default; `eligibility=all` reveals rejected and low-data tokens. |
-| `GET /api/tokens/:mint` | One snapshot plus its history. |
+| `GET /api/board?segment=&q=&sort=&limit=` | The live Board: rows, live-universe counts, history matches for a search, capability gaps and the qualify rules. |
+| `GET /api/tokens/:mint` | The Dossier for one token, live or not. `400` for a malformed mint, `404` for an untracked one. |
+| `GET /api/tokens/:mint/history` | Verdict changes and the score, market and holder series for one token. |
+| `GET /api/changes?limit=` | Verdict changes, first assessments and market alerts across all tokens. |
+| `GET /api/system` | Capabilities, provider health, persistence health, the live window and the rules. |
+| `GET /api/status` | Scan count, last scan, whether a scan is running, and which keys are active (booleans). |
+| `GET /api/coverage` | Coverage, confidence and eligibility across the **live** universe, with stale and never-evaluated counts beside it. |
 | `GET /api/events?limit=` | Recent monitor events. |
-| `POST /api/scan` | Triggers a scan. |
-| `GET /api/stream` | SSE: `alert` and `scan` events. |
+| `GET /api/tokens` | Full snapshots of the live universe. Kept for scripts; the dashboard does not use it. |
+| `POST /api/scan` | Triggers a scan. Same-origin only. |
+| `GET /api/stream` | SSE: `hello`, `scan-start`, `scan`, `scan-failed`, `alert`. |
+
+### Local security
+
+The dashboard is a local tool, and it is defended as one:
+
+- It binds `127.0.0.1` (and `::1`) by default.
+- On a loopback bind, it refuses any request whose `Host` is not `localhost` or
+  a loopback address. That stops DNS rebinding, where a hostile page points its
+  own domain at your machine.
+- `POST /api/scan` requires a same-origin `Origin` header, so another site
+  cannot trigger scans from your browser.
+- Every response carries a Content Security Policy with no `unsafe-inline` and
+  no `unsafe-eval`, plus `nosniff`, `frame-ancestors 'none'` and
+  `Referrer-Policy: no-referrer`.
+- Token names, symbols and links are provider data, so an attacker controls
+  them. The browser code has exactly one HTML sink, fed by a template that
+  escapes every value. That template:
+  - accepts only `http(s)` URLs in `href` and `src`;
+  - refuses to build if a value is interpolated into an event handler or a
+    `style` attribute.
+
+  `npm run lint` enforces this. `npm run test:ui` renders a hostile token and
+  checks that nothing executes.
 
 ## Rate limits
 
@@ -151,6 +217,7 @@ has its own queue in `src/util/http.ts`; 429s set a cooldown for that host only.
 | [PIPELINE.md](PIPELINE.md) | **The analysis path as implemented**: provider validation, evidence model, cross-provider resolution, safety gate, coverage/confidence, eligibility and lifecycle. |
 | [TECHNICAL_INTELLIGENCE.md](TECHNICAL_INTELLIGENCE.md) | **PLANNED / FUTURE — not implemented.** Design specification and research record for a future chart-structure analysis layer. No code implements any of it. |
 | [ROADMAP.md](ROADMAP.md) | Proposed development sequence and test strategy. |
+| [docs/adr/](docs/adr/) | Architecture decision records. 0001 is the frontend architecture. |
 
 Parts of those documents describe proposals; they are labelled **NOT IMPLEMENTED** where so.
 
@@ -220,11 +287,19 @@ Full detail: **[PIPELINE.md](PIPELINE.md)**.
 - Third-party endpoints change. Each adapter in `src/sources/` fails soft, so a
   changed endpoint degrades the scan rather than breaking it — if a feed goes
   quiet, check it there first.
-- **Test coverage is partial.** 265 tests cover provider validation, evidence resolution,
-  the safety gate, coverage, eligibility, the lifecycle, Token-2022 extension policy,
-  holder math and the Jev failure paths, over a deterministic 14-scenario fixture corpus.
-  Discovery, the HTTP layer, the store and the dashboard still have no tests. See
-  [ROADMAP.md](ROADMAP.md) for the rest.
+- **Test coverage is partial.** `npm test` runs 409 tests over a deterministic
+  14-scenario fixture corpus. They cover:
+  - provider validation, evidence resolution and cross-provider conflicts;
+  - the safety gate, coverage, eligibility and the lifecycle;
+  - Token-2022 extension policy and holder math;
+  - the Jev failure paths;
+  - persistence and restart;
+  - the live-ranking universe and the view DTOs;
+  - the server's security boundary and the browser render boundary.
+
+  `npm run test:ui` adds 27 real-browser tests of the dashboard itself.
+  Discovery against live providers is still untested. See
+  [ROADMAP.md](ROADMAP.md).
 - **Stale evidence cannot lower a current score.** A RugCheck finding only
   charges its penalty while it is current, is classified as something age does
   not touch, and is not contradicted by canonical on-chain state. Suppressed
@@ -242,5 +317,5 @@ Full detail: **[PIPELINE.md](PIPELINE.md)**.
 - **Impersonation screening is advisory.** When enabled it flags naming that resembles an
   established token. It never changes a score, is not proof of fraud, and is not a trading
   signal. Any failure records "not assessed", which is not the same as safe.
-- Scores are still uncalibrated against outcome data, and there is no hard veto: a dangerous
-  token is penalised, never excluded.
+- Scores are still uncalibrated against outcome data. The hard veto gate (above) excludes a
+  token only for specific, evidenced dangers; anything short of those is still a penalty.
