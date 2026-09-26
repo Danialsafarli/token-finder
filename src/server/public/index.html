@@ -2,105 +2,46 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="description" content="Evidence-grade intelligence on newly launched Solana tokens: every verdict with its evidence, its gaps and its history." />
     <title>Token Finder</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>◎</text></svg>" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/app.js"></script>
   </head>
-  <body>
+  <body data-connection="connecting">
+    <a class="skip" href="#main">Skip to content</a>
+
     <header class="topbar">
-      <div class="brand">
-        <span class="mark">◎</span>
-        <h1>Token Finder</h1>
-        <span class="chain">solana</span>
-      </div>
+      <a class="brand" href="/" data-link aria-label="Token Finder — live board">
+        <svg class="brand__mark" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" class="brand__frame" />
+          <path d="M8 8.5h8M8 12h5.5M8 15.5h3" class="brand__lines" />
+          <circle cx="16" cy="15.5" r="1.6" class="brand__dot" />
+        </svg>
+        <span class="brand__name">Token Finder</span>
+        <span class="brand__chain">Solana</span>
+      </a>
 
-      <div class="status" id="status">
-        <span class="dot" id="status-dot"></span>
-        <span id="status-text">connecting…</span>
-      </div>
+      <nav class="nav" aria-label="Primary">
+        <a class="nav__link" href="/" data-link data-nav="board">Board</a>
+        <a class="nav__link" href="/changes" data-link data-nav="changes">Changes</a>
+        <a class="nav__link" href="/system" data-link data-nav="system">System</a>
+      </nav>
 
-      <button id="scan-now" class="btn">Scan now</button>
+      <div class="live" id="live">
+        <span class="live__dot" aria-hidden="true"></span>
+        <span class="live__text" id="live-text" role="status" aria-live="polite">Connecting…</span>
+        <button type="button" class="btn btn--small" id="scan-now" disabled>Scan now</button>
+      </div>
     </header>
 
-    <section class="filters">
-      <label class="field">
-        <span>Search</span>
-        <input id="f-query" type="search" placeholder="symbol, name or mint" autocomplete="off" />
-      </label>
+    <div class="conn" id="conn-banner" role="alert" hidden></div>
 
-      <label class="field">
-        <span>Sort</span>
-        <select id="f-sort">
-          <option value="score">Score</option>
-          <option value="momentum">Momentum 1h</option>
-          <option value="liquidity">Liquidity</option>
-          <option value="volume">Volume 24h</option>
-          <option value="holders">Holders</option>
-          <option value="age">Newest</option>
-        </select>
-      </label>
-
-      <label class="field">
-        <span>Min score <b id="f-minscore-val">0</b></span>
-        <input id="f-minscore" type="range" min="0" max="90" step="5" value="0" />
-      </label>
-
-      <label class="field">
-        <span>Max age <b id="f-maxage-val">168h</b></span>
-        <input id="f-maxage" type="range" min="1" max="168" step="1" value="168" />
-      </label>
-
-      <label class="field">
-        <span>Min liquidity <b id="f-minliq-val">$0</b></span>
-        <input id="f-minliq" type="range" min="0" max="250000" step="1000" value="0" />
-      </label>
-
-      <label class="check">
-        <input id="f-hiderisky" type="checkbox" />
-        <span>Hide critical risk</span>
-      </label>
-
-      <span class="count" id="result-count"></span>
-    </section>
-
-    <main class="layout">
-      <div class="table-wrap">
-        <table id="tokens">
-          <thead>
-            <tr>
-              <th class="num">#</th>
-              <th>Token</th>
-              <th class="num">Score</th>
-              <th class="num">Price</th>
-              <th class="num">1h</th>
-              <th class="num">6h</th>
-              <th class="num">24h</th>
-              <th class="num">Liquidity</th>
-              <th class="num">Vol 24h</th>
-              <th class="num">Holders</th>
-              <th class="num">Age</th>
-              <th>Risk</th>
-            </tr>
-          </thead>
-          <tbody id="tokens-body">
-            <tr class="empty">
-              <td colspan="12">Waiting for the first scan…</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <aside class="feed">
-        <h2>Live feed</h2>
-        <ul id="events"></ul>
-      </aside>
+    <main id="main" class="main" tabindex="-1">
+      <noscript><p class="state state--error">Token Finder needs JavaScript to run.</p></noscript>
     </main>
-
-    <div class="drawer" id="drawer" hidden>
-      <div class="drawer-inner" id="drawer-inner"></div>
-    </div>
-
-    <script type="module" src="/app.js"></script>
   </body>
 </html>
