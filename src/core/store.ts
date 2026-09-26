@@ -50,7 +50,17 @@ import type { DatabaseSync } from 'node:sqlite';
 import { config, DATA_DIR } from '../config.ts';
 import { log } from '../util/logger.ts';
 import { closeDatabase, openDatabase } from '../persist/db.ts';
-import { Repository, type SnapshotPolicy } from '../persist/repository.ts';
+import {
+  Repository,
+  type HistoryQuery,
+  type HolderPoint,
+  type MarketPoint,
+  type ProviderFailureSummary,
+  type SnapshotPolicy,
+  type StoredEvidence,
+  type VerdictChange,
+  type VerdictPoint,
+} from '../persist/repository.ts';
 import { importLegacyState } from '../persist/legacy-import.ts';
 import { applyRetention, type RetentionPolicy } from '../persist/retention.ts';
 import { diagnose, formatBytes, type DatabaseDiagnostics } from '../persist/diagnostics.ts';
@@ -227,24 +237,21 @@ export const store = {
   },
 
   /**
-   * Applies the retention policy.
+   * Applies the HISTORY retention policy from config.
    *
-   * The argument is the legacy signature's max-age in milliseconds, kept so
-   * existing callers do not change. It bounds how long a token may go unseen;
-   * the richer per-stream policy comes from config. State transitions are never
-   * removed, whatever is passed here.
+   * This decides how long rows are kept, not what is current. It used to take
+   * a max-age argument and fold it into the token-retention window, which
+   * quietly made "how long do we keep history" also mean "how long does a token
+   * stay on the Board" - and extended the latter from 14 days to 180. Live
+   * visibility is now decided only by core/ranking.ts. State transitions are
+   * never removed.
    */
-  prune(maxAgeMs: number): number {
+  prune(): number {
     const repo = runtime.repo;
-    if (repo === null) return 0;
-
-    const policy: RetentionPolicy = {
-      ...RETENTION,
-      tokenDays: Math.max(RETENTION.tokenDays, maxAgeMs / (24 * 3_600_000)),
-    };
     const db = runtime.db;
-    if (db === null) return 0;
-    const result = applyRetention(db, policy);
+    if (repo === null || db === null) return 0;
+
+    const result = applyRetention(db, RETENTION);
     if (result.failure !== null) {
       noteFailure(result.failure);
       return 0;
@@ -260,7 +267,41 @@ export const store = {
     return result.tokens;
   },
 
-  /** Diagnostics for the CLI and a future status endpoint. */
+  // --- history queries for the product surface -----------------------------
+  // Thin pass-throughs: the repository owns the SQL, the store owns the handle.
+  // Each degrades to empty when persistence is unavailable, and callers report
+  // that through persistenceFailure() rather than inventing history.
+
+  verdictChanges(options: { mint?: string; limit?: number; since?: number } = {}): VerdictChange[] {
+    return runtime.repo?.verdictChanges(options) ?? [];
+  },
+
+  tokenHistory(mint: string, query: HistoryQuery = {}): VerdictPoint[] {
+    return runtime.repo?.tokenHistory(mint, query) ?? [];
+  },
+
+  marketHistory(mint: string, query: HistoryQuery = {}): MarketPoint[] {
+    return runtime.repo?.marketHistory(mint, query) ?? [];
+  },
+
+  holderHistory(mint: string, query: HistoryQuery = {}): HolderPoint[] {
+    return runtime.repo?.holderHistory(mint, query) ?? [];
+  },
+
+  latestEvidence(mint: string): StoredEvidence[] {
+    return runtime.repo?.latestEvidence(mint) ?? [];
+  },
+
+  providerFailureSummary(since: number): ProviderFailureSummary[] {
+    return runtime.repo?.providerFailureSummary(since) ?? [];
+  },
+
+  /** True when history reads and writes are working. */
+  persistenceHealthy(): boolean {
+    return runtime.repo !== null && runtime.failure === null;
+  },
+
+  /** Diagnostics for the CLI and the System surface. */
   diagnostics(): DatabaseDiagnostics | null {
     return runtime.db === null ? null : diagnose(runtime.db, DB_PATH);
   },

@@ -27,6 +27,13 @@ export interface ScanResult {
 
 let scanning = false;
 
+/** The most recent completed scan, for the System surface. Null until one finishes. */
+let lastScan: ScanResult | null = null;
+
+export function lastScanResult(): ScanResult | null {
+  return lastScan;
+}
+
 function emit(
   kind: MonitorEvent['kind'],
   snapshot: TokenSnapshot,
@@ -172,6 +179,10 @@ export async function runScan(): Promise<ScanResult> {
   // Opens a scan row so every snapshot written below is attributable to this
   // batch. Degrades to a null scan id when persistence is unavailable.
   store.beginScan(started);
+  // Announced immediately, so a watching dashboard shows "scanning" now rather
+  // than on its next status poll.
+  bus.emit('scan-start', { at: started });
+  let completed = false;
   try {
     const candidates = await discover();
 
@@ -222,10 +233,15 @@ export async function runScan(): Promise<ScanResult> {
       top: [...snapshots].sort((a, b) => b.score.total - a.score.total).slice(0, 10),
     };
 
+    lastScan = result;
+    completed = true;
     bus.emit('scan', result);
     return result;
   } finally {
     scanning = false;
+    // A scan that threw announced its start and must announce its end, or a
+    // watching dashboard would show "scanning" until the next status poll.
+    if (!completed) bus.emit('scan-failed', { at: started });
   }
 }
 
@@ -246,7 +262,9 @@ export function startMonitor(): { stop: () => void } {
       log.ok(
         `scan ${store.scanCount}: ${result.analyzed} tokens (${result.fresh} new) in ${(result.durationMs / 1000).toFixed(1)}s, ${result.events.length} events`,
       );
-      const dropped = store.prune(config.maxAgeHours * 3_600_000 * 2);
+      // History retention only. Whether a token is on the live Board is
+      // decided by core/ranking.ts, never by how long its rows are kept.
+      const dropped = store.prune();
       if (dropped > 0) log.debug(`pruned ${dropped} stale tokens`);
     } catch (error) {
       log.error('scan failed:', error instanceof Error ? error.message : error);

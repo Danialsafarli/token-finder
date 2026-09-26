@@ -18,6 +18,7 @@ import {
   type EligibilityConfig,
 } from './lifecycle.ts';
 import { isUsable, type TokenEvidence } from './evidence.ts';
+import { ledgerFrom } from './ledger.ts';
 import type {
   Evaluation,
   JupiterInfo,
@@ -344,6 +345,9 @@ export async function analyze(
       impersonation,
       score,
       evaluation,
+      // The receipt for this verdict: every metric's winning value, state,
+      // source, age and the claims that lost. A projection, not a decision.
+      ledger: ledgerFrom(evidence),
     };
   });
 

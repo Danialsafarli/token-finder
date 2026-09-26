@@ -407,6 +407,44 @@ export interface Evaluation {
   historicalDangerEvidence: boolean;
 }
 
+/** A value as the ledger records it: display-ready, JSON-safe, never a class. */
+export type LedgerValue = number | boolean | string | string[] | Record<string, number> | null;
+
+export interface LedgerClaim {
+  provider: string;
+  value: LedgerValue;
+  observedAt: number;
+  freshness: EvidenceFreshness;
+  /** Why this provider's value was rejected at the boundary. */
+  invalid?: string;
+  /** Why this provider could not be reached. */
+  unavailable?: string;
+}
+
+export type EvidenceFreshness = 'FRESH' | 'AGING' | 'STALE' | 'UNKNOWN';
+
+/**
+ * One metric's resolved evidence, flattened for display and persistence.
+ *
+ * A projection of `Evidence<T>` - it adds nothing and decides nothing. The
+ * engine's resolution is the only authority; this is its receipt.
+ */
+export interface LedgerEntry {
+  metric: string;
+  state: EvidenceState;
+  value: LedgerValue;
+  source: string | null;
+  observedAt: number | null;
+  freshness: EvidenceFreshness;
+  confidence: number;
+  /** Share of evidence coverage this signal carries; 0 for informational rows. */
+  weight: number;
+  notes: string[];
+  claims: LedgerClaim[];
+  /** Claims that asserted a different value and lost, on staleness or precedence. */
+  overridden: LedgerClaim[];
+}
+
 export interface TokenSnapshot {
   mint: string;
   symbol: string;
@@ -437,6 +475,16 @@ export interface TokenSnapshot {
   score: Score;
   /** Gate, coverage and lifecycle outcome. Null only on legacy snapshots. */
   evaluation: Evaluation | null;
+  /**
+   * The resolved evidence behind this snapshot, one entry per coverage signal
+   * plus the token program - what each provider claimed, which claim won, how
+   * old it was and how much it was worth.
+   *
+   * Optional and additive: absent on snapshots written before it existed, in
+   * which case the Dossier falls back to the persisted `evidence_snapshots`
+   * rows (which carry the winning value but not every provider's claim).
+   */
+  ledger?: LedgerEntry[] | null;
 }
 
 export type EventKind =

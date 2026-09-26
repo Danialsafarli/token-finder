@@ -200,6 +200,50 @@ export interface TransitionRow extends VerdictPoint {
 }
 
 /**
+ * A verdict change with what it changed from and the market at that moment.
+ *
+ * `from` is the eligibility of the previous transition row for the same mint.
+ * Every eligibility change is recorded as a transition (see decideSnapshot), so
+ * the previous transition is exactly the previous verdict. Null means this was
+ * the token's first assessment.
+ */
+export interface VerdictChange {
+  id: number;
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  observedAt: number;
+  from: string | null;
+  fromAt: number | null;
+  to: string | null;
+  score: number;
+  coverage: number | null;
+  confidence: number | null;
+  vetoCodes: string[];
+  priceUsd: number | null;
+  liquidityUsd: number | null;
+}
+
+export interface StoredEvidence {
+  snapshotId: number;
+  observedAt: number;
+  metric: string;
+  state: string;
+  value: string | null;
+  source: string | null;
+  freshness: string | null;
+  confidence: number | null;
+}
+
+export interface ProviderFailureSummary {
+  provider: string;
+  count: number;
+  lastAt: number;
+  lastKind: string;
+  lastMessage: string | null;
+}
+
+/**
  * Domain operations over one database handle.
  *
  * Constructed with an already-open, already-migrated handle. It does not own
@@ -813,6 +857,124 @@ export class Repository {
           .split(',')
           .filter((code) => code.length > 0),
         isTransition: true,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Verdict changes, newest first, each with the verdict it replaced.
+   *
+   * Only rows that carry an eligibility take part: history imported from the
+   * pre-evaluation JSON store has none, and treating its NULL as a verdict would
+   * invent a "change" that never happened.
+   */
+  verdictChanges(options: { mint?: string; limit?: number; since?: number } = {}): VerdictChange[] {
+    const params: (string | number)[] = [];
+    let where = 'ts.is_transition = 1 AND ts.eligibility IS NOT NULL';
+    if (options.mint !== undefined) {
+      where += ' AND ts.mint = ?';
+      params.push(options.mint);
+    }
+    const outer: string[] = [];
+    if (options.since !== undefined) {
+      outer.push('observed_at >= ?');
+    }
+    try {
+      const rows = this.#db
+        .prepare(
+          `SELECT * FROM (
+             SELECT ts.id, ts.mint, t.symbol, t.name, ts.observed_at, ts.eligibility,
+                    ts.score, ts.coverage, ts.confidence, ts.veto_codes,
+                    ms.price_usd, ms.liquidity_usd,
+                    LAG(ts.eligibility) OVER (PARTITION BY ts.mint ORDER BY ts.observed_at) AS prev_eligibility,
+                    LAG(ts.observed_at) OVER (PARTITION BY ts.mint ORDER BY ts.observed_at) AS prev_at
+               FROM token_snapshots ts
+               LEFT JOIN tokens t ON t.mint = ts.mint
+               LEFT JOIN market_snapshots ms ON ms.mint = ts.mint AND ms.observed_at = ts.observed_at
+              WHERE ${where}
+           )
+           ${outer.length ? `WHERE ${outer.join(' AND ')}` : ''}
+           ORDER BY observed_at DESC
+           LIMIT ?`,
+        )
+        .all(...params, ...(options.since !== undefined ? [options.since] : []), options.limit ?? 100) as Record<string, unknown>[];
+      return rows.map((row) => ({
+        id: Number(row['id']),
+        mint: String(row['mint']),
+        symbol: (row['symbol'] as string | null) ?? null,
+        name: (row['name'] as string | null) ?? null,
+        observedAt: Number(row['observed_at']),
+        from: (row['prev_eligibility'] as string | null) ?? null,
+        fromAt: row['prev_at'] == null ? null : Number(row['prev_at']),
+        to: (row['eligibility'] as string | null) ?? null,
+        score: Number(row['score']),
+        coverage: row['coverage'] == null ? null : Number(row['coverage']),
+        confidence: row['confidence'] == null ? null : Number(row['confidence']),
+        vetoCodes: String(row['veto_codes'] ?? '')
+          .split(',')
+          .filter((code) => code.length > 0),
+        priceUsd: row['price_usd'] == null ? null : Number(row['price_usd']),
+        liquidityUsd: row['liquidity_usd'] == null ? null : Number(row['liquidity_usd']),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The most recent persisted evidence for a mint.
+   *
+   * The fallback for snapshots written before the ledger existed: it carries the
+   * winning value, state, source, freshness and confidence per metric, but not
+   * every provider's claim.
+   */
+  latestEvidence(mint: string): StoredEvidence[] {
+    try {
+      const rows = this.#db
+        .prepare(
+          `SELECT snapshot_id, observed_at, metric, state, value, source, freshness, confidence
+             FROM evidence_snapshots
+            WHERE snapshot_id = (SELECT MAX(snapshot_id) FROM evidence_snapshots WHERE mint = ?)
+            ORDER BY metric`,
+        )
+        .all(mint) as Record<string, unknown>[];
+      return rows.map((row) => ({
+        snapshotId: Number(row['snapshot_id']),
+        observedAt: Number(row['observed_at']),
+        metric: String(row['metric']),
+        state: String(row['state']),
+        value: (row['value'] as string | null) ?? null,
+        source: (row['source'] as string | null) ?? null,
+        freshness: (row['freshness'] as string | null) ?? null,
+        confidence: row['confidence'] == null ? null : Number(row['confidence']),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Provider failures since a point in time, grouped by provider. */
+  providerFailureSummary(since: number): ProviderFailureSummary[] {
+    try {
+      const rows = this.#db
+        .prepare(
+          `SELECT pf.provider, COUNT(*) AS n, MAX(pf.at) AS last_at,
+                  (SELECT kind FROM provider_failures x WHERE x.provider = pf.provider ORDER BY x.at DESC LIMIT 1) AS last_kind,
+                  (SELECT message FROM provider_failures x WHERE x.provider = pf.provider ORDER BY x.at DESC LIMIT 1) AS last_message
+             FROM provider_failures pf
+            WHERE pf.at >= ?
+            GROUP BY pf.provider
+            ORDER BY n DESC`,
+        )
+        .all(since) as Record<string, unknown>[];
+      return rows.map((row) => ({
+        provider: String(row['provider']),
+        count: Number(row['n']),
+        lastAt: Number(row['last_at']),
+        lastKind: String(row['last_kind'] ?? 'UNKNOWN'),
+        lastMessage: (row['last_message'] as string | null) ?? null,
       }));
     } catch {
       return [];

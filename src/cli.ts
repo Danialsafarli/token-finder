@@ -5,6 +5,7 @@ import { discover } from './core/discover.ts';
 import { analyze } from './core/analyze.ts';
 import { runScan, startMonitor } from './core/monitor.ts';
 import { formatBytes, store } from './core/store.ts';
+import { countUniverse, liveTokens, VERDICT_TIER } from './core/ranking.ts';
 import { serve } from './server/index.ts';
 import * as dexscreener from './sources/dexscreener.ts';
 import type { TokenSnapshot } from './types.ts';
@@ -147,10 +148,25 @@ async function cmdScan(): Promise<void> {
 }
 
 function cmdRank(limit: number): void {
-  const tokens = store
-    .tokens()
-    .sort((a, b) => b.score.total - a.score.total)
+  // The same live universe the dashboard ranks: evaluated, and evaluated
+  // recently enough that its market evidence is still current.
+  const now = Date.now();
+  const all = store.tokens();
+  const counts = countUniverse(all, now, config.liveWindowMin * 60_000);
+  const tokens = liveTokens(all, now, config.liveWindowMin * 60_000)
+    .sort(
+      (a, b) =>
+        VERDICT_TIER[a.evaluation!.eligibility] - VERDICT_TIER[b.evaluation!.eligibility] ||
+        b.score.total - a.score.total,
+    )
     .slice(0, limit);
+
+  log.info(
+    log.paint(
+      'dim',
+      `${counts.live} live (evaluated within ${config.liveWindowMin}m) · ${counts.stale} stale · ${counts.unevaluated} never evaluated - only live tokens are ranked`,
+    ),
+  );
 
   if (store.lastScanAt) {
     log.info(

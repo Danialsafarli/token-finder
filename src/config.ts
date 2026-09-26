@@ -83,6 +83,20 @@ export const config = {
   heliusApiKey: str('HELIUS_API_KEY'),
   birdeyeApiKey: str('BIRDEYE_API_KEY'),
   port: num('PORT', 5173),
+  /**
+   * Interface the dashboard listens on. Loopback by default: this is a local
+   * tool, and binding every interface put it on the LAN with an
+   * unauthenticated scan endpoint. Set HOST=0.0.0.0 to expose it deliberately.
+   */
+  host: str('HOST') ?? '127.0.0.1',
+  /**
+   * How long after its last evaluation a token stays on the live Board, in
+   * minutes. The default is the engine's own market-evidence aging window
+   * (FRESHNESS.liquidityUsd.agingMs); a test keeps the two equal. Past it the
+   * engine would treat the token's liquidity as stale, so its verdict is
+   * history, not a current assessment.
+   */
+  liveWindowMin: Math.max(5, num('LIVE_WINDOW_MIN', 90)),
 
   /** TypeSafe (Jev) impersonation screening - optional, off unless switched on. */
   typesafeApiKey: str('TYPESAFE_API_KEY'),
