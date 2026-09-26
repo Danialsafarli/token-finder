@@ -13,9 +13,11 @@
     "rank": "node src/cli.ts rank",
     "watch": "node src/cli.ts watch",
     "analyze": "node src/cli.ts analyze",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts",
-    "check": "npm run typecheck && npm test"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json",
+    "lint": "node scripts/lint.mjs",
+    "test": "node --test test/*.test.ts test/web/*.test.mjs",
+    "test:ui": "node --test test/ui/*.test.mjs",
+    "check": "npm run typecheck && npm run lint && npm test && npm run test:ui"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
