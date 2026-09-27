@@ -18,6 +18,14 @@ interface HostLimit {
 
 const limits = new Map<string, HostLimit>();
 
+/** 429s received per host since start, including ones a retry recovered from. */
+const throttled = new Map<string, number>();
+
+/** How often a host has told us to slow down. A retried 429 still counts. */
+export function throttleCount(host: string): number {
+  return throttled.get(host) ?? 0;
+}
+
 /** Requests per minute we allow ourselves per host, kept under published caps. */
 const RPM: Record<string, number> = {
   'api.dexscreener.com': 120,
@@ -25,6 +33,12 @@ const RPM: Record<string, number> = {
   'api.rugcheck.xyz': 30,
   'public-api.birdeye.so': 50,
   'mainnet.helius-rpc.com': 120,
+  // Published limit: 100 requests per 10 s per IP, 40 per 10 s for any one
+  // method (solana.com/docs/references/clusters). Measured 2026-09-27, the
+  // endpoint enforces less than that for getTransaction: at 2.5/s, 19 of 30
+  // calls got 429 with Retry-After: 10; at 1/s, 30 of 30 succeeded. The
+  // measured rate is the one that counts.
+  'api.mainnet-beta.solana.com': 60,
   'api.typesafe.ai': 60,
 };
 
@@ -107,6 +121,7 @@ export async function getJson<T>(url: string, options: FetchOptions = {}): Promi
       const text = (await response.text().catch(() => '')).slice(0, 300);
 
       if (response.status === 429) {
+        throttled.set(host, (throttled.get(host) ?? 0) + 1);
         const retryAfter = Number(response.headers.get('retry-after'));
         const waitMs =
           Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2000 * (attempt + 1);

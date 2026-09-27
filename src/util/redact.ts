@@ -32,7 +32,7 @@ const SECRET_PARAMS = /([?&](?:api[-_]?key|key|token|secret|password|access[-_]?
  * corrupt unrelated text without protecting anything.
  */
 function knownSecrets(): string[] {
-  return [config.heliusApiKey, config.birdeyeApiKey, config.typesafeApiKey].filter(
+  return [config.heliusApiKey, config.birdeyeApiKey, config.typesafeApiKey, config.solanaRpcUrl].filter(
     (value): value is string => typeof value === 'string' && value.length >= 8,
   );
 }

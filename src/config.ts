@@ -168,6 +168,40 @@ export const config = {
 
   /** Upper bound on mints fully analyzed per scan; keeps us inside rate limits. */
   maxAnalyzePerScan: num('MAX_ANALYZE_PER_SCAN', 60),
+  // --- data backbone: on-chain ingestion ---------------------------------
+  /**
+   * A Solana JSON-RPC endpoint to read the chain through, when not Helius.
+   * Treated as a secret: a provider URL can carry a key in its query string.
+   * Unset, the backbone uses Helius when HELIUS_API_KEY is set and the public
+   * mainnet endpoint otherwise.
+   */
+  solanaRpcUrl: str('SOLANA_RPC_URL'),
+  /** Master switch for chain ingestion (launch discovery and swap collection). */
+  ingestEnabled: bool('INGEST_ENABLED', true),
+  /** Seconds between ingestion cycles. */
+  ingestIntervalSec: Math.max(20, num('INGEST_INTERVAL_SEC', 60)),
+  /** Surviving tokens whose pool history is collected per cycle. */
+  ingestTokensPerCycle: Math.max(0, num('INGEST_TOKENS_PER_CYCLE', 6)),
+  /** Transactions fetched per token per cycle. */
+  ingestTxPerToken: Math.max(1, num('INGEST_TX_PER_TOKEN', 10)),
+  /** Whether pump.fun launches are read from the chain. */
+  launchDiscoveryEnabled: bool('LAUNCH_DISCOVERY_ENABLED', true),
+  /** Launch transactions fetched per cycle; launches beyond it are counted as a gap. */
+  launchTxPerCycle: Math.max(0, num('LAUNCH_TX_PER_CYCLE', 60)),
+  /** Chain-discovered launches younger than this join discovery's candidates. */
+  chainCandidateWindowMin: Math.max(1, num('CHAIN_CANDIDATE_WINDOW_MIN', 30)),
+  /** Upper bound on chain-discovered candidates per scan. */
+  chainCandidateMax: Math.max(0, num('CHAIN_CANDIDATE_MAX', 150)),
+  /** Days a launch that never became a tracked token is kept. */
+  retentionLaunchDays: Math.max(1, num('RETENTION_LAUNCH_DAYS', 30)),
+  /**
+   * Days of chain history kept: pool activity, the fetch ledger, transfer
+   * edges, wallets and gaps. Separate from verdict history because it is far
+   * larger - measured ~1.1 KB per collected transaction, ~60k transactions a
+   * day at the public endpoint's rate, so ~65 MB a day.
+   */
+  retentionChainDays: Math.max(1, num('RETENTION_CHAIN_DAYS', 30)),
+
   /** Snapshots retained per token for the sparkline/history view. */
   historyPoints: num('HISTORY_POINTS', 240),
   /** Monitor events retained. */
