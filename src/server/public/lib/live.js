@@ -163,6 +163,11 @@ function connectStream() {
     });
   }
 
+  stream.addEventListener('scan-stage', (message) => {
+    contact();
+    dispatch('scan-stage', JSON.parse(/** @type {MessageEvent} */ (message).data));
+  });
+
   stream.addEventListener('alert', (message) => {
     contact();
     dispatch('alert', JSON.parse(/** @type {MessageEvent} */ (message).data));

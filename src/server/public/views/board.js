@@ -14,7 +14,13 @@ import { api } from '../lib/api.js';
 import { age, ago, count, pct, span, usd } from '../lib/format.js';
 import { navigate, setQuery } from '../lib/router.js';
 import { liveState, onServerEvent } from '../lib/live.js';
-import { mountOrb } from '../ui/orb.js';
+import { adoptOrb, mountOrb } from '../ui/orb.js';
+
+/**
+ * Where the operational sphere sits in the hero: a little left of centre, so
+ * the Observatory reads as anchored to the left with the Board beside it.
+ */
+const HERO_PLACEMENT = { fx: 0.44, fy: 0.5, size: 1 };
 import {
   dossierUrl,
   emptyState,
@@ -450,8 +456,20 @@ export function mountBoard(root, route) {
   };
 
   render(root, shellTemplate());
+  let arrivalTimer = 0;
   const slot = (/** @type {string} */ name) => /** @type {HTMLElement} */ (root.querySelector(`[data-slot="${name}"]`));
-  const orb = mountOrb(slot('orb'));
+  // Arriving from the Landing's discovery scan, the same Observatory continues
+  // here: adopted, reconfigured for this surface, moving from where it was.
+  const arrival = adoptOrb();
+  const orb = arrival ? arrival.handle : mountOrb(slot('orb'), { placement: HERO_PLACEMENT });
+  if (arrival) {
+    const layout = /** @type {HTMLElement} */ (root.querySelector('.board-layout'));
+    layout.classList.add('is-arriving');
+    orb.configure({ bare: false, follow: true, reveal: true, ring: 'orbit', composition: 'auto' });
+    orb.attach(slot('orb'), arrival.from);
+    orb.setPlacement(HERO_PLACEMENT);
+    arrivalTimer = window.setTimeout(() => layout.classList.remove('is-arriving'), 2400);
+  }
   orb.aside.classList.add('rail');
   orb.aside.setAttribute('aria-labelledby', 'rail-title');
   const slots = { head: slot('head'), main: slot('main'), rail: orb.aside };
@@ -554,6 +572,7 @@ export function mountBoard(root, route) {
     },
     dispose() {
       disposed = true;
+      clearTimeout(arrivalTimer);
       orb.dispose();
       offServer();
       clearInterval(tick);

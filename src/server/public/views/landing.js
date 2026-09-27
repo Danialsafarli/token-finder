@@ -1,25 +1,31 @@
 // @ts-check
 /**
- * Landing: what Token Finder is, and the two things a person comes to do.
+ * Landing: what Token Finder is, and the two ways in.
  *
  *   "I have a token."            → Analyze: paste a mint, watch the real
- *                                   pipeline run, read the verdict.
- *   "Show me what matters now."  → Discover: the live Observatory and Board.
+ *                                   pipeline run on it, read the verdict.
+ *   "Show me what matters now."  → Scan live: Token Finder runs a real
+ *                                   discovery scan here, then carries the
+ *                                   same Observatory into Live discovery.
  *
- * `/` and `/analyze/:mint` are one view in different states - idle, scanning,
- * result, error - so the Observatory can move from the centre of the page to
- * the left as a result arrives, instead of the page being replaced.
+ * The page reads top to bottom: the headline, the Observatory, then the two
+ * ways in. When either begins, the Observatory lifts into an operational stage
+ * - measured from where it is on screen, so it never jumps - and scans.
  *
- * Nothing here is simulated. Stages are shown as the server reports them; the
- * result is the token's persisted Dossier data; a token with no market says so.
+ * `/` and `/analyze/:mint` are one view in different states. A discovery scan
+ * runs on `/` and ends by handing the Observatory itself to `/discover`.
+ *
+ * Nothing here is simulated. Stages and counts are what the server reports;
+ * results are persisted data; a scan that fails or a token with no market says
+ * so.
  */
 
 import { appUrl, html, render } from '../lib/html.js';
 import { api, ApiError } from '../lib/api.js';
-import { count, share, shortAddress } from '../lib/format.js';
+import { ago, count, duration, share, shortAddress } from '../lib/format.js';
 import { navigate } from '../lib/router.js';
-import { liveState, onLive } from '../lib/live.js';
-import { mountOrb } from '../ui/orb.js';
+import { liveState, onLive, onServerEvent } from '../lib/live.js';
+import { handOff, mountOrb } from '../ui/orb.js';
 import { dossierUrl, tokenIcon, toneClass, verdictChip } from '../ui/components.js';
 
 /** A Solana mint: base58, 32 to 44 characters. */
@@ -27,7 +33,7 @@ const MINT_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 /**
  * @typedef {{ id: string, label: string, detail: string | null, at: number }} Stage
- * @typedef {'idle' | 'scanning' | 'result' | 'error'} Phase
+ * @typedef {'idle' | 'scanning' | 'discovering' | 'arriving' | 'result' | 'error'} Phase
  */
 
 /**
@@ -39,9 +45,14 @@ const MINT_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 export function readMint(raw) {
   const text = raw.trim();
   if (text === '') return { error: 'Paste a Solana mint address.' };
-  const candidate = /^https?:\/\//i.test(text)
-    ? (new URL(text).pathname.split('/').filter(Boolean).pop() ?? '')
-    : text;
+  let candidate = text;
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      candidate = new URL(text).pathname.split('/').filter(Boolean).pop() ?? '';
+    } catch {
+      return { error: 'That link could not be read.' };
+    }
+  }
   if (MINT_ADDRESS.test(candidate)) return { mint: candidate };
   if (/[0OIl]/.test(candidate) && /^[0-9A-Za-z]+$/.test(candidate)) {
     return { error: 'That is not a Solana address: they never contain 0, O, I or lowercase l.' };
@@ -58,11 +69,11 @@ const shellTemplate = () => html`
   <section class="landing" data-phase="idle" aria-labelledby="landing-title">
     <div class="landing__content">
       <header class="landing__intro">
-        <p class="landing__eyebrow">Evidence-grade intelligence for new Solana tokens</p>
-        <h1 class="landing__title" id="landing-title">Know what a token is <span class="landing__title-line">before you touch it.</span></h1>
+        <p class="landing__eyebrow">Live token discovery · Solana</p>
+        <h1 class="landing__title" id="landing-title">Find the signal <span class="landing__title-line">in every new Solana launch.</span></h1>
         <p class="landing__lede">
-          Token Finder reads a token's market, its contract and its risk reports, settles where they disagree,
-          and gives you a verdict with the evidence behind it - including what it could not check.
+          Token Finder watches new tokens as they appear, weighs each one's market, contract and risk reports,
+          and keeps its read current as conditions change. Every verdict arrives with its evidence.
         </p>
       </header>
       <div class="landing__orb" data-slot="orb"></div>
@@ -70,50 +81,76 @@ const shellTemplate = () => html`
     </div>
   </section>`;
 
-/** @param {import('../lib/live.js').LiveState} live @param {string} value @param {string | null} error */
-const pathsTemplate = (live, value, error) => {
+/**
+ * @param {import('../lib/live.js').LiveState} live
+ * @param {{ lastDurationMs: number | null }} facts
+ * @param {string} value @param {string | null} error
+ */
+const pathsTemplate = (live, facts, value, error) => {
   const status = live.status;
-  return html`<div class="paths">
+  return html`<div class="paths" role="group" aria-label="Two ways to start">
     <form class="path path--analyze" novalidate data-intent="analyze">
       <p class="path__kicker">I have a token</p>
-      <h2 class="path__title" id="analyze-title">Analyze a token</h2>
+      <h2 class="path__title">Read one token</h2>
+      <p class="path__body">Paste its mint. Token Finder runs its full pipeline on it - market, safety reports, evidence, verdict - and keeps the result.</p>
       <div class="mint-field ${error ? 'is-invalid' : ''}">
         <label class="sr-only" for="mint-input">Solana mint address</label>
-        <input id="mint-input" name="mint" type="text" inputmode="text" value="${value}" placeholder="Paste a Solana mint address"
-          autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="mint-help${error ? ' mint-error' : ''}"
+        <input id="mint-input" name="mint" type="text" value="${value}" placeholder="Solana mint address"
+          autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="${error ? 'mint-error' : 'mint-help'}"
           aria-invalid="${error ? 'true' : 'false'}" />
         <button class="btn btn--primary" type="submit">Analyze</button>
       </div>
       ${error
         ? html`<p class="path__error" id="mint-error" role="alert">${error}</p>`
-        : html`<p class="path__help" id="mint-help">A focused scan: market data, safety reports, evidence, verdict.</p>`}
+        : html`<p class="path__help" id="mint-help">Or paste a Solscan, Jupiter or Dossier link.</p>`}
     </form>
-    <a class="path path--discover" href="${appUrl('/discover')}" data-link data-intent="discover">
-      <span class="path__kicker">Show me what matters now</span>
-      <span class="path__title">Discover live <span class="path__arrow" aria-hidden="true">→</span></span>
-      <span class="path__help">${status
-        ? html`<strong>${count(status.universe.live)}</strong> tokens evaluated in the last ${status.window.liveMinutes} minutes${status.counts.QUALIFIED ? html` · ${count(status.counts.QUALIFIED)} qualified` : ''}`
-        : 'The tokens Token Finder is evaluating right now.'}</span>
-    </a>
+    <section class="path path--discover" data-intent="discover" aria-labelledby="discover-title">
+      <p class="path__kicker">Show me what matters now</p>
+      <h2 class="path__title" id="discover-title">Scan live</h2>
+      <p class="path__body">Token Finder sweeps its discovery feeds now, evaluates what they surface, and opens the Live Board with what it found.</p>
+      <button class="btn btn--primary path__scan" type="button" data-action="discover">Start a live scan</button>
+      <p class="path__help">
+        ${status
+          ? html`<strong>${count(status.universe.live)}</strong> tokens live${status.lastScanAt ? html` · last scan ${ago(status.lastScanAt)}` : ''}${facts.lastDurationMs ? html`, took ${duration(facts.lastDurationMs)}` : ''}`
+          : 'Connecting…'}
+        · <a href="${appUrl('/discover')}" data-link>open the Live Board without scanning</a>
+      </p>
+    </section>
   </div>`;
 };
 
+/** @param {Stage[]} stages @param {boolean} finishing */
+const stageList = (stages, finishing) => html`<ol class="stages" aria-live="polite">
+  ${stages.map((stage, index) => {
+    const done = index < stages.length - 1 || finishing;
+    return html`<li class="stage ${done ? 'stage--done' : 'stage--active'}">
+      <span class="stage__mark" aria-hidden="true"></span>
+      <span class="stage__text"><span class="stage__label">${stage.label}</span>${stage.detail ? html`<span class="stage__detail">${stage.detail}</span>` : ''}</span>
+      <span class="sr-only">${done ? ', done' : ', in progress'}</span>
+    </li>`;
+  })}
+</ol>`;
+
 /** @param {string} mint @param {Stage[]} stages @param {boolean} finishing */
-const progressTemplate = (mint, stages, finishing) => html`<section class="progress" aria-labelledby="progress-title">
-  <p class="path__kicker">Analyzing</p>
+const analyzeProgress = (mint, stages, finishing) => html`<section class="progress" aria-labelledby="progress-title">
+  <p class="path__kicker">Reading one token</p>
   <h2 class="progress__title" id="progress-title"><code>${shortAddress(mint)}</code></h2>
-  <ol class="stages" aria-live="polite">
-    ${stages.map((stage, index) => {
-      const done = index < stages.length - 1 || finishing;
-      return html`<li class="stage ${done ? 'stage--done' : 'stage--active'}">
-        <span class="stage__mark" aria-hidden="true"></span>
-        <span class="stage__text"><span class="stage__label">${stage.label}</span>${stage.detail ? html`<span class="stage__detail">${stage.detail}</span>` : ''}</span>
-        <span class="sr-only">${done ? ', done' : ', in progress'}</span>
-      </li>`;
-    })}
-  </ol>
+  ${stageList(stages, finishing)}
   <p class="progress__note">Stages appear as the pipeline reaches them. There is no percentage: the engine does not estimate one.</p>
   <a class="progress__cancel" href="${appUrl('/')}" data-link>Cancel</a>
+</section>`;
+
+/** @param {Stage[]} stages @param {boolean} finishing @param {boolean} following */
+const discoverProgress = (stages, finishing, following) => html`<section class="progress" aria-labelledby="progress-title">
+  <p class="path__kicker">Live scan</p>
+  <h2 class="progress__title progress__title--text" id="progress-title">${finishing ? 'Discovery complete' : 'Searching for new tokens'}</h2>
+  ${following ? html`<p class="progress__note">A scan was already running when you asked, so this follows it.</p>` : ''}
+  ${stageList(stages, finishing)}
+  <p class="progress__note">A real scan of the discovery feeds; it usually takes a minute or two. Counts are real - there is no percentage.</p>
+  <div class="progress__links">
+    <a class="progress__cancel" href="${appUrl('/')}" data-link>Stop watching</a>
+    <a class="progress__cancel" href="${appUrl('/discover')}" data-link>Open the Live Board now</a>
+  </div>
 </section>`;
 
 /** @param {any} d the Dossier @param {number | null} tookMs */
@@ -150,20 +187,20 @@ const resultTemplate = (d, tookMs) => {
     </section>
     <div class="result__actions">
       <a class="btn btn--primary" href="${dossierUrl(d.token.mint)}" data-link>Open the full dossier <span aria-hidden="true">→</span></a>
-      <a class="btn btn--quiet" href="${appUrl('/')}" data-link>Analyze another</a>
+      <a class="btn btn--quiet" href="${appUrl('/')}" data-link>Read another token</a>
     </div>
-    <p class="result__note muted small">Like every token Token Finder evaluates, it is on the live Board for the next ${liveState().status?.window.liveMinutes ?? 90} minutes.</p>
+    <p class="result__note muted small">Like every token Token Finder evaluates, it is on the Live Board for the next ${liveState().status?.window.liveMinutes ?? 90} minutes.</p>
   </article>`;
 };
 
-/** @param {string} title @param {string} message @param {string} mint */
-const errorTemplate = (title, message, mint) => html`<section class="result result--error" role="alert" aria-labelledby="error-title">
-  <p class="path__kicker">Analysis stopped${mint ? html` · <code>${shortAddress(mint)}</code>` : ''}</p>
+/** @param {string} kicker @param {string} title @param {string} message */
+const errorTemplate = (kicker, title, message) => html`<section class="result result--error" role="alert" aria-labelledby="error-title">
+  <p class="path__kicker">${kicker}</p>
   <h2 id="error-title" class="result__error-title" tabindex="-1">${title}</h2>
   <p>${message}</p>
   <div class="result__actions">
-    <a class="btn btn--primary" href="${appUrl('/')}" data-link>Try another address</a>
-    <a class="btn btn--quiet" href="${appUrl('/discover')}" data-link>Discover live</a>
+    <a class="btn btn--primary" href="${appUrl('/')}" data-link>Back to the start</a>
+    <a class="btn btn--quiet" href="${appUrl('/discover')}" data-link>Open the Live Board</a>
   </div>
 </section>`;
 
@@ -178,24 +215,42 @@ const FAILURE_TITLE = /** @type {Record<string, string>} */ ({
   network: 'Token Finder could not be reached',
 });
 
+/** A discovery scan's real progress events, in words. @param {any} event @returns {Stage | null} */
+function discoveryStage(event) {
+  switch (event.stage) {
+    case 'discover':
+      return { id: 'discover', label: 'Reading the discovery feeds', detail: 'Jupiter and DexScreener', at: event.at };
+    case 'discovered':
+      return { id: 'discovered', label: `Found ${count(event.count)} candidate tokens`, detail: null, at: event.at };
+    case 'market':
+      return { id: 'market', label: `Fetching market data for ${count(event.count)}`, detail: 'DexScreener and Jupiter', at: event.at };
+    case 'safety':
+      return { id: 'safety', label: `Checking safety for the ${count(event.count)} deepest pools`, detail: 'RugCheck, one token at a time', at: event.at };
+    case 'evaluated':
+      return { id: 'evaluated', label: `Evaluated ${count(event.done)} of ${count(event.total)}`, detail: 'Evidence, safety rules, verdict', at: event.at };
+    default:
+      return null;
+  }
+}
+
 // --- placement ------------------------------------------------------------------
 
 /**
- * Where the sphere sits for each state. On a wide screen the Observatory is a
- * full-bleed layer behind the page and the sphere moves within it; on a phone
- * it is a block between the headline and the actions, and only its size changes.
+ * Where the sphere sits in each state. On a wide screen: in the page's flow at
+ * rest, then in a full-height operational stage once something starts. On a
+ * phone it stays a block in the flow and only its size changes.
  */
 const narrow = matchMedia('(max-width: 760px)');
 /** @param {Phase} phase @returns {import('../ui/orb.js').Placement} */
 function placementFor(phase) {
   if (narrow.matches) {
-    if (phase === 'result' || phase === 'error') return { fx: 0.5, fy: 0.5, size: 0.85 };
-    if (phase === 'scanning') return { fx: 0.5, fy: 0.5, size: 1.45 };
-    return { fx: 0.5, fy: 0.5, size: 1.4 };
+    if (phase === 'result' || phase === 'error') return { fx: 0.5, fy: 0.5, size: 1.05 };
+    return { fx: 0.5, fy: 0.5, size: 1.37 };
   }
-  if (phase === 'result' || phase === 'error') return { fx: 0.34, fy: 0.52, size: 0.88 };
-  if (phase === 'scanning') return { fx: 0.5, fy: 0.5, size: 0.95 };
-  return { fx: 0.5, fy: 0.55, size: 0.84 };
+  if (phase === 'result' || phase === 'error') return { fx: 0.29, fy: 0.52, size: 0.95 };
+  if (phase === 'arriving') return { fx: 0.31, fy: 0.5, size: 0.9 };
+  if (phase === 'scanning' || phase === 'discovering') return { fx: 0.5, fy: 0.47, size: 1.08 };
+  return { fx: 0.5, fy: 0.5, size: 1.2 };
 }
 
 // --- the view ---------------------------------------------------------------------
@@ -214,7 +269,7 @@ export function mountLanding(root, route) {
     ring: 'sides',
     follow: false,
     reveal: false,
-    placement: placementFor(route.params.mint ? 'scanning' : 'idle'),
+    placement: placementFor('idle'),
   });
 
   /** @type {Phase} */
@@ -225,17 +280,43 @@ export function mountLanding(root, route) {
   /** @type {AbortController | null} */
   let running = null;
   let disposed = false;
+  let handedOff = false;
+  /** Real facts for the Discover path: how long the last scan took. */
+  const facts = { lastDurationMs: /** @type {number | null} */ (null) };
+  /** @type {{ stages: Stage[], following: boolean, finishing: boolean } | null} */
+  let discovery = null;
+  /** @type {Set<number>} */
+  const timers = new Set();
+  const later = (/** @type {() => void} */ fn, /** @type {number} */ ms) => {
+    const id = window.setTimeout(() => {
+      timers.delete(id);
+      fn();
+    }, ms);
+    timers.add(id);
+  };
 
-  const setPhase = (/** @type {Phase} */ next) => {
+  /**
+   * Moves to a phase. Leaving or entering the resting layout changes where the
+   * Observatory's stage is; the sphere is measured before and continues from
+   * the same place on screen, so it glides rather than jumps.
+   * @param {Phase} next
+   */
+  const setPhase = (next) => {
+    const from = orb.sphereOnScreen();
+    const layoutChanges = (phase === 'idle') !== (next === 'idle');
     phase = next;
     section.dataset.phase = next;
+    if (layoutChanges) {
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      orb.hold(from);
+    }
     orb.setPlacement(placementFor(next));
   };
 
   const paintPaths = () => {
     const active = document.activeElement;
     const hadFocus = active instanceof HTMLInputElement && active.id === 'mint-input';
-    render(deck, pathsTemplate(liveState(), inputValue, inputError));
+    render(deck, pathsTemplate(liveState(), facts, inputValue, inputError));
     if (hadFocus || inputError) {
       const input = /** @type {HTMLInputElement | null} */ (deck.querySelector('#mint-input'));
       input?.focus();
@@ -246,35 +327,41 @@ export function mountLanding(root, route) {
   const idle = () => {
     running?.abort();
     running = null;
+    discovery = null;
     orb.reset();
     setPhase('idle');
-    document.title = 'Token Finder — evidence-grade Solana token intelligence';
+    document.title = 'Token Finder — live Solana token discovery';
     paintPaths();
   };
 
-  /** @param {string} title @param {string} message @param {string} mint */
-  const fail = (title, message, mint) => {
+  /** @param {string} kicker @param {string} title @param {string} message */
+  const fail = (kicker, title, message) => {
     orb.endAnalysis(null);
+    discovery = null;
     setPhase('error');
-    render(deck, errorTemplate(title, message, mint));
+    render(deck, errorTemplate(kicker, title, message));
     document.title = `${title} — Token Finder`;
     /** @type {HTMLElement | null} */ (deck.querySelector('h2'))?.focus();
   };
 
-  /** Runs a real analysis and follows its stages. @param {string} mint */
+  // --- Analyze: one token, the real pipeline ----------------------------------------
+
+  /** @param {string} mint */
   const analyze = async (mint) => {
     running?.abort();
     const controller = new AbortController();
     running = controller;
+    discovery = null;
     /** @type {Stage[]} */
     const stages = [];
     setPhase('scanning');
     orb.beginAnalysis();
-    document.title = `Analyzing ${shortAddress(mint)} — Token Finder`;
-    render(deck, progressTemplate(mint, stages, false));
+    document.title = `Reading ${shortAddress(mint)} — Token Finder`;
+    render(deck, analyzeProgress(mint, stages, false));
 
     /** @type {any} */
     let done = null;
+    const stopped = `Analysis stopped · ${shortAddress(mint)}`;
     try {
       const response = await fetch('/api/analyze', {
         method: 'POST',
@@ -285,7 +372,7 @@ export function mountLanding(root, route) {
       if (!response.ok || !response.body) {
         const code = response.status === 429 ? 'busy' : response.status === 409 ? 'duplicate' : response.status === 400 ? 'invalid' : 'failed';
         const body = await response.json().catch(() => ({}));
-        return fail(FAILURE_TITLE[code], String(body.error ?? 'The server refused the request.'), mint);
+        return fail(stopped, FAILURE_TITLE[code], String(body.error ?? 'The server refused the request.'));
       }
       const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = '';
@@ -302,26 +389,25 @@ export function mountLanding(root, route) {
           if (message.type === 'stage') {
             stages.push({ id: message.id, label: message.label, detail: message.detail, at: message.at });
             orb.stage();
-            if (!disposed && running === controller) render(deck, progressTemplate(mint, stages, false));
+            if (!disposed && running === controller) render(deck, analyzeProgress(mint, stages, false));
           } else if (message.type === 'done') {
             done = message;
           }
         }
       }
-    } catch (error) {
+    } catch {
       if (controller.signal.aborted || disposed) return;
-      return fail(FAILURE_TITLE.network, 'The connection to Token Finder was lost during the analysis.', mint);
+      return fail(stopped, FAILURE_TITLE.network, 'The connection to Token Finder was lost during the analysis.');
     }
     if (disposed || running !== controller) return;
-    if (!done) return fail(FAILURE_TITLE.failed, 'The analysis ended without a result.', mint);
-    if (!done.ok) return fail(FAILURE_TITLE[done.code] ?? FAILURE_TITLE.failed, done.message, mint);
+    if (!done) return fail(stopped, FAILURE_TITLE.failed, 'The analysis ended without a result.');
+    if (!done.ok) return fail(stopped, FAILURE_TITLE[done.code] ?? FAILURE_TITLE.failed, done.message);
 
     // The verdict is persisted; read it back as the Dossier presents it.
-    render(deck, progressTemplate(mint, stages, true));
+    render(deck, analyzeProgress(mint, stages, true));
     try {
-      const dossier = await api(`/api/tokens/${encodeURIComponent(mint)}`);
+      const d = /** @type {any} */ (await api(`/api/tokens/${encodeURIComponent(mint)}`));
       if (disposed || running !== controller) return;
-      const d = /** @type {any} */ (dossier);
       orb.endAnalysis({
         mint: d.token.mint,
         symbol: d.token.symbol,
@@ -347,11 +433,96 @@ export function mountLanding(root, route) {
       /** @type {HTMLElement | null} */ (deck.querySelector('h2'))?.focus();
     } catch (error) {
       if (disposed) return;
-      fail(FAILURE_TITLE.failed, error instanceof ApiError ? error.message : 'The result could not be loaded.', mint);
+      fail(stopped, FAILURE_TITLE.failed, error instanceof ApiError ? error.message : 'The result could not be loaded.');
     } finally {
       if (running === controller) running = null;
     }
   };
+
+  // --- Discover: a real scan, here, then Live discovery ---------------------------
+
+  const paintDiscovery = () => {
+    if (!discovery) return;
+    render(deck, discoverProgress(discovery.stages, discovery.finishing, discovery.following));
+  };
+
+  const discover = async () => {
+    running?.abort();
+    running = null;
+    discovery = { stages: [], following: false, finishing: false };
+    setPhase('discovering');
+    orb.beginDiscovery();
+    document.title = 'Scanning live — Token Finder';
+    paintDiscovery();
+    // A scan already under way is followed, not duplicated.
+    if (liveState().status?.scanning) {
+      discovery.following = true;
+      paintDiscovery();
+      return;
+    }
+    try {
+      // The monitor's own scan: the same one it runs on its schedule.
+      const response = await fetch('/api/scan', { method: 'POST' });
+      if (disposed || !discovery) return;
+      if (response.status === 409) {
+        discovery.following = true;
+        paintDiscovery();
+      } else if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        fail('Live scan', 'The scan could not start', String(body.error ?? `The server answered ${response.status}.`));
+      }
+    } catch {
+      if (!disposed) fail('Live scan', FAILURE_TITLE.network, 'The scan could not be started.');
+    }
+  };
+
+  /** A discovery scan finished: say so, move aside, then carry the Observatory to Live discovery. @param {any} result */
+  const discoveryComplete = (result) => {
+    if (!discovery) return;
+    discovery.finishing = true;
+    discovery.stages.push({
+      id: 'complete',
+      label: `Scan complete · ${count(result?.analyzed ?? 0)} analysed · ${count(result?.fresh ?? 0)} new`,
+      detail: result?.durationMs ? `took ${duration(result.durationMs)}` : null,
+      at: result?.at ?? Date.now(),
+    });
+    orb.endDiscovery();
+    paintDiscovery();
+    later(() => {
+      if (disposed || phase !== 'discovering') return;
+      setPhase('arriving');
+      later(() => {
+        if (disposed || phase !== 'arriving') return;
+        // The same Observatory continues on the Live Board. On a phone the
+        // Board uses a different composition, so it starts fresh there.
+        if (!narrow.matches) {
+          handedOff = true;
+          handOff(orb);
+        }
+        navigate('/discover');
+      }, 750);
+    }, 650);
+  };
+
+  const offEvents = onServerEvent((kind, payload) => {
+    if (phase !== 'discovering' || !discovery) return;
+    if (kind === 'scan-stage') {
+      const stage = discoveryStage(payload);
+      if (!stage) return;
+      // "Evaluated k of n" is one line that counts up, not a line per token.
+      const last = discovery.stages.at(-1);
+      if (stage.id === 'evaluated' && last?.id === 'evaluated') discovery.stages[discovery.stages.length - 1] = stage;
+      else {
+        discovery.stages.push(stage);
+        orb.stage();
+      }
+      paintDiscovery();
+    } else if (kind === 'scan') {
+      discoveryComplete(payload);
+    } else if (kind === 'scan-failed') {
+      fail('Live scan', 'The scan failed', 'The Live Board still has the results of earlier scans.');
+    }
+  });
 
   // --- interaction ------------------------------------------------------------
 
@@ -370,6 +541,11 @@ export function mountLanding(root, route) {
     }
     inputError = null;
     navigate(`/analyze/${parsed.mint}`);
+  };
+  /** @param {MouseEvent} event */
+  const onClick = (event) => {
+    const target = event.target instanceof Element ? event.target.closest('[data-action]') : null;
+    if (target instanceof HTMLElement && target.dataset.action === 'discover') void discover();
   };
   /** @param {Event} event */
   const onInput = (event) => {
@@ -403,6 +579,7 @@ export function mountLanding(root, route) {
   };
 
   deck.addEventListener('submit', onSubmit);
+  deck.addEventListener('click', onClick);
   deck.addEventListener('input', onInput);
   deck.addEventListener('pointerover', onLean);
   deck.addEventListener('focusin', onLean);
@@ -412,10 +589,19 @@ export function mountLanding(root, route) {
   const onNarrow = () => orb.setPlacement(placementFor(phase));
   narrow.addEventListener('change', onNarrow);
 
-  // The Discover path states live counts; keep them current.
-  const offLive = onLive(() => {
+  // The Discover path states live facts; keep them current.
+  const offLive = onLive((state) => {
     if (phase === 'idle' && !(document.activeElement instanceof HTMLInputElement)) paintPaths();
+    if (phase === 'discovering' && state.connection === 'offline') {
+      fail('Live scan', FAILURE_TITLE.network, 'The connection was lost during the scan. It may still be running on the server.');
+    }
   });
+  api('/api/orb')
+    .then((/** @type {any} */ orbData) => {
+      facts.lastDurationMs = orbData?.scan?.last?.durationMs ?? null;
+      if (!disposed && phase === 'idle') paintPaths();
+    })
+    .catch(() => {});
 
   if (route.params.mint) void analyze(route.params.mint);
   else idle();
@@ -435,10 +621,14 @@ export function mountLanding(root, route) {
     dispose() {
       disposed = true;
       running?.abort();
-      orb.dispose();
+      for (const id of timers) clearTimeout(id);
+      // A handed-off Observatory now belongs to Live discovery.
+      if (!handedOff) orb.dispose();
       offLive();
+      offEvents();
       narrow.removeEventListener('change', onNarrow);
       deck.removeEventListener('submit', onSubmit);
+      deck.removeEventListener('click', onClick);
       deck.removeEventListener('input', onInput);
       deck.removeEventListener('pointerover', onLean);
       deck.removeEventListener('focusin', onLean);

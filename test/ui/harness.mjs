@@ -29,6 +29,8 @@ export const MINTS = {
   analyze: 'AnaLyzeMe11111111111111111111111111111111111',
   /** Not in the store; no provider has a market for it. */
   noMarket: 'NoMarket111111111111111111111111111111111111',
+  /** Surfaced by the fixture's discovery feed in a real scan. */
+  discover: 'DiscoverMe111111111111111111111111111111111',
 };
 
 /** Boots the fixture server as its own process; resolves once it answers. */

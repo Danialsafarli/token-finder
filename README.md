@@ -139,12 +139,18 @@ plain ES modules, no build step, no framework.
 | `/t/:mint` | A token's Dossier, the canonical detailed view. |
 | `/changes`, `/system` | Verdict changes, and what this instance can check. |
 
-- **Landing** (`/`) — a large Observatory and two paths.
+- **Landing** (`/`) — read top to bottom: the headline, a large Observatory,
+  then the two ways in. The page scrolls rather than shrinking the sphere.
   - *Analyze a token*: paste a mint, and Token Finder runs the same pipeline
     the monitor does on that one token. You watch its real stages; there is no
     percentage, because the engine has none. The result is persisted, so the
     token's Dossier works whether or not discovery ever found it.
-  - *Discover live* opens `/discover`.
+  - *Scan live* runs a real scan on the Landing and shows the monitor's own
+    stages with real counts (feeds read, candidates found, market data,
+    safety checks, evaluated *k* of *n*). If a scan is already running, it
+    follows that one instead of starting another. When the scan ends, the same
+    Observatory moves left and becomes the one on `/discover`, and the Board
+    assembles beside it. A plain link opens the Live Board without scanning.
 
   See [docs/adr/0003-landing.md](docs/adr/0003-landing.md).
 - **Board** (`/discover`) — the Observatory as the page's hero, with the live ranking as
@@ -207,7 +213,7 @@ snapshots. A Board row is about 0.5 KB: 200 rows come to about 100 KB, or about
 | `GET /api/events?limit=` | Recent monitor events. |
 | `GET /api/tokens` | Full snapshots of the live universe. Kept for scripts; the dashboard does not use it. |
 | `POST /api/scan` | Triggers a scan. Same-origin only. |
-| `GET /api/stream` | SSE: `hello`, `scan-start`, `scan`, `scan-failed`, `alert`. |
+| `GET /api/stream` | SSE: `hello`, `scan-start`, `scan-stage`, `scan`, `scan-failed`, `alert`. |
 
 ### Local security
 

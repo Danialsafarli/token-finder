@@ -96,19 +96,53 @@ animation loop. It gained options and a small controller:
   - on a result, the token emerges from that node and one analysis wave
     crosses the network;
   - on failure, attention is released.
-- `setPlacement({ fx, fy, size })` moves the sphere within its stage, eased. On
-  a wide screen it moves from the centre to the left as the result card
-  arrives on the right.
+- `setPlacement({ fx, fy, size }, { instant })` moves the sphere within its
+  stage, eased. On a wide screen it moves from the centre to the left as the
+  result card arrives on the right.
+- `beginDiscovery`, `endDiscovery`: during a real scan the whole network is
+  active, with no single focus; each real `scan-stage` releases signals; the
+  end of the scan sends one wave.
+- `sphereOnScreen`, `hold(from)`, `attach(host, from)`, `configure(options)`:
+  hand-off between surfaces. The sphere can start from where it was on screen
+  and ease to its new placement, so a layout change never makes it jump.
+- `handOff(orb)` / `adoptOrb()`: a module-level registry that lets one surface
+  pass its Observatory to the next. Unadopted, it is disposed after 3 s.
+
+### Scan live
+
+"Scan live" does not navigate away. It runs a real scan (`POST /api/scan`, or
+follows the running one when `status.scanning` is already true) and shows the
+monitor's own progress: `scan-stage` events on the stream, relayed from the
+bus, with real counts — feeds read, N candidates, market data for N, safety
+for the N deepest pools, evaluated *k* of *n*. There is no percentage. A failed
+scan, or a lost connection, is stated as an error.
+
+On completion, on a wide screen:
+
+1. one wave crosses the network;
+2. the Landing's deck fades while the sphere eases left;
+3. the Landing hands its Observatory to `/discover`: the same DOM node, canvas,
+   network and clock (`orbInstances` stays 1);
+4. the Board reveals in stages: panel, heading, notice, toolbar, rows, then the
+   Observatory's own heading and footer (about 1.6 s in all).
+
+On a phone, it navigates without a hand-off; the layouts differ too much for
+continuity to read as one movement.
 
 ### Composition
 
-- **Wide:** the Observatory is a full-bleed layer behind the page. The headline
-  sits above the sphere, with a soft dark field behind it for legibility. The
-  two paths sit below: Analyze as the primary card, Discover as the secondary,
-  with its live count.
-- **Phone:** headline, a 230 px Observatory block with a full sphere, then both
-  paths. Both paths are on the first screen at 390×844.
-- **Reduced motion:** no loop; placement and attention apply at once.
+- **Wide, at rest:** a vertical narrative. The headline has its own space;
+  below it is a large Observatory block (sphere about 30% larger than before);
+  below that are the two ways in, as one split panel: "Read one token" and
+  "Scan live". The page scrolls; nothing overlays the sphere.
+- **Wide, working:** the Observatory becomes the full-height stage and the
+  progress deck sits beside it. For a result, the sphere rests at
+  `fx 0.29` with the result card on the right. On `/discover`, the operational
+  sphere rests slightly left of centre (`fx 0.44`).
+- **Phone:** headline, a 380 px Observatory block with a full sphere, then both
+  ways in, stacked. Progress and results follow the sphere.
+- **Reduced motion:** no loop; placement, attention and the Board's arrival
+  apply at once.
 
 ## Consequences
 
@@ -120,5 +154,8 @@ animation loop. It gained options and a small controller:
 - The Dossier's own verdict reason still uses the verdict's colour (a caveat on
   a Qualified token shows green there). The result card uses the new
   `verdict.reasonTone`; the Dossier page is unchanged in this phase.
-- Cost at rest, measured with GPU compositing: about 5–6% of the main thread at
-  30 fps, and effectively zero when the tab is hidden.
+- Cost at rest, measured with GPU compositing: about 5–7% of the main thread at
+  about 30 fps, and effectively zero when the tab is hidden.
+- The monitor now emits `scan-stage` progress events. They carry counts only,
+  change nothing about what a scan does, and are also visible to any other
+  client of `/api/stream`.

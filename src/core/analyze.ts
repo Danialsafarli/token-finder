@@ -64,9 +64,10 @@ export interface AnalyzeOptions {
   /**
    * Called as each stage begins. Instrumentation only: it changes nothing
    * about what is analysed or concluded. For a batch the per-token stages
-   * fire once per token.
+   * fire once per token. `count` is the number of tokens entering the stage
+   * for `market` (candidates) and `safety` (the deep set).
    */
-  onStage?: (stage: AnalyzeStage) => void;
+  onStage?: (stage: AnalyzeStage, count?: number) => void;
   /** Skip the liquidity and age filters; used by the single-token CLI command. */
   includeAll?: boolean;
   /** Cap on how many candidates get the slow safety lookups. */
@@ -122,7 +123,7 @@ export async function analyze(
   // The two market feeds are fetched independently. `Promise.all` here meant a
   // single DexScreener timeout threw away a complete, already-fetched Jupiter
   // response and ended the scan; `allSettled` keeps whichever side answered.
-  options.onStage?.('market');
+  options.onStage?.('market', candidates.length);
   const [pairsSettled, jupSettled] = await Promise.allSettled([
     dexscreener.pairsForMints(mints),
     jupiter.infoForMints(mints),
@@ -208,7 +209,7 @@ export async function analyze(
   /** Populated per token inside the pool below; see AnalyzeResult.evidence. */
   const evidenceByMint = new Map<string, TokenEvidence>();
 
-  if (deep.length > 0) options.onStage?.('safety');
+  if (deep.length > 0) options.onStage?.('safety', deep.length);
 
   const settled = await poolSettled(deep, 4, async (draft): Promise<TokenSnapshot> => {
     const { candidate, pairs, jup } = draft;

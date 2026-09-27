@@ -431,11 +431,15 @@ const previewTemplate = (token) => html`<div class="orb-preview">
 export function mountOrb(host, options = {}) {
   render(host, shell());
   const root = /** @type {HTMLElement} */ (host.querySelector('.orb'));
-  if (options.bare) root.classList.add('orb--bare');
+  /** Options, mutable so an Observatory handed from one surface to another can be reconfigured in place. */
+  const opts = { ...options };
+  if (opts.bare) root.classList.add('orb--bare');
   /** Whether the monitor's scans drive this Observatory's scanning state. */
-  const follow = options.follow !== false;
-  const revealByDefault = options.reveal !== false;
+  let follow = opts.follow !== false;
+  let revealByDefault = opts.reveal !== false;
   let reveal = revealByDefault;
+  /** Screen position to start from after being re-parented (a hand-off). @type {{ x: number, y: number, r: number } | null} */
+  let arriveFrom = null;
   /** A requested analysis is running. Its stages are real; there is no progress figure. */
   let activity = false;
   /** Attention rests on one node: while a person leans toward analysing, and on the analysed token. */
@@ -588,6 +592,16 @@ export function mountOrb(host, options = {}) {
     body.height = Math.round(height * dpr);
     const g = /** @type {CanvasRenderingContext2D} */ (body.getContext('2d'));
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    paintBody(g, cx, cy, radius);
+  };
+
+  /**
+   * The body: lit disc, atmosphere, rim and rim light. Painted into the cache
+   * at rest, and straight onto the frame while the sphere is moving - a cached
+   * body clipped at its old stage's edge would show that edge as it moved.
+   * @param {CanvasRenderingContext2D} g @param {number} cx @param {number} cy @param {number} radius
+   */
+  const paintBody = (g, cx, cy, radius) => {
     const A = colors.accent;
     const disc = g.createRadialGradient(cx - radius * 0.35, cy - radius * 0.4, radius * 0.1, cx, cy, radius * 1.08);
     disc.addColorStop(0, `rgba(${A},0.075)`);
@@ -649,7 +663,7 @@ export function mountOrb(host, options = {}) {
     canvas.height = Math.round(height * scene.dpr);
 
     // A short band gets the horizon; anything with room for a sphere gets one.
-    const horizon = options.composition !== 'sphere' && height < 260;
+    const horizon = opts.composition !== 'sphere' && height < 260;
     scene.composition = horizon ? 'horizon' : 'sphere';
     if (horizon) {
       // A planet rising from the bottom of the band, seen from above its pole:
@@ -660,8 +674,20 @@ export function mountOrb(host, options = {}) {
       scene.ringRadius = scene.radius + height * 0.28;
       scene.maxMarkers = width < 560 ? 3 : width < 820 ? 4 : 5;
     } else {
+      if (arriveFrom) {
+        // Arriving from another surface: start exactly where the sphere was on
+        // screen, then ease to this surface's own placement.
+        const rect = stage.getBoundingClientRect();
+        const base = Math.min(height * 0.345, width * 0.27);
+        scene.place = {
+          fx: (arriveFrom.x - rect.left) / width,
+          fy: (arriveFrom.y - rect.top) / height,
+          size: arriveFrom.r / base,
+        };
+        arriveFrom = null;
+      }
       sphereGeometry(scene.place);
-      scene.maxMarkers = options.ring === 'sides' ? 6 : 7;
+      scene.maxMarkers = opts.ring === 'sides' ? 6 : 7;
     }
     // Density follows size: a large sphere gets a richer network, in steps so a
     // resize does not rebuild it on every pixel. Sized from where the sphere is
@@ -669,7 +695,11 @@ export function mountOrb(host, options = {}) {
     const goalRadius = Math.min(height * 0.345, width * 0.27) * scene.placeGoal.size;
     const surface = horizon ? (width < 560 ? 104 : 150) : Math.round(clamp(goalRadius * 1.55, 110, 300) / 20) * 20;
     const key = `${scene.composition}-${surface}`;
-    if (key !== scene.networkKey) {
+    // Rebuild only for a different composition or a clearly different size: a
+    // sphere moving between surfaces keeps its network, so it stays one object.
+    const [builtAs, builtSize] = scene.networkKey.split('-');
+    const rebuild = builtAs !== scene.composition || Math.abs(Number(builtSize) - surface) > 60;
+    if (rebuild && key !== scene.networkKey) {
       scene.network = buildNetwork(surface, 1905, horizon);
       scene.couriers = [];
       scene.networkKey = key;
@@ -979,14 +1009,8 @@ export function mountOrb(host, options = {}) {
       if (bodyGeo.cx === scene.cx && bodyGeo.cy === scene.cy && bodyGeo.r === scene.radius) {
         ctx.drawImage(body, 0, 0, width, height);
       } else {
-        // Mid-placement: the cached body, moved and scaled to where the sphere is.
-        const k = scene.radius / bodyGeo.r;
-        ctx.save();
-        ctx.translate(scene.cx, scene.cy);
-        ctx.scale(k, k);
-        ctx.translate(-bodyGeo.cx, -bodyGeo.cy);
-        ctx.drawImage(body, 0, 0, width, height);
-        ctx.restore();
+        // Mid-placement: painted fresh where the sphere is now.
+        paintBody(ctx, scene.cx, scene.cy, scene.radius);
       }
       ctx.globalAlpha = 1;
     }
@@ -1249,7 +1273,7 @@ export function mountOrb(host, options = {}) {
    * @param {number} slot @param {number} total
    */
   const slotFraction = (slot, total) =>
-    scene.composition === 'horizon' || options.ring === 'sides' ? (slot + 0.5) / total : slot / total;
+    scene.composition === 'horizon' || opts.ring === 'sides' ? (slot + 0.5) / total : slot / total;
 
   /**
    * Screen position at `fraction` along the ring or band, at scene time t.
@@ -1268,7 +1292,7 @@ export function mountOrb(host, options = {}) {
       const y = scene.cy - Math.sqrt(Math.max(0, r * r - dx * dx));
       return { x, y: Math.min(y, scene.height * 0.62) };
     }
-    const sides = options.ring === 'sides' && !still;
+    const sides = opts.ring === 'sides' && !still;
     const angle = sides
       ? fraction < 0.5
         ? -0.62 + fraction * 2 * 1.24 + 0.03 * Math.sin(t / 27 + bob)
@@ -1314,7 +1338,7 @@ export function mountOrb(host, options = {}) {
     const total = Math.max(1, active.length);
     const now = scene.t;
     // Around a ring, positions wrap; across a band or two flanks they do not.
-    const horizon = scene.composition === 'horizon' || options.ring === 'sides';
+    const horizon = scene.composition === 'horizon' || opts.ring === 'sides';
     for (const marker of markers.values()) {
       const isSubject = marker.token.role === 'subject';
       if (marker.exit === 0) {
@@ -1922,10 +1946,67 @@ export function mountOrb(host, options = {}) {
       root.dataset.intent = '';
       changed();
     },
-    /** A real pipeline stage began: a burst of signals converges on the node. */
+    /**
+     * A real pipeline stage began. In an analysis, a burst converges on the
+     * attended node; in a discovery scan, signals start from across the network.
+     */
     stage() {
-      if (!reduced) converge(3);
+      if (!reduced) {
+        if (attentionNode >= 0 && attentionGoal) converge(3);
+        else
+          for (let i = 0; i < 3; i++) {
+            const from = frontNode();
+            if (from >= 0) walk(from, 4, 0.9);
+          }
+      }
       requestDraw();
+    },
+    /** A real discovery scan started: the whole network is active, no single focus. */
+    beginDiscovery() {
+      activity = true;
+      attentionGoal = false;
+      subject = null;
+      reveal = false;
+      syncMarkers();
+      root.dataset.intent = '';
+      changed();
+    },
+    /** The discovery scan finished: one wave, then the live tokens may be shown. */
+    endDiscovery() {
+      activity = false;
+      if (!reduced) scene.waveStart = performance.now();
+      changed();
+    },
+    /** Where the sphere is on screen now, for a hand-off. */
+    sphereOnScreen() {
+      const rect = stage.getBoundingClientRect();
+      return { x: rect.left + scene.cx, y: rect.top + scene.cy, r: scene.radius };
+    },
+    /**
+     * Moves this Observatory into another host, keeping its canvas, network,
+     * clock and state. It re-lays itself out there, starting from `from`.
+     * @param {HTMLElement} nextHost @param {{ x: number, y: number, r: number } | null} from
+     */
+    attach(nextHost, from) {
+      arriveFrom = from;
+      nextHost.replaceChildren(root);
+      layout();
+      start();
+    },
+    /**
+     * Changes how this Observatory behaves on its current surface.
+     * @param {OrbOptions} next
+     */
+    configure(next) {
+      Object.assign(opts, next);
+      root.classList.toggle('orb--bare', Boolean(opts.bare));
+      follow = opts.follow !== false;
+      revealByDefault = opts.reveal !== false;
+      if (follow) status.scanning = liveState().status?.scanning === true;
+      if (!activity && !subject) reveal = revealByDefault;
+      layout();
+      paintReadout();
+      if (follow) void load();
     },
     /**
      * The analysis finished. With a token, it emerges from the node the
@@ -1952,16 +2033,30 @@ export function mountOrb(host, options = {}) {
       changed();
     },
     /**
-     * Moves the sphere within its stage: eased, or at once under reduced motion.
-     * @param {Placement} placement
+     * Moves the sphere within its stage: eased, or at once under reduced motion
+     * or when `instant`.
+     * @param {Placement} placement @param {{ instant?: boolean }} [how]
      */
-    setPlacement(placement) {
+    setPlacement(placement, how = {}) {
       scene.placeGoal = { ...placement };
-      if (reduced) {
+      if (reduced || how.instant) {
         scene.place = { ...placement };
         layout();
       }
       changed();
+    },
+    /** Re-measures the stage now, after its host changed layout synchronously. */
+    relayout() {
+      layout();
+    },
+    /**
+     * The stage just changed size or place: re-measure now, keeping the sphere
+     * where it was on screen. A following setPlacement eases it on from there.
+     * @param {{ x: number, y: number, r: number }} from
+     */
+    hold(from) {
+      if (scene.width > 0) arriveFrom = from;
+      layout();
     },
     dispose() {
       disposed = true;
@@ -1986,6 +2081,40 @@ export function mountOrb(host, options = {}) {
       publishInstances();
     },
   };
+}
+
+// --- hand-off between surfaces -------------------------------------------------
+
+/**
+ * An Observatory leaving one surface for another (the Landing's discovery scan
+ * becoming Live discovery). The next surface adopts it and it keeps running -
+ * the same object, not a new one. If nobody adopts it, it is disposed, so a
+ * navigation that goes elsewhere cannot leak a loop.
+ * @type {{ handle: ReturnType<typeof mountOrb>, from: { x: number, y: number, r: number }, timer: number } | null}
+ */
+let inTransit = null;
+
+/** @param {ReturnType<typeof mountOrb>} handle */
+export function handOff(handle) {
+  if (inTransit) inTransit.handle.dispose();
+  const from = handle.sphereOnScreen();
+  inTransit = {
+    handle,
+    from,
+    timer: window.setTimeout(() => {
+      inTransit?.handle.dispose();
+      inTransit = null;
+    }, 3000),
+  };
+}
+
+/** The Observatory in transit, and where it was on screen; or null. */
+export function adoptOrb() {
+  if (!inTransit) return null;
+  clearTimeout(inTransit.timer);
+  const { handle, from } = inTransit;
+  inTransit = null;
+  return { handle, from };
 }
 
 /** "#8ab4ff" → "138,180,255", for rgba() strings. @param {string} hex */

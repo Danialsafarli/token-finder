@@ -182,9 +182,16 @@ export async function runScan(): Promise<ScanResult> {
   // Announced immediately, so a watching dashboard shows "scanning" now rather
   // than on its next status poll.
   bus.emit('scan-start', { at: started });
+  // Real progress, for anyone watching: which stage the scan is in and, while
+  // verdicts are built, how many of how many. Counts, never an estimate.
+  const stage = (payload: Record<string, unknown>): void => {
+    bus.emit('scan-stage', { ...payload, at: Date.now() });
+  };
   let completed = false;
   try {
+    stage({ stage: 'discover' });
     const candidates = await discover();
+    stage({ stage: 'discovered', count: candidates.length });
 
     // Prior lifecycle state per mint, so a token moves QUALIFIED -> SCANNING ->
     // whatever the fresh evidence says, rather than being reborn each scan.
@@ -194,7 +201,21 @@ export async function runScan(): Promise<ScanResult> {
       if (state !== undefined) priorStates.set(token.mint, state);
     }
 
-    const analysis = await analyze(candidates, { priorStates });
+    let evaluated = 0;
+    let deep = 0;
+    const analysis = await analyze(candidates, {
+      priorStates,
+      onStage: (name, count) => {
+        if (name === 'market') stage({ stage: 'market', count });
+        else if (name === 'safety') {
+          deep = count ?? 0;
+          stage({ stage: 'safety', count: deep });
+        } else if (name === 'verdict') {
+          evaluated += 1;
+          stage({ stage: 'evaluated', done: evaluated, total: deep });
+        }
+      },
+    });
     const { snapshots } = analysis;
 
     // Failures are reported, never fatal: one token or one provider going down

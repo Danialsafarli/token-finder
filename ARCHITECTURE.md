@@ -117,7 +117,9 @@ throws synchronously (e.g. `scoreToken` on malformed input) the **entire scan ab
 `runScan` catches it in `startMonitor`, so the loop survives, but that scan yields nothing.
 
 **SSE / realtime** — `EventEmitter` bus; `/api/stream` sends `hello` on connect and
-relays `scan-start`, `scan`, `scan-failed` and `alert`. A scan that throws still emits
+relays `scan-start`, `scan-stage`, `scan`, `scan-failed` and `alert`. `scan-stage` is the
+scan's real progress: `discover`, `discovered` (count), `market` (count), `safety` (count)
+and `evaluated` (done of total) — counts, never a percentage. A scan that throws still emits
 `scan-failed`, so the dashboard never shows a scan as running forever. 25 s keep-alive
 ping, cleanup on `close`. Realtime is *within* the app only —
 **all ingestion is polled REST; there is no websocket or gRPC feed from any provider.**

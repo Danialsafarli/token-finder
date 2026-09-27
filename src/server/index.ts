@@ -373,11 +373,13 @@ function stream(res: ServerResponse): void {
   send('hello', statusBody());
 
   const onStart = (payload: unknown): void => send('scan-start', payload);
+  const onStage = (payload: unknown): void => send('scan-stage', payload);
   const onScan = (result: ScanResult): void => send('scan', scanSummary(result));
   const onFailed = (payload: unknown): void => send('scan-failed', payload);
   const onEvent = (event: MonitorEvent): void => send('alert', eventView(event));
 
   bus.on('scan-start', onStart);
+  bus.on('scan-stage', onStage);
   bus.on('scan', onScan);
   bus.on('scan-failed', onFailed);
   bus.on('event', onEvent);
@@ -386,6 +388,7 @@ function stream(res: ServerResponse): void {
   res.on('close', () => {
     clearInterval(keepAlive);
     bus.off('scan-start', onStart);
+    bus.off('scan-stage', onStage);
     bus.off('scan', onScan);
     bus.off('scan-failed', onFailed);
     bus.off('event', onEvent);

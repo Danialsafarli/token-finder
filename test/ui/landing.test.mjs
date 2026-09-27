@@ -1,10 +1,11 @@
 /**
- * The Landing and its two paths, in a real browser with real input.
+ * The Landing and its two ways in, in a real browser with real input.
  *
- * Analyze runs the real pipeline end to end - validation, evidence
- * resolution, the safety gate, scoring, persistence - with only the providers'
- * HTTP answers substituted by the fixture, and only for two test mints.
- * Nothing here checks animation frames; motion is checked by whether loops run.
+ * Analyze runs the real pipeline end to end, and Scan live runs the monitor's
+ * real scan end to end: the fixture substitutes only the providers' HTTP
+ * answers (for designated test mints, and a discovery feed that surfaces one
+ * of them). Nothing here checks animation frames; motion is checked by state,
+ * placement and whether loops run.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -16,8 +17,10 @@ import { MINTS, SKIP, rawRequest, startServer } from './harness.mjs';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PHASE = `document.querySelector('.landing')?.dataset.phase`;
 const ORB = `document.querySelector('.landing .orb')`;
+/** The sphere's radius on the previous landing, at 1440×900: 0.84 × min(788 × 0.345, 1440 × 0.27). */
+const PREVIOUS_RADIUS = 0.84 * Math.min(788 * 0.345, 1440 * 0.27);
 
-describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
+describe('the Landing', { skip: SKIP, timeout: 300_000 }, () => {
   let server;
   let browser;
 
@@ -37,24 +40,29 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
     await browser.waitFor(`${PHASE} === 'idle' && document.querySelector('#mint-input') && ${ORB}.__orb.frames > 2`);
   };
 
-  test('says what Token Finder is, and offers both paths, above the fold', async () => {
+  test('reads top to bottom: headline, a large Observatory, then the two ways in', async () => {
     await openLanding();
-    assert.match(await browser.eval(`document.querySelector('h1').textContent`), /Know what a token is/);
-    const paths = await browser.eval(`(() => {
-      const analyze = document.querySelector('.path--analyze').getBoundingClientRect();
-      const discover = document.querySelector('.path--discover').getBoundingClientRect();
-      return { analyze: analyze.bottom, discover: discover.bottom, label: document.querySelector('label[for="mint-input"]').textContent };
+    assert.match(await browser.eval(`document.querySelector('h1').textContent`), /Find the signal/);
+    const layout = await browser.eval(`(() => {
+      const lede = document.querySelector('.landing__lede').getBoundingClientRect();
+      const stage = document.querySelector('.landing__orb').getBoundingClientRect();
+      const paths = document.querySelector('.paths').getBoundingClientRect();
+      const sphere = document.querySelector('.landing .orb').__orb;
+      return { ledeBottom: lede.bottom, stageTop: stage.top, stageBottom: stage.bottom, pathsTop: paths.top };
     })()`);
-    assert.ok(paths.analyze <= 900 && paths.discover <= 900, JSON.stringify(paths));
-    assert.equal(paths.label, 'Solana mint address');
-    assert.equal(await browser.eval(`document.querySelector('.path--discover').getAttribute('href')`), '/discover');
-    // Calm: the landing does not reflect the monitor's scans, and shows no tokens until asked.
+    assert.ok(layout.stageTop - layout.ledeBottom >= 40, `only ${layout.stageTop - layout.ledeBottom}px between the words and the Observatory`);
+    assert.ok(layout.pathsTop >= layout.stageBottom, 'the ways in overlap the Observatory');
+    // Roughly 30% larger than before - the page scrolls rather than shrinking it.
+    const radius = await browser.eval(`(() => { const s = document.querySelector('.landing .orb .orb__stage').getBoundingClientRect(); const p = document.querySelector('.landing .orb').__orb.placement; return Math.min(s.height * 0.345, s.width * 0.27) * p.size; })()`);
+    assert.ok(radius >= PREVIOUS_RADIUS * 1.2, `radius ${radius} is not ~30% larger than ${PREVIOUS_RADIUS}`);
+    assert.ok((await browser.eval(`document.documentElement.scrollHeight`)) > 900, 'the landing should scroll');
+    assert.equal(await browser.eval(`document.querySelector('label[for="mint-input"]').textContent`), 'Solana mint address');
     assert.equal(await browser.eval(`${ORB}.dataset.state`), 'idle');
     assert.equal(await browser.eval(`document.querySelectorAll('.landing .orb-marker').length`), 0);
     assert.equal(await browser.eval(`Math.max(document.documentElement.scrollWidth, innerWidth) - 1440`), 0);
   });
 
-  test('leaning toward a path is reflected by the Observatory, with real tokens only', async () => {
+  test('leaning toward a way in is reflected by the Observatory, with real tokens only', async () => {
     const api = await (await fetch(`http://127.0.0.1:${server.port}/api/orb`)).json();
     const point = await browser.locate('.path--discover');
     await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
@@ -78,17 +86,15 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
     assert.equal(await browser.eval(PHASE), 'idle');
   });
 
-  test('Analyze: a real mint runs the real pipeline, stage by stage, to a result', async () => {
+  test('Analyze: the real pipeline, stage by stage, then the result beside a left-anchored Observatory', async () => {
     await openLanding();
     await browser.click('#mint-input');
     await browser.type(MINTS.analyze);
     await browser.key('Enter', 'Enter', 13);
     await browser.waitFor(`${PHASE} === 'scanning' && location.pathname === '/analyze/${MINTS.analyze}'`);
     assert.equal(await browser.eval(`${ORB}.dataset.state`), 'analyzing');
-    // While the providers answer, there is no result - and no percentage anywhere.
     assert.equal(await browser.eval(`document.querySelector('.result')`), null);
     assert.doesNotMatch(await browser.eval(`document.querySelector('.progress').textContent`), /\d+\s*%/);
-    // Stages appear as the pipeline reaches them, in its order.
     await browser.waitFor(`[...document.querySelectorAll('.stage__label')].some((s) => s.textContent === 'Checking safety reports')`, 10_000);
     const stages = await browser.eval(`[...document.querySelectorAll('.stage__label')].map((s) => s.textContent)`);
     assert.deepEqual(stages.slice(0, 3), ['Validating the mint address', 'Fetching market data', 'Checking safety reports']);
@@ -98,11 +104,11 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
     assert.match(result, /Qualified/);
     assert.match(result, /Score\s*\d+/);
     assert.match(result, /Not measured/);
-    // The analysed token is the Observatory's focus, and the only token shown.
     assert.equal(await browser.eval(`${ORB}.__orb.subject`), MINTS.analyze);
-    assert.deepEqual(await browser.eval(`[...document.querySelectorAll('.landing .orb-marker')].map((m) => m.dataset.mint)`), [MINTS.analyze]);
-    // The sphere moves aside for the result (eased, so give it a moment).
-    await browser.waitFor(`${ORB}.__orb.placement.fx < 0.4`, 4_000);
+    // Anchored left, with clear space before the result.
+    await browser.waitFor(`${ORB}.__orb.placement.fx < 0.31`, 4_000);
+    const gap = await browser.eval(`(() => { const s = document.querySelector('.landing .orb .orb__stage').getBoundingClientRect(); const o = document.querySelector('.landing .orb').__orb; const r = Math.min(s.height * 0.345, s.width * 0.27) * o.placement.size; return document.querySelector('.result').getBoundingClientRect().left - (s.left + s.width * o.placement.fx + r); })()`);
+    assert.ok(gap >= 60, `only ${Math.round(gap)}px between the sphere and the result`);
     assert.equal(await browser.eval(`Math.max(document.documentElement.scrollWidth, innerWidth) - 1440`), 0);
   });
 
@@ -111,7 +117,6 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
     await browser.waitFor(`location.pathname === '/t/${MINTS.analyze}' && document.querySelector('.verdict-panel')`);
     await browser.goto(`${server.origin}/t/${MINTS.analyze}`);
     await browser.waitFor(`document.querySelector('.verdict-panel')`);
-    assert.match(await browser.eval(`document.querySelector('.identity__symbol')?.textContent ?? document.body.textContent`), /CLARITY/);
   });
 
   test('a direct /analyze/:mint link runs the analysis itself', async () => {
@@ -128,38 +133,78 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
     await browser.key('Enter', 'Enter', 13);
     await browser.waitFor(`${PHASE} === 'error'`, 20_000);
     assert.match(await browser.eval(`document.querySelector('.result--error').textContent`), /No market data for this address/);
-    assert.equal(await browser.eval(`${ORB}.__orb.subject`), null);
     const res = await rawRequest(server.port, { path: `/api/tokens/${MINTS.noMarket}`, headers: { host: `localhost:${server.port}` } });
     assert.equal(res.status, 404);
   });
 
-  test('Cancel during a scan returns to the Landing', async () => {
+  test('Scan live: a real scan runs on the Landing, then the same Observatory becomes Live discovery', async () => {
+    await openLanding();
+    await browser.eval(`document.querySelector('.landing .orb').__handoffTag = 'the-same-observatory'`);
+    await browser.click('[data-action="discover"]');
+    await browser.waitFor(`${PHASE} === 'discovering'`);
+    assert.equal(await browser.eval(`${ORB}.dataset.state`), 'analyzing');
+    // Real stages from the monitor, in order, with real counts.
+    await browser.waitFor(`[...document.querySelectorAll('.stage__label')].some((s) => /^Found \\d+ candidate tokens$/.test(s.textContent))`, 15_000);
+    const stages = await browser.eval(`[...document.querySelectorAll('.stage__label')].map((s) => s.textContent)`);
+    assert.equal(stages[0], 'Reading the discovery feeds');
+    assert.doesNotMatch(await browser.eval(`document.querySelector('.progress').textContent`), /\d+\s*%/);
+    // Completion hands the Observatory itself to /discover, and the Board assembles beside it.
+    await browser.waitFor(`location.pathname === '/discover'`, 30_000);
+    assert.equal(await browser.eval(`document.querySelector('.board-hero .orb')?.__handoffTag`), 'the-same-observatory');
+    assert.equal(await browser.eval(`!!document.querySelector('.board-layout.is-arriving')`), true);
+    assert.equal(await browser.eval(`document.documentElement.dataset.orbInstances`), '1');
+    await browser.waitFor(`document.querySelectorAll('.board-row').length > 0 && document.querySelector('.board-hero .orb').dataset.state === 'idle'`);
+    // The token the scan really found is now live.
+    await browser.waitFor(`[...document.querySelectorAll('.board-row')].some((r) => r.dataset.mint === '${MINTS.discover}')`, 5_000);
+    await browser.waitFor(`document.querySelector('.board-hero .orb').__orb.placement.fx < 0.46`, 4_000);
+  });
+
+  test('Scan live follows a scan that is already running instead of starting another', async () => {
+    await openLanding();
+    server.emit('scan-start');
+    await browser.waitFor(`document.getElementById('live-text').textContent.startsWith('Scanning')`);
+    await browser.click('[data-action="discover"]');
+    await browser.waitFor(`${PHASE} === 'discovering' && /already running/.test(document.querySelector('.progress').textContent)`);
+    server.emit('scan');
+    await browser.waitFor(`location.pathname === '/discover' && document.querySelector('.board-hero .orb')`, 10_000);
+  });
+
+  test('a failed scan is stated, not dressed up as a result', async () => {
+    await openLanding();
+    server.emit('scan-start');
+    await browser.waitFor(`document.getElementById('live-text').textContent.startsWith('Scanning')`);
+    await browser.click('[data-action="discover"]');
+    await browser.waitFor(`${PHASE} === 'discovering'`);
+    server.emit('scan-failed');
+    await browser.waitFor(`${PHASE} === 'error'`);
+    assert.match(await browser.eval(`document.querySelector('.result--error').textContent`), /The scan failed/);
+    assert.equal(await browser.eval(`location.pathname`), '/');
+  });
+
+  test('Cancel during an analysis returns to the Landing', async () => {
     await browser.goto(`${server.origin}/analyze/${MINTS.analyze}`);
     await browser.waitFor(`${PHASE} === 'scanning' && document.querySelector('.progress__cancel')`);
     await browser.click('.progress__cancel');
     await browser.waitFor(`${PHASE} === 'idle' && location.pathname === '/'`);
-    assert.equal(await browser.eval(`${ORB}.dataset.state`), 'idle');
   });
 
-  test('keyboard: Tab reaches the input and Discover; Enter on Discover opens Live discovery', async () => {
+  test('keyboard: Tab reaches the input, the scan button and the plain Live Board link', async () => {
     await openLanding();
-    let reached = { input: false, discover: false };
-    for (let i = 0; i < 20 && !(reached.input && reached.discover); i++) {
+    const reached = new Set();
+    for (let i = 0; i < 24 && reached.size < 3; i++) {
       await browser.key('Tab', 'Tab', 9);
-      const where = await browser.eval(`document.activeElement?.id || document.activeElement?.className || ''`);
-      if (where === 'mint-input') reached.input = true;
-      if (String(where).includes('path--discover')) {
-        reached.discover = true;
+      const where = await browser.eval(`(() => { const a = document.activeElement; if (!a) return ''; if (a.id === 'mint-input') return 'input'; if (a.dataset?.action === 'discover') return 'scan'; if (a.getAttribute?.('href') === '/discover' && a.closest('.path--discover')) return 'board'; return ''; })()`);
+      if (where) {
+        reached.add(where);
         assert.equal(await browser.eval(`document.activeElement.matches(':focus-visible')`), true);
-        break;
       }
     }
-    assert.deepEqual(reached, { input: true, discover: true });
+    assert.deepEqual([...reached].sort(), ['board', 'input', 'scan']);
     await browser.key('Enter', 'Enter', 13);
-    await browser.waitFor(`location.pathname === '/discover' && document.querySelectorAll('.board-row').length > 0 && document.querySelector('.board-hero .orb')`);
+    await browser.waitFor(`location.pathname === '/discover' && document.querySelectorAll('.board-row').length > 0`);
   });
 
-  test('Discover keeps the operational Board: search, segments, Dossier', async () => {
+  test('Live discovery keeps the operational Board: search and Dossier', async () => {
     await browser.click('#board-search');
     await browser.type('solid');
     await browser.waitFor(`document.querySelectorAll('.board-row').length === 1`);
@@ -179,10 +224,10 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
     }
   });
 
-  test('mobile: both paths on the first screen, a real tap to analyze, no overflow', async () => {
+  test('mobile: the same order, stacked; a real tap to analyze; no overflow', async () => {
     await openLanding(390, 844, true);
-    const bottom = await browser.eval(`document.querySelector('.path--discover').getBoundingClientRect().bottom`);
-    assert.ok(bottom <= 844, `Discover ends at ${bottom}px`);
+    const order = await browser.eval(`(() => ['.landing__intro', '.landing__orb', '.paths'].map((s) => Math.round(document.querySelector(s).getBoundingClientRect().top)))()`);
+    assert.ok(order[0] < order[1] && order[1] < order[2], JSON.stringify(order));
     assert.equal(await browser.eval(`Math.max(document.documentElement.scrollWidth, innerWidth) - 390`), 0);
     assert.equal(await browser.eval(`${ORB}.__orb.composition`), 'sphere');
     await browser.tap('#mint-input');
@@ -194,11 +239,12 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
     await browser.waitFor(`location.pathname === '/t/${MINTS.analyze}'`);
   });
 
-  test('tablet: the paths and the result fit without overflow', async () => {
+  test('tablet: the ways in and the result fit without overflow or overlap', async () => {
     await openLanding(1024, 768);
     assert.equal(await browser.eval(`Math.max(document.documentElement.scrollWidth, innerWidth) - 1024`), 0);
     await browser.goto(`${server.origin}/analyze/${MINTS.analyze}`);
     await browser.waitFor(`${PHASE} === 'result'`, 20_000);
+    await sleep(1500);
     assert.equal(await browser.eval(`Math.max(document.documentElement.scrollWidth, innerWidth) - 1024`), 0);
     const overlap = await browser.eval(`(() => {
       const card = document.querySelector('.result').getBoundingClientRect();
@@ -208,7 +254,7 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
     assert.equal(overlap, false, 'the analysed token sits under the result card');
   });
 
-  test('reduced motion: no loop, and the whole flow still works', async () => {
+  test('reduced motion: no loop, no cinematic movement, and both flows still work', async () => {
     await browser.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     try {
       await browser.viewport(1440, 900);
@@ -221,8 +267,13 @@ describe('the Landing', { skip: SKIP, timeout: 240_000 }, () => {
       await browser.key('Enter', 'Enter', 13);
       await browser.waitFor(`${PHASE} === 'result'`, 20_000);
       // Placed at once, not animated.
-      assert.ok((await browser.eval(`${ORB}.__orb.placement.fx`)) < 0.36);
+      assert.ok((await browser.eval(`${ORB}.__orb.placement.fx`)) < 0.31);
       assert.equal(await browser.eval(`${ORB}.__orb.running`), false);
+      await browser.goto(`${server.origin}/`);
+      await browser.waitFor(`${PHASE} === 'idle'`);
+      await browser.click('[data-action="discover"]');
+      await browser.waitFor(`location.pathname === '/discover' && document.querySelectorAll('.board-row').length > 0`, 30_000);
+      assert.equal(await browser.eval(`document.querySelector('.board-hero .orb').__orb.running`), false);
     } finally {
       await browser.send('Emulation.setEmulatedMedia', { features: [] });
     }

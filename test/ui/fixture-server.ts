@@ -188,9 +188,15 @@ store.finishScan(now - 2 * MIN, { analyzed: 7, fresh: 7 });
 // observed. Nothing else is reachable: the monitor is off.
 export const ANALYZE_MINT = 'AnaLyzeMe11111111111111111111111111111111111';
 export const NO_MARKET_MINT = 'NoMarket111111111111111111111111111111111111';
+// A real discovery scan (POST /api/scan) finds this one on Jupiter's recent
+// feed, and the real pipeline evaluates it.
+export const DISCOVER_MINT = 'DiscoverMe111111111111111111111111111111111';
 const healthy = fixtureByName('healthy-established');
-const rebrand = (value: unknown, mint: string): unknown =>
-  JSON.parse(JSON.stringify(value).replaceAll('Mint1111111111111111111111111111111111111', mint).replaceAll('HEALTHY', 'CLARITY').replaceAll('Healthy Token', 'Clarity Protocol'));
+const BRAND: Record<string, [string, string]> = { [ANALYZE_MINT]: ['CLARITY', 'Clarity Protocol'], [DISCOVER_MINT]: ['FOUNDIT', 'Found It'] };
+const rebrand = (value: unknown, mint: string): unknown => {
+  const [symbol, name] = BRAND[mint] ?? ['TOKEN', 'Token'];
+  return JSON.parse(JSON.stringify(value).replaceAll('Mint1111111111111111111111111111111111111', mint).replaceAll('HEALTHY', symbol).replaceAll('Healthy Token', name));
+};
 const PROVIDER_DELAY_MS = Number(process.env.FIXTURE_PROVIDER_DELAY_MS ?? 700);
 const reply = async (body: unknown, status = 200): Promise<Response> => {
   await new Promise((resolve) => setTimeout(resolve, PROVIDER_DELAY_MS));
@@ -198,15 +204,18 @@ const reply = async (body: unknown, status = 200): Promise<Response> => {
 };
 globalThis.fetch = (async (input: string | URL | Request) => {
   const url = String(input instanceof Request ? input.url : input);
-  const known = url.includes(ANALYZE_MINT);
+  const known = [ANALYZE_MINT, DISCOVER_MINT].filter((mint) => url.includes(mint));
   if (url.startsWith('https://api.dexscreener.com/latest/dex/tokens/')) {
-    return reply({ pairs: known ? (rebrand(healthy.dexPairs, ANALYZE_MINT) as unknown[]) : [] });
+    return reply({ pairs: known.flatMap((mint) => rebrand(healthy.dexPairs, mint) as unknown[]) });
   }
   if (url.startsWith('https://lite-api.jup.ag/tokens/v2/search')) {
-    return reply(known && healthy.jupiter ? [rebrand(healthy.jupiter, ANALYZE_MINT)] : []);
+    return reply(healthy.jupiter ? known.map((mint) => rebrand(healthy.jupiter, mint)) : []);
+  }
+  if (url.startsWith('https://lite-api.jup.ag/tokens/v2/recent')) {
+    return reply(healthy.jupiter ? [rebrand(healthy.jupiter, DISCOVER_MINT)] : []);
   }
   if (url.startsWith('https://api.rugcheck.xyz/v1/tokens/')) {
-    return known && healthy.rugcheck ? reply(rebrand(healthy.rugcheck, ANALYZE_MINT)) : reply({ error: 'not found' }, 404);
+    return known.length && healthy.rugcheck ? reply(rebrand(healthy.rugcheck, known[0]!)) : reply({ error: 'not found' }, 404);
   }
   return new Response('not reachable from the test fixture', { status: 404 });
 }) as typeof fetch;
