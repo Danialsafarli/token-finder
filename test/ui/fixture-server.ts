@@ -8,6 +8,7 @@
 
 import { store } from '../../src/core/store.ts';
 import { serve } from '../../src/server/index.ts';
+import { bus, type ScanResult } from '../../src/core/monitor.ts';
 import { snapshot, token2022Onchain } from '../persist-helpers.ts';
 import type { LedgerEntry, TokenSnapshot } from '../../src/types.ts';
 
@@ -178,3 +179,19 @@ for (const [minutesAgo, score, price] of [[80, 60, 0.001], [50, 68, 0.0014], [20
 
 store.finishScan(now - 2 * MIN, { analyzed: 7, fresh: 7 });
 serve({ monitor: false });
+
+// The tests drive scan state through the monitor's own bus, one event name per
+// line on stdin, so the browser receives exactly what a real scan would send
+// over SSE. No provider is contacted.
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk: string) => {
+  for (const line of chunk.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+    const at = Date.now();
+    if (line === 'scan-start') bus.emit('scan-start', { at });
+    if (line === 'scan-failed') bus.emit('scan-failed', { at });
+    if (line === 'scan') {
+      const result: ScanResult = { at, durationMs: 1200, candidates: 7, analyzed: 7, fresh: 0, events: [], tokenFailures: [], providerFailures: [], top: [] };
+      bus.emit('scan', result);
+    }
+  }
+});
