@@ -181,6 +181,70 @@ describe('the Landing', { skip: SKIP, timeout: 300_000 }, () => {
     assert.equal(await browser.eval(`location.pathname`), '/');
   });
 
+  test('every frame of a transition shows a whole Observatory: never blank, stretched or cut by its stage', async () => {
+    // Regression: a canvas resize cleared the sphere until the loop's next
+    // tick, a stage that was still settling stretched it, and a sphere
+    // arriving larger than its new stage was cut by the stage's edge - a line,
+    // or a box, for the second it took to ease into place.
+    await openLanding();
+    await browser.eval(`document.querySelector('.paths').scrollIntoView({ block: 'center' })`);
+    await browser.eval(`(() => {
+      window.__defects = [];
+      window.__sampled = 0;
+      const tick = () => {
+        const orb = document.querySelector('.orb');
+        const canvas = orb?.querySelector('.orb__canvas');
+        const stage = orb?.querySelector('.orb__stage');
+        if (canvas && stage && orb.__orb && canvas.width > 0) {
+          window.__sampled += 1;
+          const box = canvas.getBoundingClientRect();
+          const s = stage.getBoundingClientRect();
+          const dpr = Math.min(2, devicePixelRatio || 1);
+          const p = orb.__orb.placement;
+          const reach = Math.min(s.height * 0.345, s.width * 0.27) * p.size * 1.32;
+          const cx = s.left + s.width * p.fx;
+          const cy = s.top + s.height * p.fy;
+          const topbar = document.querySelector('.topbar').getBoundingClientRect().bottom;
+          const defect = {
+            at: location.pathname,
+            stretched: Math.abs(canvas.width - Math.round(box.width * dpr)) > 2 || Math.abs(canvas.height - Math.round(box.height * dpr)) > 2,
+            cut: orb.__orb.composition === 'sphere' && ((cy - reach < box.top - 1 && box.top > topbar + 1) || cy + reach > box.bottom + 1 || cx - reach < box.left - 1 && box.left > 1),
+            blank: false,
+          };
+          if (!defect.stretched) {
+            const pixel = canvas.getContext('2d').getImageData(Math.round((cx - box.left) * dpr), Math.round((cy - box.top) * dpr), 1, 1).data;
+            defect.blank = pixel[3] === 0;
+          }
+          if (defect.stretched || defect.cut || defect.blank) window.__defects.push(defect);
+        }
+        if (!window.__stopSampling) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    })()`);
+    // Analyze, from the scrolled Landing.
+    await browser.click('#mint-input');
+    await browser.type(MINTS.analyze);
+    await browser.key('Enter', 'Enter', 13);
+    await browser.waitFor(`${PHASE} === 'result'`, 20_000);
+    await browser.waitFor(`${ORB}.__orb.placement.fx < 0.3`, 4_000);
+    // Scan live, handed to /discover, then back and forth.
+    await browser.click('.result a[href="/"]');
+    await browser.waitFor(`${PHASE} === 'idle'`);
+    await browser.click('[data-action="discover"]');
+    await browser.waitFor(`location.pathname === '/discover' && document.querySelectorAll('.board-row').length > 0`, 30_000);
+    await browser.waitFor(`document.querySelector('.board-hero .orb').__orb.placement.size < 1.01`, 6_000);
+    for (let i = 0; i < 2; i++) {
+      await browser.click('.brand');
+      await browser.waitFor(`location.pathname === '/' && document.querySelector('.landing .orb')`);
+      await browser.click('.nav__link[data-nav="discover"]');
+      await browser.waitFor(`location.pathname === '/discover' && document.querySelector('.board-hero .orb')`);
+    }
+    await sleep(500);
+    await browser.eval(`window.__stopSampling = true`);
+    assert.ok((await browser.eval(`window.__sampled`)) > 60, 'too few frames were sampled to say anything');
+    assert.deepEqual(await browser.eval(`window.__defects.slice(0, 5)`), []);
+  });
+
   test('Cancel during an analysis returns to the Landing', async () => {
     await browser.goto(`${server.origin}/analyze/${MINTS.analyze}`);
     await browser.waitFor(`${PHASE} === 'scanning' && document.querySelector('.progress__cancel')`);

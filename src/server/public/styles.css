@@ -1554,6 +1554,9 @@ th.col-num {
   display: block;
   width: 100%;
   height: 100%;
+  /* It may extend past the stage (orb.js fitCanvas); only light is drawn
+     there, so it must never take a click from what lies beneath. */
+  pointer-events: none;
 }
 
 .orb__markers {
@@ -1824,6 +1827,15 @@ th.col-num {
 
 .rail-item__reason {
   font-size: var(--fs-xs);
+}
+
+/* Loading: the loaded list's exact shape, drawn as skeleton cards. */
+.rail-list--loading .rail-item {
+  background: var(--surface);
+  border-color: var(--line-soft);
+}
+.rail-list--loading .rail-item > * {
+  visibility: hidden;
 }
 
 .rail__more {

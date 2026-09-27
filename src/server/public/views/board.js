@@ -372,7 +372,22 @@ const railSection = (changes) => html`
 
 /** @param {any[] | null} changes */
 function railTemplate(changes) {
-  if (changes === null) return skeleton(3);
+  // Loading has the loaded list's shape - two changes, each a symbol line, a
+  // verdict transition and a reason - so the Observatory's footer, and with it
+  // its stage, keep their height when the changes arrive.
+  if (changes === null) {
+    return html`<ol class="rail-list rail-list--loading" aria-busy="true" aria-label="Loading">
+      ${[0, 1].map(
+        () => html`<li>
+          <span class="rail-item">
+            <span class="rail-item__top"><strong>&nbsp;</strong></span>
+            <span class="transition"><span class="verdict">&nbsp;</span></span>
+            <span class="rail-item__reason">&nbsp;</span>
+          </span>
+        </li>`,
+      )}
+    </ol>`;
+  }
   if (changes.length === 0) {
     return html`<p class="muted small">No verdict has changed yet. Changes appear here when a token moves between Qualified, Watch and Rejected.</p>`;
   }
@@ -462,6 +477,12 @@ export function mountBoard(root, route) {
   // here: adopted, reconfigured for this surface, moving from where it was.
   const arrival = adoptOrb();
   const orb = arrival ? arrival.handle : mountOrb(slot('orb'), { placement: HERO_PLACEMENT });
+  // The rail fills the Observatory's footer before an arriving Observatory is
+  // attached, so the stage it measures there is the stage it keeps.
+  orb.aside.classList.add('rail');
+  orb.aside.setAttribute('aria-labelledby', 'rail-title');
+  const slots = { head: slot('head'), main: slot('main'), rail: orb.aside };
+  render(slots.rail, railSection(null));
   if (arrival) {
     const layout = /** @type {HTMLElement} */ (root.querySelector('.board-layout'));
     layout.classList.add('is-arriving');
@@ -470,10 +491,6 @@ export function mountBoard(root, route) {
     orb.setPlacement(HERO_PLACEMENT);
     arrivalTimer = window.setTimeout(() => layout.classList.remove('is-arriving'), 2400);
   }
-  orb.aside.classList.add('rail');
-  orb.aside.setAttribute('aria-labelledby', 'rail-title');
-  const slots = { head: slot('head'), main: slot('main'), rail: orb.aside };
-  render(slots.rail, railSection(null));
 
   let debounce = 0;
   const onInput = (/** @type {Event} */ event) => {

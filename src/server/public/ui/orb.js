@@ -511,6 +511,10 @@ export function mountOrb(host, options = {}) {
     /** Scan-completion ripples waiting to be released. @type {number[]} */ pendingRipples: [],
     /** @type {Placement} */ place: { fx: 0.5, fy: 0.5, size: 1, ...options.placement },
     /** @type {Placement} */ placeGoal: { fx: 0.5, fy: 0.5, size: 1, ...options.placement },
+    /** Room the canvas extends past each edge of the stage, in CSS px. */
+    bleed: { top: 0, right: 0, bottom: 0, left: 0 },
+    /** The stage's top-left in page coordinates at the last layout. */
+    origin: { x: 0, y: 0 },
     attention: 0,
     nextConvergeAt: 0,
   };
@@ -585,13 +589,13 @@ export function mountOrb(host, options = {}) {
 
   /** Renders the static body once per layout: gradients are the costliest thing to fill. */
   const renderBody = () => {
-    const { width, height, dpr, cx, cy, radius } = scene;
+    const { dpr, cx, cy, radius, bleed } = scene;
     Object.assign(bodyGeo, { cx, cy, r: radius });
     body = document.createElement('canvas');
-    body.width = Math.round(width * dpr);
-    body.height = Math.round(height * dpr);
+    body.width = canvas.width;
+    body.height = canvas.height;
     const g = /** @type {CanvasRenderingContext2D} */ (body.getContext('2d'));
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.setTransform(dpr, 0, 0, dpr, bleed.left * dpr, bleed.top * dpr);
     paintBody(g, cx, cy, radius);
   };
 
@@ -649,6 +653,55 @@ export function mountOrb(host, options = {}) {
   const placementMoving = () =>
     Math.abs(scene.place.fx - scene.placeGoal.fx) + Math.abs(scene.place.fy - scene.placeGoal.fy) + Math.abs(scene.place.size - scene.placeGoal.size) > 0.002;
 
+  /**
+   * How far the sphere's atmosphere reaches past each edge of the stage at a
+   * placement. The atmosphere ends at 1.32 radii.
+   * @param {Placement} place
+   */
+  const overflowAt = (place) => {
+    const reach = Math.min(scene.height * 0.345, scene.width * 0.27) * place.size * 1.32 + 2;
+    const cx = scene.width * place.fx;
+    const cy = scene.height * place.fy;
+    return { top: reach - cy, right: cx + reach - scene.width, bottom: cy + reach - scene.height, left: reach - cx };
+  };
+
+  /**
+   * Sizes the canvas to the stage plus the room the sphere needs, where it is
+   * and where it is going. A sphere larger than its stage - arriving from
+   * another surface, or lifting into a new layout - is then never cut by the
+   * stage's edge, which read as a line or a box around it. Only the horizontal
+   * room is limited, so the page never scrolls sideways; a sphere at rest
+   * inside its stage needs none. Returns whether the canvas changed, which
+   * clears it.
+   * @param {DOMRect} rect the stage's box
+   */
+  const fitCanvas = (rect = stage.getBoundingClientRect()) => {
+    const room = { top: 0, right: 0, bottom: 0, left: 0 };
+    if (scene.composition === 'sphere') {
+      const here = overflowAt(scene.place);
+      const there = overflowAt(scene.placeGoal);
+      const step = (/** @type {number} */ px) => Math.ceil(Math.max(0, px) / 16) * 16;
+      room.top = step(Math.max(here.top, there.top));
+      room.bottom = step(Math.max(here.bottom, there.bottom));
+      room.left = Math.min(step(Math.max(here.left, there.left)), Math.max(0, Math.floor(rect.left)));
+      room.right = Math.min(step(Math.max(here.right, there.right)), Math.max(0, Math.floor(document.documentElement.clientWidth - rect.right)));
+    }
+    const { width, height, dpr } = scene;
+    const pixelWidth = Math.round((width + room.left + room.right) * dpr);
+    const pixelHeight = Math.round((height + room.top + room.bottom) * dpr);
+    const before = scene.bleed;
+    const same = canvas.width === pixelWidth && canvas.height === pixelHeight && before.top === room.top && before.left === room.left;
+    if (same && before.right === room.right && before.bottom === room.bottom) return false;
+    scene.bleed = room;
+    canvas.style.left = `${-room.left}px`;
+    canvas.style.top = `${-room.top}px`;
+    canvas.style.width = `${width + room.left + room.right}px`;
+    canvas.style.height = `${height + room.top + room.bottom}px`;
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+    return true;
+  };
+
   // --- layout ----------------------------------------------------------------
 
   const layout = () => {
@@ -659,8 +712,7 @@ export function mountOrb(host, options = {}) {
     scene.width = width;
     scene.height = height;
     scene.dpr = Math.min(2, window.devicePixelRatio || 1);
-    canvas.width = Math.round(width * scene.dpr);
-    canvas.height = Math.round(height * scene.dpr);
+    scene.origin = { x: rect.left + window.scrollX, y: rect.top + window.scrollY };
 
     // A short band gets the horizon; anything with room for a sphere gets one.
     const horizon = opts.composition !== 'sphere' && height < 260;
@@ -709,9 +761,12 @@ export function mountOrb(host, options = {}) {
         marker.fraction = -1;
       }
     }
+    fitCanvas(rect);
     renderBody();
     syncMarkers();
-    requestDraw();
+    // Resizing cleared the canvas: paint it now, before the browser presents
+    // the frame, instead of on the loop's next tick.
+    paintNow();
   };
 
   // --- projection --------------------------------------------------------------
@@ -923,6 +978,7 @@ export function mountOrb(host, options = {}) {
       if (!placementMoving()) {
         scene.place = { ...scene.placeGoal };
         if (scene.composition === 'sphere') sphereGeometry(scene.place);
+        fitCanvas();
         renderBody();
       } else if (scene.composition === 'sphere') sphereGeometry(scene.place);
     }
@@ -991,9 +1047,12 @@ export function mountOrb(host, options = {}) {
   const draw = () => {
     const network = scene.network;
     if (!network || scene.width === 0) return;
-    const { dpr, width, height } = scene;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
+    const { dpr, width, height, bleed } = scene;
+    // Stage coordinates throughout; the canvas may extend past the stage.
+    ctx.setTransform(dpr, 0, 0, dpr, bleed.left * dpr, bleed.top * dpr);
+    const fullWidth = width + bleed.left + bleed.right;
+    const fullHeight = height + bleed.top + bleed.bottom;
+    ctx.clearRect(-bleed.left, -bleed.top, fullWidth, fullHeight);
     const cam = project();
     const yaw = cam.yaw;
     const horizon = scene.composition === 'horizon';
@@ -1007,7 +1066,7 @@ export function mountOrb(host, options = {}) {
     if (body) {
       ctx.globalAlpha = life;
       if (bodyGeo.cx === scene.cx && bodyGeo.cy === scene.cy && bodyGeo.r === scene.radius) {
-        ctx.drawImage(body, 0, 0, width, height);
+        ctx.drawImage(body, -bleed.left, -bleed.top, fullWidth, fullHeight);
       } else {
         // Mid-placement: painted fresh where the sphere is now.
         paintBody(ctx, scene.cx, scene.cy, scene.radius);
@@ -1409,14 +1468,17 @@ export function mountOrb(host, options = {}) {
       // changes a few times a second rather than on every frame.
       const q = (/** @type {number} */ v) => (Math.round(v * 2) / 2).toFixed(1);
       const transform = `translate3d(${q(x)}px,${q(y)}px,0) translate(-50%,-50%) scale(${scale.toFixed(2)})`;
-      if (write && marker.last !== transform) {
+      // A marker never yet placed is written now, whatever the pacing: until
+      // then it has no position at all.
+      const writeThis = write || marker.last === '';
+      if (writeThis && marker.last !== transform) {
         marker.el.style.transform = transform;
         marker.last = transform;
       }
       // Compared with what was last written: the style getter normalises "1.00"
       // to "1", so comparing against it rewrote every marker on every frame.
       const o = opacity.toFixed(2);
-      if (write && marker.lastOpacity !== o) {
+      if (writeThis && marker.lastOpacity !== o) {
         marker.el.style.opacity = o;
         marker.lastOpacity = o;
       }
@@ -1561,6 +1623,8 @@ export function mountOrb(host, options = {}) {
       render(holder, markerTemplate(token, index < 2));
       const item = /** @type {HTMLLIElement} */ (holder.firstElementChild);
       const el = /** @type {HTMLAnchorElement} */ (item.querySelector('a'));
+      // Unseen until its first frame places it: before that it has no position.
+      el.style.opacity = '0';
       // Keep DOM (and so tab) order equal to priority order.
       const before = [...list.children][index] ?? null;
       list.insertBefore(item, before);
@@ -1713,6 +1777,7 @@ export function mountOrb(host, options = {}) {
         if (placementMoving()) {
           scene.place = { ...scene.placeGoal };
           if (scene.composition === 'sphere') sphereGeometry(scene.place);
+          fitCanvas();
           renderBody();
         }
         if (attentionGoal) {
@@ -1731,6 +1796,16 @@ export function mountOrb(host, options = {}) {
       advanceMarkers(1);
       frames += 1;
     });
+  };
+  /**
+   * Paints the current frame immediately: after a layout, whose canvas resize
+   * cleared the bitmap. A paused Observatory (reduced motion, a hidden tab)
+   * also gets its settled frame on the next animation frame, as before.
+   */
+  const paintNow = () => {
+    if (disposed || document.visibilityState !== 'visible') return;
+    draw();
+    if (reduced || (frame === 0 && timer === 0)) requestDraw();
   };
 
   // --- data ----------------------------------------------------------------
@@ -1765,7 +1840,8 @@ export function mountOrb(host, options = {}) {
       }
       syncMarkers({ emerge: !first });
       paintReadout();
-      requestDraw();
+      // Place any new marker now, rather than on the loop's next frame.
+      paintNow();
     } catch {
       // The connection banner says the server is unreachable; keep what we have.
     } finally {
@@ -1846,6 +1922,16 @@ export function mountOrb(host, options = {}) {
   reducedQuery.addEventListener('change', onMotionPreference);
 
   const resizeObserver = new ResizeObserver(() => {
+    // A stage that changes size while the sphere is moving into place - its
+    // host still settling as content arrives - keeps the sphere where it is on
+    // screen, and the movement carries on from there instead of jumping.
+    if (scene.width > 0 && !arriveFrom && scene.composition === 'sphere' && placementMoving()) {
+      arriveFrom = {
+        x: scene.origin.x - window.scrollX + scene.cx,
+        y: scene.origin.y - window.scrollY + scene.cy,
+        r: scene.radius,
+      };
+    }
     layout();
     start();
   });
@@ -2042,6 +2128,10 @@ export function mountOrb(host, options = {}) {
       if (reduced || how.instant) {
         scene.place = { ...placement };
         layout();
+      } else if (scene.width > 0 && fitCanvas()) {
+        // The way there needs more room than the canvas has.
+        renderBody();
+        paintNow();
       }
       changed();
     },
