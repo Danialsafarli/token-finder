@@ -24,6 +24,10 @@ token-finder - discover, analyze, rank and monitor new Solana tokens
   node src/cli.ts ingest           run one on-chain collection cycle and report it
   node src/cli.ts chain            what the data backbone has collected
   node src/cli.ts activity <mint>  a tracked token's collected trades and buyers
+  node src/cli.ts intel-run        run one deep-intelligence cycle and report it
+  node src/cli.ts intel <mint> [--run]
+                                   a token's stored deep intelligence; --run
+                                   analyses it now, within the cycle budgets
 
 Options come from .env - see .env.example.
 `;
@@ -282,6 +286,60 @@ async function cmdIngest(): Promise<void> {
   store.save();
 }
 
+async function cmdIntelRun(): Promise<void> {
+  const { runIntelCycle, noteIntelCycle } = await import('./intel/runner.ts');
+  const { liveIntelDeps } = await import('./intel/wiring.ts');
+  const deps = liveIntelDeps();
+  log.step(`one intelligence cycle via ${deps.source}…`);
+  const r = await runIntelCycle(deps);
+  noteIntelCycle(r, deps.source, config.intelIntervalSec);
+  log.ok(`${r.health.state} in ${(r.durationMs / 1000).toFixed(1)}s - ${r.health.reason}`);
+  const s = r.skipped;
+  console.log(`  tokens     ${r.tokens.length} analysed · left out: ${s.notSurvivor} not survivors, ${s.notLive} not live, ${s.recentlyAnalyzed} analysed recently, ${s.overBudget} over budget`);
+  for (const t of r.tokens) printTokenReport(t);
+  console.log(`  requests   ${r.budget.requests} of ${r.budget.limit} · ${r.failures.length} failed`);
+  store.save();
+}
+
+function printTokenReport(t: import('./intel/runner.ts').TokenReport): void {
+  const w = t.wallets;
+  console.log(`    ${t.mint.slice(0, 8)} ${t.tier.padEnd(9)} coverage ${t.coverage} · ${t.requests} requests${t.error ? ` · error ${t.error}` : ''}`);
+  console.log(`      wallets ${w.selected} selected: ${w.analyzed} read, ${w.reused} reused, ${w.failed} failed, ${w.notRead} not read · funders ${t.funders.probed} probed, ${t.funders.cached} cached, ${t.funders.hops} hops`);
+  console.log(`      graph ${t.edges} edges, ${t.clusters} clusters, ${t.weakPairs} weak pairs · wash ${t.wash} · activity ${t.activity}`);
+  console.log(`      attribution ${t.attribution} · security events ${t.securityEvents} · network ${t.network}`);
+  for (const x of t.truncation) console.log(`      truncated: ${x}`);
+}
+
+async function cmdIntel(mint: string, run: boolean): Promise<void> {
+  const intel = store.intel();
+  if (intel === null) {
+    log.error('the database is not open');
+    process.exitCode = 1;
+    return;
+  }
+  if (run) {
+    const { analyzeToken, IntelBudget } = await import('./intel/runner.ts');
+    const { liveIntelDeps } = await import('./intel/wiring.ts');
+    const deps = liveIntelDeps();
+    const chain = store.chain();
+    if (chain === null) return;
+    const tier = store.token(mint)?.evaluation?.eligibility === 'QUALIFIED' ? 'QUALIFIED' : 'WATCH';
+    const budget = new IntelBudget(deps.settings.requestsPerCycle, Date.now() + deps.settings.cycleMaxMs, Date.now);
+    const failures: import('./util/failure.ts').ProviderFailure[] = [];
+    const started = Date.now();
+    const report = await analyzeToken({ mint, tier }, { ...deps, chain, intel }, budget, failures);
+    log.ok(`analysed in ${((Date.now() - started) / 1000).toFixed(1)}s · ${failures.length} request(s) failed`);
+    printTokenReport(report);
+    store.save();
+  }
+  const latest = intel.latestTokenIntelligence(mint);
+  if (latest === null) {
+    log.warn('no deep intelligence stored for this mint');
+    return;
+  }
+  console.log(JSON.stringify({ ...latest, securityEvents: intel.eventsOf([mint]) }, null, 2));
+}
+
 function cmdChain(): void {
   const chain = store.chain();
   if (chain === null) {
@@ -402,6 +460,21 @@ async function main(): Promise<void> {
         break;
       }
       cmdActivity(rest[0]);
+      break;
+    }
+
+    case 'intel-run':
+      await cmdIntelRun();
+      break;
+
+    case 'intel': {
+      const target = rest.find((a) => !a.startsWith('--'));
+      if (!target) {
+        log.error('usage: node src/cli.ts intel <mint> [--run]');
+        process.exitCode = 1;
+        break;
+      }
+      await cmdIntel(target, rest.includes('--run'));
       break;
     }
 

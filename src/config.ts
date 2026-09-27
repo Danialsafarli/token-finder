@@ -207,6 +207,30 @@ export const config = {
    */
   retentionChainDays: Math.max(1, num('RETENTION_CHAIN_DAYS', 30)),
 
+  // --- deep intelligence: bounded actor analysis (DEEP_INTELLIGENCE.md) ---
+  /** Master switch for the actor-analysis cycle. */
+  intelEnabled: bool('INTEL_ENABLED', true),
+  /** Seconds between intelligence cycles. */
+  intelIntervalSec: Math.max(60, num('INTEL_INTERVAL_SEC', 300)),
+  /** Surviving tokens analysed per cycle. */
+  intelTokensPerCycle: Math.max(0, num('INTEL_TOKENS_PER_CYCLE', 2)),
+  /** Wallets analysed per token: earliest buyers, largest buyers and the creator. */
+  intelWalletsPerToken: Math.max(1, num('INTEL_WALLETS_PER_TOKEN', 12)),
+  /** Newest transactions read per wallet (one request; at most 100). */
+  intelTxPerWallet: Math.min(100, Math.max(10, num('INTEL_TX_PER_WALLET', 100))),
+  /** Oldest transactions read per wallet, for its first funding (one request). */
+  intelAscLimit: Math.min(100, Math.max(1, num('INTEL_ASC_LIMIT', 10))),
+  /** Funding hops followed back from an analysed wallet. */
+  intelGraphDepth: Math.min(3, Math.max(1, num('INTEL_GRAPH_DEPTH', 2))),
+  /** Hard cap on provider requests per cycle, shared by every stage. */
+  intelRequestsPerCycle: Math.max(10, num('INTEL_REQUESTS_PER_CYCLE', 150)),
+  /** Hard cap on one cycle's wall time. */
+  intelCycleMaxMs: Math.max(5_000, num('INTEL_CYCLE_MAX_MS', 90_000)),
+  /** A wallet profile younger than this is reused rather than re-read. */
+  intelProfileTtlHours: Math.max(0, num('INTEL_PROFILE_TTL_HOURS', 6)),
+  /** A token analysed more recently than this is not re-analysed. */
+  intelTokenRefreshMin: Math.max(1, num('INTEL_TOKEN_REFRESH_MIN', 30)),
+
   /** Snapshots retained per token for the sparkline/history view. */
   historyPoints: num('HISTORY_POINTS', 240),
   /** Monitor events retained. */

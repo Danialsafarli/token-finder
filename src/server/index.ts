@@ -41,6 +41,10 @@ import type { MonitorEvent } from '../types.ts';
 import { analyzeRequested, MINT_ADDRESS, stageView } from '../core/request.ts';
 import { ingestionStatus, startIngestion } from '../ingest/runner.ts';
 import { liveIngestDeps } from '../ingest/wiring.ts';
+import { intelStatus, startIntel } from '../intel/runner.ts';
+import { liveIntelDeps } from '../intel/wiring.ts';
+import { largestAccountsGuardState } from '../sources/helius.ts';
+import { txCacheStats } from '../sources/solana-rpc.ts';
 import { rpcEndpoint, rpcThrottleCount } from '../sources/solana-rpc.ts';
 
 const PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), 'public');
@@ -235,6 +239,63 @@ function ingestionBody(now: number): unknown {
   };
 }
 
+/**
+ * Deep intelligence, as diagnostics: is the cycle healthy, what has it
+ * produced, and what did its budgets cut. Counts only - it is not the
+ * Activity Integrity or Rug Intelligence surface, and feeds no score.
+ */
+function intelligenceBody(now: number): unknown {
+  const status = intelStatus(now);
+  let stats = null;
+  let recent: unknown[] = [];
+  try {
+    const intel = store.intel();
+    stats = intel?.stats() ?? null;
+    recent = (intel?.recentTokenIntelligence(5) ?? []).map((t) => {
+      const wash = t.wash as { risk?: string } | null;
+      const activity = t.activity as { status?: string } | null;
+      const attribution = t.attribution as { status?: string } | null;
+      const network = t.network as { analysis?: { level?: string }; security?: unknown[] } | null;
+      return {
+        mint: t.mint,
+        analyzedAt: t.analyzedAt,
+        coverage: t.coverage,
+        wash: wash?.risk ?? null,
+        activity: activity?.status ?? null,
+        attribution: attribution?.status ?? null,
+        network: network?.analysis?.level ?? null,
+        securityEvents: network?.security?.length ?? 0,
+        truncated: t.truncation.length,
+      };
+    });
+  } catch {
+    // Diagnostics must never fail the System surface.
+  }
+  const last = status.lastCycle;
+  return {
+    enabled: status.enabled,
+    intervalSec: status.intervalSec,
+    health: status.health,
+    lastSuccessAt: status.lastSuccessAt,
+    lastCycle: last
+      ? {
+          at: last.at,
+          durationMs: last.durationMs,
+          tokens: last.tokens.length,
+          requests: last.budget.requests,
+          requestLimit: last.budget.limit,
+          failures: last.failures.length,
+          waiting: last.skipped.overBudget,
+          truncations: last.tokens.reduce((sum, t) => sum + t.truncation.length, 0),
+        }
+      : null,
+    produced: stats,
+    recent,
+    largestAccountsGuard: largestAccountsGuardState(now),
+    transactionCache: txCacheStats(),
+  };
+}
+
 function systemBody(now = Date.now()): unknown {
   const { caps } = currentContext(now);
   const diagnostics = store.diagnostics();
@@ -262,6 +323,7 @@ function systemBody(now = Date.now()): unknown {
     },
     providers: store.providerFailureSummary(now - 60 * 60_000),
     ingestion: ingestionBody(now),
+    intelligence: intelligenceBody(now),
     window: { liveMinutes: config.liveWindowMin, freshMinutes: Math.round(FRESH_WITHIN_MS / 60_000) },
     coverage: coverageBody(now),
     persistence: {
@@ -547,6 +609,24 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return sendJson(res, 200, dossier(token, token.ledger ? [] : store.latestEvidence(mint), context));
     }
 
+    // Diagnostic JSON for one token's deep intelligence. Read-only; not a
+    // product surface and not an input to any verdict.
+    const intelRoute = /^\/api\/intel\/([^/]+)$/.exec(path);
+    if (intelRoute) {
+      let mint: string;
+      try {
+        mint = decodeURIComponent(intelRoute[1]!);
+      } catch {
+        return sendJson(res, 400, { error: 'bad mint' });
+      }
+      if (!MINT_PATTERN.test(mint)) return sendJson(res, 400, { error: 'bad mint' });
+      const intel = store.intel();
+      if (!intel) return sendJson(res, 503, { error: 'history database unavailable' });
+      const latest = intel.latestTokenIntelligence(mint);
+      if (!latest) return sendJson(res, 404, { error: 'not analysed' });
+      return sendJson(res, 200, { ...latest, attributionRecord: intel.attribution(mint), securityEvents: intel.eventsOf([mint]) });
+    }
+
     if (path === '/api/analyze' && method === 'POST') {
       await analyzeRoute(req, res);
       return;
@@ -625,6 +705,15 @@ export function serve(options: { monitor?: boolean } = {}): Server {
         log.debug(`chain cycle ${cycle.health.state}: ${launches}, ${trades} trades from ${cycle.deep.pools.length} pools in ${(cycle.durationMs / 1000).toFixed(1)}s`);
       });
     }
+  }
+
+  if (options.monitor !== false && config.intelEnabled) {
+    // Actor analysis runs on its own loop and budget, after collection has
+    // had a chance to gather pool activity; it never blocks either.
+    log.step(`deep intelligence every ${config.intelIntervalSec}s (${config.intelTokensPerCycle} tokens, ${config.intelRequestsPerCycle} requests per cycle)`);
+    startIntel(liveIntelDeps(), config.intelIntervalSec, (cycle) => {
+      log.debug(`intel cycle ${cycle.health.state}: ${cycle.tokens.length} tokens, ${cycle.budget.requests} requests in ${(cycle.durationMs / 1000).toFixed(1)}s`);
+    });
   }
 
   // Returned so a caller that started the server can stop it. Tests need this:

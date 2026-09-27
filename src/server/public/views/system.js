@@ -71,6 +71,54 @@ function ingestionPanel(ing) {
   </section>`;
 }
 
+const INTEL_HEALTH = /** @type {Record<string, { label: string, tone: string }>} */ ({
+  AVAILABLE: { label: 'Running', tone: 'good' },
+  PARTIAL: { label: 'Partial', tone: 'warn' },
+  STALE: { label: 'Stale', tone: 'warn' },
+  UNAVAILABLE: { label: 'Not running', tone: 'neutral' },
+  FAILED: { label: 'Failed', tone: 'bad' },
+});
+
+/** @param {Record<string, number> | null | undefined} counts */
+function tally(counts) {
+  const entries = Object.entries(counts ?? {}).filter(([, n]) => n > 0);
+  if (entries.length === 0) return 'None';
+  return entries.map(([k, n]) => `${k.toLowerCase().replaceAll('_', ' ')} ${count(n)}`).join(' · ');
+}
+
+/**
+ * Deep intelligence, as diagnostics only: health, what it has produced and
+ * what its budgets cut. It feeds no score and no verdict.
+ * @param {any} intel
+ */
+function intelligencePanel(intel) {
+  if (!intel) return '';
+  const health = INTEL_HEALTH[intel.health.state] ?? { label: intel.health.state, tone: 'neutral' };
+  const p = intel.produced;
+  const last = intel.lastCycle;
+  const guard = intel.largestAccountsGuard;
+  return html`<section class="panel" aria-labelledby="intel-title">
+    <h2 id="intel-title" class="panel__title">Deep intelligence (diagnostics)</h2>
+    <p class="small"><span class="tag tag--${health.tone}">${health.label}</span> ${intel.health.reason}</p>
+    <dl class="kv">
+      ${last ? html`<div><dt>Last cycle</dt><dd>${timeAgo(last.at)} · ${duration(last.durationMs)} · ${count(last.tokens)} tokens · ${count(last.requests)} of ${count(last.requestLimit)} requests${last.failures ? html` · <span class="tone--warn">${count(last.failures)} failed</span>` : ''}${last.truncations ? html` · <span class="small muted">${count(last.truncations)} truncations</span>` : ''}</dd></div>` : ''}
+      ${p ? html`
+        <div><dt>Wallets profiled</dt><dd>${count(p.profiles)}<br><span class="small muted">${tally(p.byClass)}</span></dd></div>
+        <div><dt>Funding</dt><dd><span class="small">${tally(p.fundingByClass)}</span></dd></div>
+        <div><dt>Relationship graph</dt><dd>${count(p.edges)} edges · ${count(p.clusters)} clusters<br><span class="small muted">${tally(p.clustersByLevel)}</span></dd></div>
+        <div><dt>Attribution</dt><dd><span class="small">${tally(p.attributionByStatus)}</span></dd></div>
+        <div><dt>Creator history</dt><dd><span class="small">${tally(p.creatorsByStatus)}</span></dd></div>
+        <div><dt>Security events</dt><dd><span class="small">${tally(p.securityByStatus)}</span></dd></div>
+        <div><dt>Tokens analysed</dt><dd>${count(p.tokensAnalyzed)}${p.lastAnalyzedAt ? html` · last ${timeAgo(p.lastAnalyzedAt)}` : ''}</dd></div>` : ''}
+      ${intel.recent.length ? html`<div><dt>Recent</dt><dd><ul class="small plain">${intel.recent.map(
+        (/** @type {any} */ t) => html`<li><code>${t.mint.slice(0, 6)}…</code> coverage ${share(t.coverage)} · wash ${String(t.wash).toLowerCase().replaceAll('_', ' ')} · activity ${String(t.activity).toLowerCase().replaceAll('_', ' ')} · network ${String(t.network).toLowerCase().replaceAll('_', ' ')}${t.securityEvents ? ` · ${t.securityEvents} events` : ''}${t.truncated ? ` · ${t.truncated} truncated` : ''}</li>`,
+      )}</ul></dd></div>` : ''}
+      ${guard ? html`<div><dt>Largest-accounts guard</dt><dd>${guard.breakerOpenUntil ? html`<span class="tag tag--warn">Paused</span> until ${when(guard.breakerOpenUntil)} · ` : ''}${count(guard.calls)} calls · ${count(guard.skipped)} skipped · ${count(guard.overloads)} overloads · ${count(guard.timeouts)} timeouts</dd></div>` : ''}
+    </dl>
+    <p class="small muted">Diagnostics for engineering only. None of this feeds a score, a ranking or a veto yet, and nothing here is calibrated.</p>
+  </section>`;
+}
+
 /** @param {{ label: string, count: number }[]} buckets */
 function distribution(buckets) {
   const max = Math.max(1, ...buckets.map((b) => b.count));
@@ -142,6 +190,8 @@ function template(s) {
       </section>
 
       ${ingestionPanel(s.ingestion)}
+
+      ${intelligencePanel(s.intelligence)}
 
       <section class="panel" aria-labelledby="db-title">
         <h2 id="db-title" class="panel__title">History database</h2>
