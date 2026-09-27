@@ -7,7 +7,10 @@
  *      trust measures (coverage, confidence). Price moves are deliberately quiet.
  *   2. Unknown is a designed state: hatched, never an empty bar, never a zero.
  *   3. Hierarchy comes from type and space, not from boxes and glow.
- *   4. Motion only when something changed.
+ *   4. Motion only when something changed. The one exception is the
+ *      Observatory on the Board: its slow ambient motion says observation is
+ *      under way, and it stops when observation stops (offline, or reduced
+ *      motion). Anything in it that looks like an event is a real one.
  *
  * No inline styles anywhere: the Content-Security-Policy forbids them.
  */
@@ -68,6 +71,8 @@
   --r-s: 6px;
   --r: 10px;
   --r-l: 14px;
+
+  --orb-node: #c9d4ea;
 
   --topbar: 56px;
   --gutter: 24px;
@@ -217,6 +222,13 @@ button {
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+/* Hover-only hints make no sense without a hovering pointer. */
+@media (hover: none) {
+  .orb__hint {
+    display: none;
   }
 }
 
@@ -813,12 +825,33 @@ body[data-connection="offline"] .main {
 .board-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 32px;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "head side"
+    "main side";
+  column-gap: 32px;
   align-items: start;
 }
 
 .board-head {
+  grid-area: head;
   margin-bottom: 18px;
+}
+
+.board-main {
+  grid-area: main;
+  min-width: 0;
+}
+
+.board-side {
+  grid-area: side;
+  display: grid;
+  /* An auto track would grow to the longest unbreakable token name in a
+     preview, widening the stage and moving every marker. This one cannot. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 26px;
+  align-content: start;
+  min-width: 0;
 }
 
 .toolbar {
@@ -1210,9 +1243,288 @@ th.col-num {
 
 /* rail */
 .rail {
-  position: sticky;
-  top: calc(var(--topbar) + 24px);
   padding-top: 4px;
+}
+
+/* ------------------------------------------------------------ observatory -- */
+/*
+ * The Orb. The canvas draws the network; the tokens are real links laid over
+ * it and positioned by transform. Colour follows the system: the network is
+ * accent-on-dark and carries no verdict colour; verdict colour appears only on
+ * a token's ring, and on its tether while it is focused.
+ */
+.orb {
+  position: relative;
+}
+
+.orb__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.orb__head .section-title {
+  margin: 0;
+}
+
+.orb__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.orb__beacon {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: orb-beacon 3.6s ease-in-out infinite;
+}
+
+.orb[data-state="scanning"] .orb__status {
+  color: var(--accent-strong);
+}
+
+.orb[data-state="scanning"] .orb__beacon {
+  animation-duration: 1.3s;
+}
+
+.orb[data-state="offline"] .orb__beacon {
+  background: var(--text-4);
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes orb-beacon {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.orb__stage {
+  position: relative;
+  height: 304px;
+  /* The ring of tokens is wider than the rail; it borrows the column gap. */
+  margin: 0 -14px;
+}
+
+.orb__canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.orb__markers {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+
+.orb-marker {
+  --ring: var(--line-strong);
+  --ring-solid: var(--neutral);
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 2px;
+  border-radius: 12px;
+  color: var(--text-3);
+  text-decoration: none;
+  pointer-events: auto;
+  will-change: transform, opacity;
+  /* Off-stage until the first frame places it. */
+  transform: translate3d(-200px, -200px, 0);
+}
+
+.orb-marker:hover {
+  color: var(--text);
+}
+
+.orb-marker--good {
+  --ring: var(--good-line);
+  --ring-solid: var(--good);
+}
+.orb-marker--warn {
+  --ring: var(--warn-line);
+  --ring-solid: var(--warn);
+}
+.orb-marker--bad {
+  --ring: var(--bad-line);
+  --ring-solid: var(--bad);
+}
+
+.orb-marker .avatar {
+  border: 0;
+  background: var(--surface-2);
+  box-shadow:
+    0 0 0 1.5px var(--ring),
+    0 0 0 5px var(--bg);
+  transition: box-shadow 0.35s ease;
+}
+
+.orb-marker.is-focused .avatar {
+  box-shadow:
+    0 0 0 1.5px var(--ring-solid),
+    0 0 0 5px var(--bg),
+    0 0 22px 2px var(--ring);
+}
+
+.orb-marker:focus-visible {
+  outline: none;
+}
+
+.orb-marker:focus-visible .avatar {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.orb-marker__symbol {
+  max-width: 72px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(11, 13, 18, 0.74);
+  font: 600 10px/1.1 var(--mono);
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orb-marker.is-focused .orb-marker__symbol {
+  color: var(--text);
+}
+
+/* A real verdict change on the last scan: one ring, once. */
+.orb-marker.is-changed::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  margin-left: -14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ring-solid);
+  animation: orb-change 1.8s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  pointer-events: none;
+}
+
+@keyframes orb-change {
+  from {
+    transform: scale(0.9);
+    opacity: 0.95;
+  }
+  to {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+
+/* A token icon that fails to load shows the monogram underneath. */
+.avatar__img.is-broken {
+  display: none;
+}
+
+.orb__readout {
+  /* Tall enough for a token preview, so focusing one never moves the rail. */
+  min-height: 100px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 2px 0;
+}
+
+.orb__line {
+  margin: 0 0 3px;
+  font-size: var(--fs-s);
+  color: var(--text-2);
+}
+
+.orb__line--scan {
+  color: var(--accent-strong);
+}
+
+.orb__meta {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-4);
+}
+
+.orb-preview__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.orb-preview__id {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.25;
+}
+
+.orb-preview__id strong {
+  font-size: var(--fs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orb-preview__id span {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orb-preview__score {
+  margin: 0 0 0 auto;
+  font: 600 var(--fs-l) / 1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.orb-preview__verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: var(--fs-s);
+  min-width: 0;
+}
+
+.orb-preview__verdict > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orb-preview__why {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
 }
 
 .rail-list {
@@ -2298,11 +2610,34 @@ th.col-num {
 @media (max-width: 1240px) {
   .board-layout {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas:
+      "head"
+      "side"
+      "main";
+  }
+  .board-side {
+    margin-bottom: 14px;
   }
   .rail {
-    position: static;
-    order: -1;
     display: none;
+  }
+  .orb__stage {
+    height: 176px;
+    margin: 2px 0 0;
+    /* The planet's limb fades into the page rather than ending at a hard edge. */
+    -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent);
+    mask-image: linear-gradient(to bottom, #000 72%, transparent);
+  }
+  .orb__readout {
+    min-height: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 12px;
+  }
+  .orb-preview {
+    width: 100%;
   }
   .trust {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2472,6 +2807,16 @@ th.col-num {
 }
 
 @media (max-width: 560px) {
+  .orb__stage {
+    height: 128px;
+  }
+  .orb__meta,
+  .orb-preview__why {
+    display: none;
+  }
+  .orb-preview__head {
+    margin-bottom: 2px;
+  }
   .main {
     padding-top: 20px;
   }

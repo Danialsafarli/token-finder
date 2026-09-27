@@ -14,6 +14,7 @@ import { api } from '../lib/api.js';
 import { age, count, pct, span, usd } from '../lib/format.js';
 import { navigate, setQuery } from '../lib/router.js';
 import { onServerEvent } from '../lib/live.js';
+import { mountOrb } from '../ui/orb.js';
 import {
   dossierUrl,
   emptyState,
@@ -211,10 +212,11 @@ function historyMatches(data) {
 }
 
 /**
+ * The two regions a Board refresh repaints: the head (title and counts) and the
+ * main column (notices, toolbar, table, history matches).
  * @param {BoardResponse} data
- * @param {{ changes: any[] | null }} rail
  */
-function boardTemplate(data, rail) {
+function boardTemplate(data) {
   const segment = data.query.segment;
   const rows = data.rows;
 
@@ -270,10 +272,7 @@ function boardTemplate(data, rail) {
       ${data.total > rows.length ? html`<p class="muted small center">Showing ${rows.length} of ${count(data.total)}.</p>` : ''}`;
   }
 
-  return html`
-    <div class="board-layout">
-      <section class="board-main" aria-labelledby="board-title">
-        <header class="board-head">
+  const head = html`
           <div class="board-head__title">
             <h1 id="board-title">Live board</h1>
             <p class="board-head__sub">
@@ -282,9 +281,9 @@ function boardTemplate(data, rail) {
               <span class="tone--bad">${count(data.counts.REJECTED ?? 0)} rejected</span>
               ${data.counts.WATCH ? html` · <span class="tone--warn">${count(data.counts.WATCH)} watch</span>` : ''}
             </p>
-          </div>
-        </header>
+          </div>`;
 
+  const main = html`
         ${gapBanner(data)}
 
         <div class="toolbar" role="search">
@@ -312,16 +311,36 @@ function boardTemplate(data, rail) {
         </div>
 
         <div class="board-body">${body}</div>
-        ${historyMatches(data)}
-      </section>
+        ${historyMatches(data)}`;
 
-      <aside class="rail" aria-labelledby="rail-title">
-        <h2 id="rail-title" class="section-title">Recent verdict changes</h2>
-        ${railTemplate(rail.changes)}
-        <a class="rail__more" href="${appUrl('/changes')}" data-link>All changes →</a>
-      </aside>
-    </div>`;
+  return { head, main };
 }
+
+/**
+ * The page skeleton. Rendered once per mount: the Board repaints its head, main
+ * and rail slots, and never the Observatory's, so its canvas and animation
+ * survive every refresh.
+ *
+ * DOM order is head, side column (Observatory, then recent changes), table.
+ * On a wide screen the grid puts the side column on the right, level with the
+ * title; on a narrow one the Observatory sits between the title and the table
+ * and the recent-changes rail is hidden, as before.
+ */
+const shellTemplate = () => html`
+  <div class="board-layout">
+    <header class="board-head" data-slot="head"></header>
+    <div class="board-side">
+      <div class="board-orb" data-slot="orb"></div>
+      <aside class="rail" aria-labelledby="rail-title" data-slot="rail"></aside>
+    </div>
+    <section class="board-main" aria-labelledby="board-title" data-slot="main">${skeleton(10)}</section>
+  </div>`;
+
+/** @param {any[] | null} changes */
+const railSection = (changes) => html`
+  <h2 id="rail-title" class="section-title">Recent verdict changes</h2>
+  ${railTemplate(changes)}
+  <a class="rail__more" href="${appUrl('/changes')}" data-link>All changes →</a>`;
 
 /** @param {any[] | null} changes */
 function railTemplate(changes) {
@@ -330,7 +349,7 @@ function railTemplate(changes) {
     return html`<p class="muted small">No verdict has changed yet. Changes appear here when a token moves between Qualified, Watch and Rejected.</p>`;
   }
   return html`<ol class="rail-list">
-    ${changes.slice(0, 6).map(
+    ${changes.slice(0, 4).map(
       (change) => html`<li>
         <a href="${dossierUrl(change.mint, 'history')}" data-link class="rail-item">
           <span class="rail-item__top"><strong>${change.symbol ?? change.mint.slice(0, 6)}</strong>${timeAgo(change.at)}</span>
@@ -373,13 +392,13 @@ export function mountBoard(root, route) {
         // Keep the last good data, but the connection banner makes clear it is not live.
         return;
       }
-      render(root, errorState('The Board could not be loaded.', error instanceof Error ? error.message : String(error)));
+      render(slots.main, errorState('The Board could not be loaded.', error instanceof Error ? error.message : String(error)));
     }
   };
 
   const loadRail = async () => {
     try {
-      const next = await api('/api/changes?limit=6');
+      const next = await api('/api/changes?limit=4');
       if (disposed) return;
       rail.changes = /** @type {any} */ (next).changed;
       if (data) paint();
@@ -395,7 +414,10 @@ export function mountBoard(root, route) {
     const active = document.activeElement;
     const hadSearchFocus = active instanceof HTMLInputElement && active.id === 'board-search';
     const caret = hadSearchFocus ? active.selectionStart : null;
-    render(root, boardTemplate(data, rail));
+    const { head, main } = boardTemplate(data);
+    render(slots.head, head);
+    render(slots.main, main);
+    render(slots.rail, railSection(rail.changes));
     if (hadSearchFocus) {
       const input = /** @type {HTMLInputElement | null} */ (root.querySelector('#board-search'));
       input?.focus();
@@ -405,7 +427,11 @@ export function mountBoard(root, route) {
     }
   };
 
-  render(root, html`<div class="board-layout"><section class="board-main">${skeleton(10)}</section></div>`);
+  render(root, shellTemplate());
+  const slot = (/** @type {string} */ name) => /** @type {HTMLElement} */ (root.querySelector(`[data-slot="${name}"]`));
+  const slots = { head: slot('head'), main: slot('main'), rail: slot('rail') };
+  render(slots.rail, railSection(null));
+  const orb = mountOrb(slot('orb'));
 
   let debounce = 0;
   const onInput = (/** @type {Event} */ event) => {
@@ -502,6 +528,7 @@ export function mountBoard(root, route) {
     },
     dispose() {
       disposed = true;
+      orb.dispose();
       offServer();
       clearInterval(tick);
       clearTimeout(refresh);
