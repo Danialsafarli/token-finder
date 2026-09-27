@@ -105,6 +105,13 @@ Intelligence, any trading or wallet code. The Dossier's tab registry reserves **
 **Buyers** and **Technical** as unavailable entries. They are not rendered: a tab with
 nothing behind it would suggest an analysis that does not exist.
 
+## Observatory — **in review (`feature/intelligence-orb`)**
+
+The Board's visual signature: a live network sphere with the few live tokens
+that matter right now tethered around it, each surfaced for a stated reason. It
+reacts only to real state (scans, verdict changes, connection). No engine change.
+See [docs/adr/0002](docs/adr/0002-intelligence-orb.md).
+
 ## Phase 3a — Transaction ingestion (NEXT)
 
 Signature, slot, block time, wallet, mint, pool, base/quote amounts, direction, source.
@@ -198,7 +205,7 @@ a documented incident runbook are part of the deliverable, not follow-up work.
 
 ## Testing strategy (original proposal)
 
-> **Status:** superseded in part. `npm test` runs 409 tests and `npm run test:ui` runs 27
+> **Status:** superseded in part. `npm test` runs 417 tests and `npm run test:ui` runs 44
 > real-browser tests; see the README. The tiers below are the original plan, kept for the
 > parts not yet covered.
 

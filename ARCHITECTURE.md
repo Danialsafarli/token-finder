@@ -138,6 +138,7 @@ The layers:
 | DTOs | `server/dto.ts` | View-shaped responses. The browser never receives a raw snapshot. |
 | Security | `server/security.ts` | Host allowlist, same-origin check, CSP and headers, URL guard. |
 | Rendering | `public/lib/html.js` | The single HTML sink: an escaping tagged template. |
+| Observatory | `public/ui/orb.js`, `GET /api/orb` | The Board's animated signature: a Canvas 2D network with real token links over it, driven only by real state. See [docs/adr/0002](docs/adr/0002-intelligence-orb.md). |
 | Live state | `public/lib/live.js` | The SSE connection, a heartbeat, and the `connecting`/`live`/`reconnecting`/`offline` state machine. |
 
 The Board refetches on `scan`; every page listens for connection changes.
@@ -145,8 +146,8 @@ The Board refetches on `scan`; every page listens for connection changes.
 **API key requirements** — none to run. `HELIUS_API_KEY` and `BIRDEYE_API_KEY` are optional
 and currently unset; both corresponding sources are inert.
 
-**Test coverage** — `npm test` runs 409 `node:test` tests (engine, persistence, DTOs, security
-boundary, render boundary). `npm run test:ui` runs 27 more in a real headless Chromium,
+**Test coverage** — `npm test` runs 417 `node:test` tests (engine, persistence, DTOs, security
+boundary, render boundary). `npm run test:ui` runs 44 more in a real headless Chromium,
 driven over the DevTools protocol with real pointer, touch and key events and no npm
 dependency. `npm run lint` enforces the render and persistence boundaries. Discovery
 against live providers is still verified only manually.

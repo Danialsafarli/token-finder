@@ -138,6 +138,18 @@ plain ES modules, no build step, no framework.
   history. When a capability is off (for example, no Helius key), the Board says
   which checks no verdict includes. `/` focuses search, `j`/`k` move between rows
   and `Enter` opens one.
+- **Observatory** (on the Board) — a slowly turning network sphere with up to
+  seven real live tokens tethered around it. Each one is surfaced for a stated
+  reason: a recent verdict change, a top score, the newest assessment, the latest
+  Watch or rejection. The Observatory reacts only to real state:
+  - a real scan sweeps it;
+  - a real verdict change pulses the token once;
+  - when the server is unreachable, it stops turning.
+
+  Hover or keyboard focus previews a token; click, tap or Enter opens its
+  Dossier. On narrow screens it becomes a short horizon band. Under
+  `prefers-reduced-motion` it is a still frame. See
+  [docs/adr/0002-intelligence-orb.md](docs/adr/0002-intelligence-orb.md).
 - **Dossier** (`/t/:mint`) — one token. The overview gives the verdict and the
   reason for it; score, coverage and confidence as three separate numbers; every
   signal that was not measured, and why; and the hard vetoes. Tabs:
@@ -167,6 +179,7 @@ snapshots. A Board row is about 0.5 KB: 200 rows come to about 100 KB, or about
 | `GET /api/board?segment=&q=&sort=&limit=` | The live Board: rows, live-universe counts, history matches for a search, capability gaps and the qualify rules. |
 | `GET /api/tokens/:mint` | The Dossier for one token, live or not. `400` for a malformed mint, `404` for an untracked one. |
 | `GET /api/tokens/:mint/history` | Verdict changes and the score, market and holder series for one token. |
+| `GET /api/orb` | The Observatory: at most eight live tokens, each with the reason it was surfaced, plus scan state. About 1 KB gzipped. |
 | `GET /api/changes?limit=` | Verdict changes, first assessments and market alerts across all tokens. |
 | `GET /api/system` | Capabilities, provider health, persistence health, the live window and the rules. |
 | `GET /api/status` | Scan count, last scan, whether a scan is running, and which keys are active (booleans). |
@@ -217,7 +230,7 @@ has its own queue in `src/util/http.ts`; 429s set a cooldown for that host only.
 | [PIPELINE.md](PIPELINE.md) | **The analysis path as implemented**: provider validation, evidence model, cross-provider resolution, safety gate, coverage/confidence, eligibility and lifecycle. |
 | [TECHNICAL_INTELLIGENCE.md](TECHNICAL_INTELLIGENCE.md) | **PLANNED / FUTURE — not implemented.** Design specification and research record for a future chart-structure analysis layer. No code implements any of it. |
 | [ROADMAP.md](ROADMAP.md) | Proposed development sequence and test strategy. |
-| [docs/adr/](docs/adr/) | Architecture decision records. 0001 is the frontend architecture. |
+| [docs/adr/](docs/adr/) | Architecture decision records. 0001 is the frontend architecture; 0002 is the Observatory. |
 
 Parts of those documents describe proposals; they are labelled **NOT IMPLEMENTED** where so.
 
@@ -287,7 +300,7 @@ Full detail: **[PIPELINE.md](PIPELINE.md)**.
 - Third-party endpoints change. Each adapter in `src/sources/` fails soft, so a
   changed endpoint degrades the scan rather than breaking it — if a feed goes
   quiet, check it there first.
-- **Test coverage is partial.** `npm test` runs 409 tests over a deterministic
+- **Test coverage is partial.** `npm test` runs 417 tests over a deterministic
   14-scenario fixture corpus. They cover:
   - provider validation, evidence resolution and cross-provider conflicts;
   - the safety gate, coverage, eligibility and the lifecycle;
@@ -297,7 +310,8 @@ Full detail: **[PIPELINE.md](PIPELINE.md)**.
   - the live-ranking universe and the view DTOs;
   - the server's security boundary and the browser render boundary.
 
-  `npm run test:ui` adds 27 real-browser tests of the dashboard itself.
+  `npm run test:ui` adds 44 real-browser tests of the dashboard itself, 17 of
+  them for the Observatory.
   Discovery against live providers is still untested. See
   [ROADMAP.md](ROADMAP.md).
 - **Stale evidence cannot lower a current score.** A RugCheck finding only
