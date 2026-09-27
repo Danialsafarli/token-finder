@@ -38,6 +38,10 @@ export interface RetentionPolicy {
   diagnosticsDays: number;
   /** Maximum monitor events retained, newest first. */
   maxEvents: number;
+  /** Days a chain-discovered launch that never became a tracked token is kept. */
+  launchDays?: number;
+  /** Days of chain history kept. Defaults to `historyDays`. */
+  chainDays?: number;
 }
 
 export const DEFAULT_RETENTION: RetentionPolicy = {
@@ -45,6 +49,8 @@ export const DEFAULT_RETENTION: RetentionPolicy = {
   tokenDays: 180,
   diagnosticsDays: 14,
   maxEvents: 500,
+  launchDays: 30,
+  chainDays: 30,
 };
 
 export interface RetentionResult {
@@ -56,6 +62,8 @@ export interface RetentionResult {
   events: number;
   tokens: number;
   transitionsPreserved: number;
+  /** Rows removed from the data-backbone tables, by table. */
+  chain: Record<string, number>;
   failure: PersistenceFailure | null;
 }
 
@@ -89,8 +97,11 @@ export function applyRetention(
     events: 0,
     tokens: 0,
     transitionsPreserved: 0,
+    chain: {},
     failure: null,
   };
+  const launchCutoff = now - (policy.launchDays ?? 30) * DAY_MS;
+  const chainCutoff = now - (policy.chainDays ?? policy.historyDays) * DAY_MS;
 
   try {
     transact(db, () => {
@@ -132,6 +143,47 @@ export function applyRetention(
            )`,
         )
         .run(policy.maxEvents).changes as number;
+
+      // --- the data backbone -------------------------------------------------
+      // Chain history follows the same age rule as the other history streams,
+      // measured in chain time where the chain gave one.
+      const byChainTime = (table: string): number =>
+        db
+          .prepare(
+            `DELETE FROM ${table}
+              WHERE (block_time IS NOT NULL AND block_time < ?)
+                 OR (block_time IS NULL AND recorded_at < ?)`,
+          )
+          .run(chainCutoff, chainCutoff).changes as number;
+      result.chain.pool_activity = byChainTime('pool_activity');
+      result.chain.transfer_edges = byChainTime('transfer_edges');
+      result.chain.chain_events = byChainTime('chain_events');
+      result.chain.chain_transactions = byChainTime('chain_transactions');
+      result.chain.wallet_token_activity = db
+        .prepare('DELETE FROM wallet_token_activity WHERE last_observed_at < ?')
+        .run(chainCutoff).changes as number;
+      result.chain.wallets = db
+        .prepare('DELETE FROM wallets WHERE last_observed_at < ?')
+        .run(chainCutoff).changes as number;
+      result.chain.token_discoveries = db
+        .prepare('DELETE FROM token_discoveries WHERE last_seen_at < ?')
+        .run(chainCutoff).changes as number;
+      result.chain.ingest_gaps = db
+        .prepare('DELETE FROM ingest_gaps WHERE recorded_at < ?')
+        .run(chainCutoff).changes as number;
+      // A launch that became a tracked token is kept as long as the token is;
+      // one that never did is kept for `launchDays`, which is where most of
+      // the volume is - pump.fun alone launches tens of thousands a day.
+      result.chain.token_launches = db
+        .prepare(
+          `DELETE FROM token_launches
+            WHERE COALESCE(block_time, recorded_at) < ?
+              AND mint NOT IN (SELECT mint FROM tokens)`,
+        )
+        .run(launchCutoff).changes as number;
+      result.chain.ingest_cursors = db
+        .prepare('DELETE FROM ingest_cursors WHERE updated_at < ?')
+        .run(tokenCutoff).changes as number;
 
       // Tokens last. ON DELETE CASCADE removes whatever history remains, so a
       // token is only dropped after being cold for `tokenDays` - twice the

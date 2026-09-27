@@ -256,13 +256,215 @@ const INITIAL: Migration = {
 };
 
 /**
- * Every migration, in order. Append only.
+ * Migration 2 - the data backbone.
  *
- * When a future phase adds transaction ingestion, it adds a migration here
- * creating `swap_events`, `wallets` and friends - it does not edit migration 1.
- * PERSISTENCE.md sketches those tables.
+ * Chain facts and their provenance. Every table here has a writer in
+ * `src/ingest/` and a reader (a query in `chain-repository.ts` that a runtime
+ * surface or the next phase consumes), a retention rule in `retention.ts`,
+ * and only the indexes its queries use. See DATA_BACKBONE.md.
+ *
+ * Conventions carried from migration 1: raw amounts are TEXT, chain time
+ * (`block_time`) and our time (`recorded_at`) are separate columns, every row
+ * names its `source`, and anything interpreted says so (`derived`,
+ * `confidence`, or a resolution column) rather than looking like a raw fact.
  */
-export const MIGRATIONS: readonly Migration[] = [INITIAL];
+const DATA_BACKBONE: Migration = {
+  to: 2,
+  name: 'data-backbone',
+  purpose: 'discovery provenance, on-chain launches, pool activity, transfers, wallets, ingestion cursors and gaps',
+  statements: [
+    // --- discovery provenance ----------------------------------------------
+    // First and latest sighting of a mint per source. The canonical identity
+    // is the mint; this records who surfaced it and when, which is also how
+    // chain-first and aggregator-first discovery can be compared.
+    `CREATE TABLE token_discoveries (
+       mint           TEXT NOT NULL,
+       source         TEXT NOT NULL,
+       first_seen_at  INTEGER NOT NULL,
+       last_seen_at   INTEGER NOT NULL,
+       times_seen     INTEGER NOT NULL DEFAULT 1,
+       PRIMARY KEY (mint, source),
+       CHECK (last_seen_at >= first_seen_at AND times_seen >= 1)
+     )`,
+    `CREATE INDEX idx_token_discoveries_seen ON token_discoveries(last_seen_at)`,
+
+    // --- launches read from the chain ---------------------------------------
+    // No foreign key to tokens: a launch is recorded before, and usually
+    // without, the token ever being analysed.
+    `CREATE TABLE token_launches (
+       mint                   TEXT PRIMARY KEY,
+       venue                  TEXT NOT NULL,
+       signature              TEXT NOT NULL UNIQUE,
+       slot                   INTEGER NOT NULL,
+       block_time             INTEGER,
+       fee_payer              TEXT NOT NULL,
+       token_program          TEXT NOT NULL,
+       decimals               INTEGER,
+       initial_supply         TEXT,
+       pool                   TEXT,
+       pool_confirmed         INTEGER NOT NULL,
+       fee_payer_initial_balance TEXT,
+       mint_authority_revoked INTEGER NOT NULL,
+       source                 TEXT NOT NULL,
+       recorded_at            INTEGER NOT NULL,
+       CHECK (pool_confirmed IN (0, 1) AND mint_authority_revoked IN (0, 1))
+     )`,
+    `CREATE INDEX idx_token_launches_time ON token_launches(block_time)`,
+    `CREATE INDEX idx_token_launches_fee_payer ON token_launches(fee_payer, block_time)`,
+
+    // --- the fetch ledger ---------------------------------------------------
+    // Every transaction fetched, so none is fetched twice and every derived
+    // row can be traced to one.
+    `CREATE TABLE chain_transactions (
+       signature    TEXT PRIMARY KEY,
+       slot         INTEGER NOT NULL,
+       tx_index     INTEGER,
+       block_time   INTEGER,
+       fee_payer    TEXT NOT NULL,
+       status       TEXT NOT NULL,
+       error        TEXT,
+       fee_lamports TEXT,
+       version      TEXT,
+       source       TEXT NOT NULL,
+       commitment   TEXT NOT NULL,
+       recorded_at  INTEGER NOT NULL,
+       CHECK (status IN ('SUCCESS','FAILED'))
+     )`,
+    `CREATE INDEX idx_chain_transactions_recorded ON chain_transactions(recorded_at)`,
+
+    // --- what each transaction did to a tracked pool ------------------------
+    // One row per (transaction, pool, mint), including the ones that are not
+    // trades: an UNRESOLVED or FAILED row is a fact about the pool's traffic,
+    // and dropping it would make the resolved ones look like all there was.
+    `CREATE TABLE pool_activity (
+       signature          TEXT NOT NULL,
+       pool               TEXT NOT NULL,
+       mint               TEXT NOT NULL REFERENCES tokens(mint) ON DELETE CASCADE,
+       slot               INTEGER NOT NULL,
+       tx_index           INTEGER,
+       block_time         INTEGER,
+       kind               TEXT NOT NULL,
+       reason             TEXT,
+       direction          TEXT,
+       trader             TEXT,
+       trader_resolution  TEXT,
+       fee_payer          TEXT NOT NULL,
+       token_amount       TEXT,
+       token_decimals     INTEGER,
+       quote_mint         TEXT,
+       quote_amount       TEXT,
+       quote_decimals     INTEGER,
+       price_in_quote     REAL,
+       pool_side_inferred INTEGER NOT NULL DEFAULT 0,
+       confidence         REAL NOT NULL,
+       source             TEXT NOT NULL,
+       recorded_at        INTEGER NOT NULL,
+       PRIMARY KEY (signature, pool, mint),
+       CHECK (kind IN ('SWAP','LIQUIDITY_ADDED','LIQUIDITY_REMOVED','UNRESOLVED','NO_POOL_ACTIVITY','FAILED')),
+       CHECK (direction IS NULL OR direction IN ('BUY','SELL')),
+       CHECK (confidence >= 0 AND confidence <= 1),
+       CHECK (pool_side_inferred IN (0, 1))
+     )`,
+    `CREATE INDEX idx_pool_activity_mint_time ON pool_activity(mint, block_time)`,
+    `CREATE INDEX idx_pool_activity_trader ON pool_activity(trader, block_time)`,
+
+    // --- transfer edges ------------------------------------------------------
+    // Raw movements between owners, for the wallet graph. Bounded at write
+    // time: token transfers of a tracked mint between two non-pool owners, and
+    // SOL transfers between two keypair accounts above a floor. The trade leg
+    // itself is already in pool_activity and is not repeated here.
+    `CREATE TABLE transfer_edges (
+       id           TEXT PRIMARY KEY,
+       signature    TEXT NOT NULL,
+       path         TEXT NOT NULL,
+       slot         INTEGER NOT NULL,
+       block_time   INTEGER,
+       kind         TEXT NOT NULL,
+       asset        TEXT NOT NULL,
+       from_owner   TEXT NOT NULL,
+       to_owner     TEXT NOT NULL,
+       amount       TEXT NOT NULL,
+       source       TEXT NOT NULL,
+       recorded_at  INTEGER NOT NULL,
+       CHECK (kind IN ('TOKEN_TRANSFER','SOL_TRANSFER'))
+     )`,
+    `CREATE INDEX idx_transfer_edges_from ON transfer_edges(from_owner, block_time)`,
+    `CREATE INDEX idx_transfer_edges_to ON transfer_edges(to_owner, block_time)`,
+
+    // --- wallets and their arrival ----------------------------------------------
+    // "Observed" throughout: the first time Token Finder saw the wallet, which
+    // is not the wallet's first transaction on Solana.
+    `CREATE TABLE wallets (
+       address            TEXT PRIMARY KEY,
+       on_curve           INTEGER,
+       first_observed_at  INTEGER NOT NULL,
+       first_signature    TEXT NOT NULL,
+       last_observed_at   INTEGER NOT NULL,
+       CHECK (on_curve IS NULL OR on_curve IN (0, 1))
+     )`,
+    `CREATE INDEX idx_wallets_last ON wallets(last_observed_at)`,
+    `CREATE TABLE wallet_token_activity (
+       wallet             TEXT NOT NULL,
+       mint               TEXT NOT NULL REFERENCES tokens(mint) ON DELETE CASCADE,
+       first_observed_at  INTEGER NOT NULL,
+       first_signature    TEXT NOT NULL,
+       first_slot         INTEGER NOT NULL,
+       last_observed_at   INTEGER NOT NULL,
+       buys               INTEGER NOT NULL DEFAULT 0,
+       sells              INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY (wallet, mint),
+       CHECK (buys >= 0 AND sells >= 0)
+     )`,
+    `CREATE INDEX idx_wallet_token_activity_arrival ON wallet_token_activity(mint, first_slot)`,
+
+    // --- low-volume chain events ---------------------------------------------
+    `CREATE TABLE chain_events (
+       id          TEXT PRIMARY KEY,
+       type        TEXT NOT NULL,
+       mint        TEXT,
+       signature   TEXT NOT NULL,
+       slot        INTEGER NOT NULL,
+       block_time  INTEGER,
+       pool        TEXT,
+       actor       TEXT,
+       amount      TEXT,
+       detail      TEXT,
+       derived     INTEGER NOT NULL,
+       confidence  REAL NOT NULL,
+       source      TEXT NOT NULL,
+       recorded_at INTEGER NOT NULL,
+       CHECK (type IN ('POOL_CREATED','TOKEN_MINT','AUTHORITY_CHANGE')),
+       CHECK (derived IN (0, 1) AND confidence >= 0 AND confidence <= 1)
+     )`,
+    `CREATE INDEX idx_chain_events_mint ON chain_events(mint, slot)`,
+
+    // --- ingestion state -------------------------------------------------------
+    // A cursor per collected address, so a restart resumes where it stopped,
+    // and a gap row for every stretch that was seen but not collected - the
+    // honest alternative to history that silently has holes.
+    `CREATE TABLE ingest_cursors (
+       key         TEXT PRIMARY KEY,
+       signature   TEXT NOT NULL,
+       slot        INTEGER NOT NULL,
+       updated_at  INTEGER NOT NULL
+     )`,
+    `CREATE TABLE ingest_gaps (
+       id           INTEGER PRIMARY KEY AUTOINCREMENT,
+       key          TEXT NOT NULL,
+       from_slot    INTEGER,
+       to_slot      INTEGER,
+       skipped      INTEGER,
+       reason       TEXT NOT NULL,
+       recorded_at  INTEGER NOT NULL
+     )`,
+    `CREATE INDEX idx_ingest_gaps_recorded ON ingest_gaps(recorded_at)`,
+  ],
+};
+
+/**
+ * Every migration, in order. Append only.
+ */
+export const MIGRATIONS: readonly Migration[] = [INITIAL, DATA_BACKBONE];
 
 /** The version a fully migrated database reports. */
 export const TARGET_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.to), 0);

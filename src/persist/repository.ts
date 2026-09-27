@@ -1016,6 +1016,16 @@ export class Repository {
           'provider_failures',
           'events',
           'scans',
+          'pool_activity',
+          'wallet_token_activity',
+          'transfer_edges',
+          'chain_events',
+          'chain_transactions',
+          'wallets',
+          'token_launches',
+          'token_discoveries',
+          'ingest_cursors',
+          'ingest_gaps',
           'tokens',
         ]) {
           this.#db.exec(`DELETE FROM ${table}`);
