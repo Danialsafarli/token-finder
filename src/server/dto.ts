@@ -809,3 +809,190 @@ export function eventView(event: MonitorEvent): EventView {
     message: event.message.slice(0, 280),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Observatory (the Orb)
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a token is surfaced in the Observatory. Every role is a fact about the
+ * token's current, canonical state - the Orb never invents a reason to show one.
+ */
+export type OrbRole = 'changed' | 'top' | 'newest' | 'watch' | 'rejected';
+
+export interface OrbToken {
+  mint: string;
+  symbol: string;
+  name: string;
+  icon: string | null;
+  verdict: Eligibility;
+  verdictLabel: string;
+  tone: Tone;
+  score: number;
+  reason: string;
+  role: OrbRole;
+  /** The role in words: why this token, of all the live ones, is shown. */
+  why: string;
+  /** When the role's event happened (a change, a first assessment), for "12m ago". */
+  whyAt: number | null;
+  change: { from: string; to: string; fromLabel: string; toLabel: string; at: number } | null;
+  lastSeenAt: number;
+  freshness: 'FRESH' | 'AGING';
+}
+
+export interface OrbResponse {
+  generatedAt: number;
+  universe: { live: number; stale: number; unevaluated: number };
+  scan: {
+    scanning: boolean;
+    lastScanAt: number | null;
+    count: number;
+    last: { at: number; durationMs: number; analyzed: number; fresh: number } | null;
+  };
+  /** In display priority: a client showing fewer tokens takes a prefix and still gets a mix. */
+  tokens: OrbToken[];
+}
+
+/** A verdict change older than this is history, not something the Observatory surfaces. */
+export const ORB_CHANGE_WINDOW_MS = 6 * 60 * 60_000;
+export const ORB_MAX_TOKENS = 8;
+
+/**
+ * Picks the few live tokens the Observatory shows, and says why each is shown.
+ *
+ * Only LIVE tokens are eligible - the same predicate as the Board - so the Orb
+ * can never surface a stale verdict as current. Roles, in priority order:
+ *
+ * - `changed`: the verdict changed within 6 hours, and the current verdict is
+ *   still the one it changed to;
+ * - `top`: the highest-scoring qualified tokens;
+ * - `newest`: the most recent first assessment;
+ * - `watch`: the most recently evaluated Watch token;
+ * - `rejected`: the most recently evaluated rejected token - the filter at work.
+ *
+ * Tokens are interleaved (change, top, newest, top, watch, rejected, change,
+ * top) so a phone showing three still sees different kinds of fact.
+ */
+export function orbResponse(
+  tokens: Iterable<TokenSnapshot>,
+  changes: VerdictChange[],
+  context: DtoContext,
+  scan: OrbResponse['scan'],
+): OrbResponse {
+  const all = [...tokens];
+  const universe = countUniverse(all, context.now, context.windowMs);
+  const live = new Map<string, TokenSnapshot>();
+  for (const token of all) {
+    if (placementOf(token, context.now, context.windowMs).universe === 'LIVE') live.set(token.mint, token);
+  }
+
+  const byRecency = (a: TokenSnapshot, b: TokenSnapshot) => b.at - a.at || a.mint.localeCompare(b.mint);
+  const withVerdict = (verdict: Eligibility) => [...live.values()].filter((t) => t.evaluation!.eligibility === verdict);
+
+  const recentChanges = changes
+    .filter((c) => c.from !== null && c.to !== null && c.from !== c.to && context.now - c.observedAt <= ORB_CHANGE_WINDOW_MS)
+    .filter((c) => live.get(c.mint)?.evaluation?.eligibility === c.to)
+    .sort((a, b) => b.observedAt - a.observedAt);
+  const firstAssessments = changes
+    .filter((c) => c.from === null && live.has(c.mint))
+    .sort((a, b) => b.observedAt - a.observedAt);
+
+  const top = withVerdict('QUALIFIED').sort((a, b) => b.score.total - a.score.total || byRecency(a, b));
+  const watch = withVerdict('WATCH').sort(byRecency);
+  const rejected = withVerdict('REJECTED').sort(byRecency);
+
+  const picked: OrbToken[] = [];
+  const seen = new Set<string>();
+  const take = (token: TokenSnapshot | undefined, role: OrbRole, extra: { change?: VerdictChange; at?: number } = {}): void => {
+    if (!token || seen.has(token.mint) || picked.length >= ORB_MAX_TOKENS) return;
+    seen.add(token.mint);
+    const rank = role === 'top' ? top.indexOf(token) + 1 : 0;
+    picked.push(orbToken(token, role, context, extra.change ?? null, extra.at ?? null, rank, top.length));
+  };
+  const nextOf = <T>(list: T[], pick: (item: T) => TokenSnapshot | undefined): TokenSnapshot | undefined => {
+    for (const item of list) {
+      const token = pick(item);
+      if (token && !seen.has(token.mint)) return token;
+    }
+    return undefined;
+  };
+  const nextChange = (): VerdictChange | undefined => recentChanges.find((c) => !seen.has(c.mint));
+  const nextFirst = (): VerdictChange | undefined => firstAssessments.find((c) => !seen.has(c.mint));
+
+  const pickChange = () => {
+    const change = nextChange();
+    if (change) take(live.get(change.mint), 'changed', { change, at: change.observedAt });
+  };
+  const pickTop = () => take(nextOf(top, (t) => t), 'top');
+  const pickNewest = () => {
+    const first = nextFirst();
+    if (first) take(live.get(first.mint), 'newest', { at: first.observedAt });
+  };
+
+  pickChange();
+  pickTop();
+  pickNewest();
+  pickTop();
+  take(nextOf(watch, (t) => t), 'watch');
+  take(nextOf(rejected, (t) => t), 'rejected');
+  pickChange();
+  pickTop();
+  // Fewer facts than slots (a quiet or small universe): fill with the next best
+  // qualified tokens rather than padding with anything invented.
+  while (picked.length < ORB_MAX_TOKENS && nextOf(top, (t) => t)) pickTop();
+
+  return {
+    generatedAt: context.now,
+    universe: { live: universe.live, stale: universe.stale, unevaluated: universe.unevaluated },
+    scan,
+    tokens: picked,
+  };
+}
+
+/** 1 → "Highest", 2 → "2nd-highest", 11 → "11th-highest". */
+function scoreRank(rank: number): string {
+  if (rank <= 1) return 'Highest';
+  const teen = rank % 100 >= 11 && rank % 100 <= 13;
+  const suffix = teen ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[rank % 10] ?? 'th';
+  return `${rank}${suffix}-highest`;
+}
+
+function orbToken(
+  token: TokenSnapshot,
+  role: OrbRole,
+  context: DtoContext,
+  change: VerdictChange | null,
+  at: number | null,
+  rank: number,
+  qualified: number,
+): OrbToken {
+  const row = boardRow(token, context);
+  const verdict = token.evaluation!.eligibility;
+  const label = (e: string) => VERDICT_LABEL[e as Eligibility] ?? e;
+  const why: Record<OrbRole, string> = {
+    changed: change ? `Verdict changed: ${label(change.from!)} → ${label(change.to!)}` : 'Verdict changed',
+    top: `${scoreRank(rank)} score of ${qualified} qualified`,
+    newest: 'Newest first assessment',
+    watch: 'Most recent Watch verdict',
+    rejected: 'Most recent rejection',
+  };
+  return {
+    mint: row.mint,
+    symbol: row.symbol,
+    name: row.name,
+    icon: row.icon,
+    verdict,
+    verdictLabel: VERDICT_LABEL[verdict] ?? verdict,
+    tone: row.tone,
+    score: row.score,
+    reason: row.reason,
+    role,
+    why: why[role],
+    whyAt: at,
+    change: change
+      ? { from: change.from!, to: change.to!, fromLabel: label(change.from!), toLabel: label(change.to!), at: change.observedAt }
+      : null,
+    lastSeenAt: row.lastSeenAt,
+    freshness: row.freshness,
+  };
+}

@@ -32,6 +32,7 @@ import {
   dossier,
   eventView,
   historyResponse,
+  orbResponse,
   parseBoardQuery,
   type DtoContext,
 } from './dto.ts';
@@ -348,6 +349,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (path === '/api/board') {
       const { context, caps } = currentContext();
       return sendJson(res, 200, boardResponse(store.tokens(), parseBoardQuery(url.searchParams), context, caps, FRESH_WITHIN_MS));
+    }
+
+    if (path === '/api/orb') {
+      const now = Date.now();
+      const { context } = currentContext(now);
+      const last = lastScanResult();
+      return sendJson(
+        res,
+        200,
+        orbResponse(store.tokens(), store.verdictChanges({ limit: 600 }), context, {
+          scanning: isScanning(),
+          lastScanAt: store.lastScanAt,
+          count: store.scanCount,
+          last: last ? { at: last.at, durationMs: last.durationMs, analyzed: last.analyzed, fresh: last.fresh } : null,
+        }),
+      );
     }
 
     if (path === '/api/changes') {

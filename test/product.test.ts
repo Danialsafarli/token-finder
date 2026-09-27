@@ -28,6 +28,8 @@ import {
   boardRow,
   dossier,
   iconUrl,
+  ORB_MAX_TOKENS,
+  orbResponse,
   parseBoardQuery,
   watchpoints,
   type DtoContext,
@@ -37,6 +39,7 @@ import { applyRetention, DEFAULT_RETENTION } from '../src/persist/retention.ts';
 import { config } from '../src/config.ts';
 import { cleanupTempDirs, harness, snapshot } from './persist-helpers.ts';
 import type { LedgerEntry, TokenSnapshot } from '../src/types.ts';
+import type { VerdictChange } from '../src/persist/repository.ts';
 
 after(cleanupTempDirs);
 
@@ -466,5 +469,98 @@ describe('server security', () => {
     assert.equal(iconUrl('https://cdn.dexscreener.com/cms/images/a?width=800&height=800'), 'https://cdn.dexscreener.com/cms/images/a?width=128&height=128');
     assert.equal(iconUrl('https://ipfs.io/ipfs/abc?width=800'), 'https://ipfs.io/ipfs/abc?width=800');
     assert.equal(iconUrl('x" onerror="alert(1)'), null);
+  });
+});
+
+describe('Observatory selection (/api/orb)', () => {
+  const scan = { scanning: false, lastScanAt: NOW - 2 * MIN, count: 3, last: null };
+  const change = (mint: string, from: string | null, to: string, minutesAgo: number, id = 1): VerdictChange => ({
+    id,
+    mint,
+    symbol: null,
+    name: null,
+    observedAt: NOW - minutesAgo * MIN,
+    from,
+    fromAt: null,
+    to,
+    score: 50,
+    coverage: 0.7,
+    confidence: 0.7,
+    vetoCodes: [],
+    priceUsd: null,
+    liquidityUsd: null,
+  });
+  const token = (mint: string, score: number, eligibility: 'QUALIFIED' | 'WATCH' | 'REJECTED' = 'QUALIFIED', minutesAgo = 5) =>
+    live({ mint, score, eligibility, state: eligibility, vetoCodes: eligibility === 'REJECTED' ? ['LIQUIDITY_TOO_LOW'] : [] }, minutesAgo);
+
+  test('only live tokens are surfaced; stale and never-evaluated ones never are', () => {
+    const stale = token('StaleTopScore111111111111111111111111111111', 99, 'QUALIFIED', 5 * 60);
+    const ghost = unevaluated('NeverEvaluated11111111111111111111111111111');
+    const fresh = token('LiveToken11111111111111111111111111111111111', 60);
+    const response = orbResponse([stale, ghost, fresh], [change(stale.mint, 'REJECTED', 'QUALIFIED', 10)], context(), scan);
+    assert.deepEqual(response.tokens.map((t) => t.mint), [fresh.mint]);
+    assert.deepEqual(response.universe, { live: 1, stale: 1, unevaluated: 1 });
+  });
+
+  test('a recent verdict change leads, and says what changed', () => {
+    const faded = token('FadedToken111111111111111111111111111111111', 40, 'REJECTED');
+    const best = token('BestToken1111111111111111111111111111111111', 90);
+    const response = orbResponse([faded, best], [change(faded.mint, 'QUALIFIED', 'REJECTED', 12)], context(), scan);
+    const first = response.tokens[0]!;
+    assert.equal(first.mint, faded.mint);
+    assert.equal(first.role, 'changed');
+    assert.equal(first.why, 'Verdict changed: Qualified → Rejected');
+    assert.equal(first.whyAt, NOW - 12 * MIN);
+    assert.deepEqual(first.change && [first.change.from, first.change.to], ['QUALIFIED', 'REJECTED']);
+  });
+
+  test('a change the token has since moved on from is not claimed as current', () => {
+    // Changed to REJECTED, but the current verdict is QUALIFIED again.
+    const back = token('BackAgain111111111111111111111111111111111', 70);
+    const response = orbResponse([back], [change(back.mint, 'QUALIFIED', 'REJECTED', 30)], context(), scan);
+    assert.notEqual(response.tokens[0]?.role, 'changed');
+  });
+
+  test('a change older than six hours is history, not a current event', () => {
+    const old = token('OldChange111111111111111111111111111111111', 70, 'REJECTED');
+    const response = orbResponse([old], [change(old.mint, 'QUALIFIED', 'REJECTED', 7 * 60)], context(), scan);
+    assert.equal(response.tokens.some((t) => t.role === 'changed'), false);
+  });
+
+  test('top scores are ranked and say so', () => {
+    const tokens = [95, 90, 85, 80].map((score, i) => token(`Top${i}${'1'.repeat(40)}`, score));
+    const response = orbResponse(tokens, [], context(), scan);
+    const tops = response.tokens.filter((t) => t.role === 'top');
+    assert.deepEqual(tops.map((t) => t.score), [95, 90, 85, 80]);
+    assert.equal(tops[0]!.why, 'Highest score of 4 qualified');
+    assert.equal(tops[1]!.why, '2nd-highest score of 4 qualified');
+    assert.equal(tops[3]!.why, '4th-highest score of 4 qualified');
+  });
+
+  test('roles interleave, so a phone showing three still sees different kinds of fact', () => {
+    const tokens = [
+      token('Changed11111111111111111111111111111111111', 50, 'REJECTED'),
+      ...[95, 90, 85].map((score, i) => token(`Top${i}${'1'.repeat(40)}`, score)),
+      token('Watcher11111111111111111111111111111111111', 55, 'WATCH'),
+      token('NewOne111111111111111111111111111111111111', 60, 'QUALIFIED', 1),
+    ];
+    const changes = [change(tokens[0]!.mint, 'QUALIFIED', 'REJECTED', 20), change(tokens[5]!.mint, null, 'QUALIFIED', 1, 2)];
+    const response = orbResponse(tokens, changes, context(), scan);
+    assert.deepEqual(response.tokens.slice(0, 3).map((t) => t.role), ['changed', 'top', 'newest']);
+    assert.ok(response.tokens.some((t) => t.role === 'watch'));
+  });
+
+  test('at most eight tokens, never the same one twice, and a small payload', () => {
+    const tokens = Array.from({ length: 40 }, (_, i) => token(`Many${String(i).padStart(2, '0')}${'1'.repeat(38)}`, 50 + i));
+    const response = orbResponse(tokens, tokens.map((t, i) => change(t.mint, null, 'QUALIFIED', i, i + 1)), context(), scan);
+    assert.equal(response.tokens.length, ORB_MAX_TOKENS);
+    assert.equal(new Set(response.tokens.map((t) => t.mint)).size, ORB_MAX_TOKENS);
+    assert.ok(JSON.stringify(response).length < 6_000, `${JSON.stringify(response).length} bytes`);
+  });
+
+  test('a quiet universe yields nothing, rather than anything invented', () => {
+    const response = orbResponse([], [], context(), scan);
+    assert.deepEqual(response.tokens, []);
+    assert.deepEqual(response.universe, { live: 0, stale: 0, unevaluated: 0 });
   });
 });
