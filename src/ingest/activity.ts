@@ -97,6 +97,18 @@ export interface PoolActivity {
   quoteDecimals: number | null;
   /** Quote per whole token, from the reserve change. A derived figure. */
   priceInQuote: number | null;
+  /**
+   * For a liquidity event: the one owner (not the pool) whose holding of the
+   * token moved opposite to the pool's - who put liquidity in or took it out.
+   * Null when that is not a single owner.
+   */
+  liquidityActor: string | null;
+  /**
+   * The pool's change in the token as a share of what it held before, 0-1.
+   * For a removal this is how much of the reserve left. Null when the pool's
+   * prior holding was not reported or was zero.
+   */
+  reserveFraction: number | null;
   /** 0-1: how much of this reading rests on inference rather than balances. */
   confidence: number;
 }
@@ -161,6 +173,8 @@ export function derivePoolActivity(tx: NormalizedTransaction, mint: string, pool
     quoteAmount: null,
     quoteDecimals: null,
     priceInQuote: null,
+    liquidityActor: null,
+    reserveFraction: null,
     confidence: 1,
   };
 
@@ -219,12 +233,21 @@ export function derivePoolActivity(tx: NormalizedTransaction, mint: string, pool
       quoteDecimals === null || tokenDecimals === null ? null : price(quoteAmount, quoteDecimals, tokenAmount, tokenDecimals),
   };
 
+  const poolPre = tx.tokenBalances
+    .filter((b) => b.owner === poolSide && b.mint === mint)
+    .reduce((sum, b) => sum + b.pre, 0n);
+  const reserveFraction = poolPre > 0n ? Math.min(1, Number((tokenAmount * 1_000_000n) / poolPre) / 1_000_000) : null;
+
   if ((poolToken > 0n) === (quoteDelta > 0n)) {
-    // Both reserves moved the same way: liquidity, not a trade.
+    // Both reserves moved the same way: liquidity, not a trade. The actor is
+    // the one owner whose holding moved the other way, if there is exactly one.
+    const movers = [...byOwner.entries()].filter(([owner, delta]) => owner !== poolSide && (delta > 0n) !== (poolToken > 0n));
     return {
       ...common,
       kind: poolToken > 0n ? 'LIQUIDITY_ADDED' : 'LIQUIDITY_REMOVED',
       priceInQuote: null,
+      liquidityActor: movers.length === 1 ? (movers[0] as [string, bigint])[0] : null,
+      reserveFraction,
       confidence: inferred ? 0.6 : 0.9,
     };
   }
@@ -254,6 +277,7 @@ export function derivePoolActivity(tx: NormalizedTransaction, mint: string, pool
 
   return {
     ...common,
+    reserveFraction,
     kind: 'SWAP',
     direction: poolToken > 0n ? 'SELL' : 'BUY',
     trader,

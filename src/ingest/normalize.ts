@@ -93,6 +93,17 @@ export interface AuthorityChangeFact {
   previousAuthority: string | null;
 }
 
+/** A token account frozen or thawed by the mint's freeze authority. */
+export interface FreezeFact {
+  path: string;
+  kind: 'FREEZE' | 'THAW';
+  account: string;
+  mint: string;
+  authority: string | null;
+  /** The frozen account's owner, when the transaction reported its balance. */
+  owner: string | null;
+}
+
 export interface AccountCreationFact {
   path: string;
   account: string;
@@ -137,6 +148,7 @@ export interface NormalizedTransaction {
   authorityChanges: AuthorityChangeFact[];
   accountCreations: AccountCreationFact[];
   tokenAccountInits: TokenAccountInitFact[];
+  freezes: FreezeFact[];
   issues: FieldIssue[];
 }
 
@@ -289,6 +301,7 @@ export function normalizeTransaction(raw: unknown): NormalizedTransaction | null
   const authorityChanges: AuthorityChangeFact[] = [];
   const accountCreations: AccountCreationFact[] = [];
   const tokenAccountInits: TokenAccountInitFact[] = [];
+  const freezes: FreezeFact[] = [];
 
   const isTokenProgram = (id: string | null): boolean =>
     id === LEGACY_SPL_TOKEN_PROGRAM_ID || id === TOKEN_2022_PROGRAM_ID;
@@ -361,6 +374,19 @@ export function normalizeTransaction(raw: unknown): NormalizedTransaction | null
           newAuthority: info.newAuthority == null ? null : validMint(report, field('newAuthority'), info.newAuthority),
           previousAuthority: info.authority == null ? null : validMint(report, field('authority'), info.authority),
         });
+      } else if (ix.type === 'freezeAccount' || ix.type === 'thawAccount') {
+        const account = validMint(report, field('account'), info.account);
+        const mint = validMint(report, field('mint'), info.mint);
+        if (account !== null && mint !== null) {
+          freezes.push({
+            path: ix.path,
+            kind: ix.type === 'freezeAccount' ? 'FREEZE' : 'THAW',
+            account,
+            mint,
+            authority: info.freezeAuthority == null ? null : validMint(report, field('freezeAuthority'), info.freezeAuthority),
+            owner: ownerOfAccount.get(account) ?? null,
+          });
+        }
       } else if (ix.type === 'initializeAccount' || ix.type === 'initializeAccount2' || ix.type === 'initializeAccount3') {
         const account = validMint(report, field('account'), info.account);
         const mint = validMint(report, field('mint'), info.mint);
@@ -413,6 +439,7 @@ export function normalizeTransaction(raw: unknown): NormalizedTransaction | null
     authorityChanges,
     accountCreations,
     tokenAccountInits,
+    freezes,
     issues: report.issues,
   };
 }

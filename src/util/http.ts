@@ -32,7 +32,12 @@ const RPM: Record<string, number> = {
   'lite-api.jup.ag': 120,
   'api.rugcheck.xyz': 30,
   'public-api.birdeye.so': 50,
-  'mainnet.helius-rpc.com': 120,
+  // Measured 2026-09-27 with the configured key: 30 of 30 getTransaction at
+  // 15/s succeeded (p50 51 ms), no 429. 300/min (5/s) keeps a third of that as
+  // headroom for the scan's safety reads, collection and deep analysis, which
+  // all share this host. getTokenLargestAccounts has its own guard in
+  // sources/helius.ts: it is slow and can report overload.
+  'mainnet.helius-rpc.com': 300,
   // Published limit: 100 requests per 10 s per IP, 40 per 10 s for any one
   // method (solana.com/docs/references/clusters). Measured 2026-09-27, the
   // endpoint enforces less than that for getTransaction: at 2.5/s, 19 of 30

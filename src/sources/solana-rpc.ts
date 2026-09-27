@@ -170,12 +170,137 @@ export function parseSignatures(raw: unknown[]): SignatureInfo[] {
   return out;
 }
 
+// --- transaction cache ------------------------------------------------------
+// A finalized transaction never changes, so a fetched one is kept (bounded,
+// oldest evicted first) and a request already in flight is shared rather than
+// repeated. Wallet histories overlap heavily - the same swap is in the buyer's
+// history, the pool's and the next buyer's - so this is most of the saving.
+
+const TX_CACHE_LIMIT = 4_000;
+const txCache = new Map<string, unknown>();
+const inFlight = new Map<string, Promise<ProviderResult<unknown>>>();
+let txCacheHits = 0;
+
+function remember(signature: string, tx: unknown): void {
+  if (txCache.has(signature)) return;
+  if (txCache.size >= TX_CACHE_LIMIT) {
+    const oldest = txCache.keys().next().value;
+    if (oldest !== undefined) txCache.delete(oldest);
+  }
+  txCache.set(signature, tx);
+}
+
+export function txCacheStats(): { size: number; hits: number } {
+  return { size: txCache.size, hits: txCacheHits };
+}
+
 /** One transaction, jsonParsed. `data` is null when the node does not have it. */
 export async function getParsedTransaction(signature: string): Promise<ProviderResult<unknown>> {
-  return call<unknown>('getTransaction', [
+  const hit = txCache.get(signature);
+  if (hit !== undefined) {
+    txCacheHits += 1;
+    return { data: hit, failure: null };
+  }
+  const pending = inFlight.get(signature);
+  if (pending !== undefined) return pending;
+  const request = call<unknown>('getTransaction', [
     signature,
     { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: COMMITMENT },
+  ]).then((result) => {
+    if (result.failure === null && result.data !== null) remember(signature, result.data);
+    return result;
+  });
+  inFlight.set(signature, request);
+  try {
+    return await request;
+  } finally {
+    inFlight.delete(signature);
+  }
+}
+
+// --- address history ------------------------------------------------------------
+
+export interface AddressHistory {
+  /** Full jsonParsed transactions, in the order asked for. */
+  txs: unknown[];
+  /** True when the whole history fit in the page: nothing older (asc) or newer (desc) exists beyond it. */
+  complete: boolean;
+  /** How it was read, which bounds what it can say. */
+  method: 'gtfa' | 'signatures+transactions' | 'unsupported';
+}
+
+/** Whether the endpoint serves Helius's getTransactionsForAddress. */
+export function supportsAddressHistory(): boolean {
+  if (rpcEndpoint().kind === 'helius') return true;
+  try {
+    return config.solanaRpcUrl !== null && new URL(config.solanaRpcUrl).host.endsWith('helius-rpc.com');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * An address's transactions, oldest first (`asc`) or newest first (`desc`).
+ *
+ * With Helius this is one `getTransactionsForAddress` call (Tier 2: Helius
+ * docs; verified live 2026-09-27: 100 full transactions in ~120 ms). It is
+ * what makes "who first funded this wallet" answerable at all: the oldest
+ * transactions come back directly instead of by paging backwards through the
+ * whole history.
+ *
+ * Elsewhere, `desc` falls back to signatures plus one fetch each, and `asc`
+ * is reported as unsupported - it is not faked by walking an unbounded
+ * history. The caller records the resulting truncation.
+ */
+export async function addressHistory(
+  address: string,
+  options: { order: 'asc' | 'desc'; limit: number; succeededOnly?: boolean },
+): Promise<ProviderResult<AddressHistory>> {
+  const limit = Math.max(1, Math.min(100, Math.trunc(options.limit)));
+  if (supportsAddressHistory()) {
+    const result = await call<{ data?: unknown[]; paginationToken?: string | null }>('getTransactionsForAddress', [
+      address,
+      {
+        transactionDetails: 'full',
+        sortOrder: options.order,
+        limit,
+        encoding: 'jsonParsed',
+        maxSupportedTransactionVersion: 1,
+        commitment: COMMITMENT,
+        ...(options.succeededOnly ? { filters: { status: 'succeeded' } } : {}),
+      },
+    ]);
+    if (result.failure !== null) return { data: null, failure: result.failure };
+    const txs = Array.isArray(result.data?.data) ? result.data.data : [];
+    for (const tx of txs) {
+      const signature = (tx as { transaction?: { signatures?: unknown[] } })?.transaction?.signatures?.[0];
+      if (typeof signature === 'string') remember(signature, tx);
+    }
+    return { data: { txs, complete: txs.length < limit, method: 'gtfa' }, failure: null };
+  }
+  if (options.order === 'asc') {
+    return { data: { txs: [], complete: false, method: 'unsupported' }, failure: null };
+  }
+  const page = await getSignatures(address, { limit });
+  if (page.failure !== null || page.data === null) return { data: null, failure: page.failure };
+  const wanted = page.data.filter((s) => !(options.succeededOnly && s.failed));
+  const txs: unknown[] = [];
+  for (const s of wanted) {
+    const tx = await getParsedTransaction(s.signature);
+    if (tx.data !== null) txs.push(tx.data);
+  }
+  return { data: { txs, complete: page.data.length < limit, method: 'signatures+transactions' }, failure: null };
+}
+
+/** Up to 100 accounts, jsonParsed, in one call. Null entries are accounts that do not exist. */
+export async function getMultipleAccounts(addresses: string[]): Promise<ProviderResult<unknown[]>> {
+  if (addresses.length === 0) return { data: [], failure: null };
+  const result = await call<{ value?: unknown[] }>('getMultipleAccounts', [
+    addresses.slice(0, 100),
+    { encoding: 'jsonParsed', commitment: COMMITMENT },
   ]);
+  if (result.failure !== null) return { data: null, failure: result.failure };
+  return { data: Array.isArray(result.data?.value) ? result.data.value : [], failure: null };
 }
 
 /** A mint account, jsonParsed - for live verification of the safety parser. */
