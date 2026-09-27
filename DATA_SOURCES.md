@@ -1,5 +1,10 @@
 # Data sources — live validation and strategy
 
+> **Current capability matrix: [DATA_BACKBONE.md](DATA_BACKBONE.md) §1** (verified
+> 2026-09-27), including the Solana RPC endpoint the data backbone reads the
+> chain through and its measured rate limit. The probe below is the earlier,
+> 2026-09-23 record and is kept as history.
+
 Audience: engineers wiring providers into Token Finder.
 Part 1 is measured. Part 2 is a proposal; **none of it is implemented.**
 

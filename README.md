@@ -26,6 +26,9 @@ The dashboard listens on loopback only unless `HOST` says otherwise.
 | `node src/cli.ts discover` | Just the candidate mints each feed returned. |
 | `node src/cli.ts reset` | Clears stored tokens, history and events. |
 | `node src/cli.ts typesafe-check` | One request to verify TypeSafe credentials and connectivity. |
+| `node src/cli.ts ingest` | One on-chain collection cycle (launches and survivors' trades), with its report. |
+| `node src/cli.ts chain` | What the data backbone has collected, its gaps, and chain-vs-feed timing. |
+| `node src/cli.ts activity <mint>` | A tracked token's collected trades, first buyers and discovery sightings. |
 
 `npm run serve`, `npm run scan` and friends are the same thing.
 
@@ -64,6 +67,11 @@ without any API key.**
 | `TYPESAFE_MODEL` | `jev-latest` | Model id. |
 | `TYPESAFE_MAX_PER_SCAN` | `10` | Hard cap on model requests per scan. |
 | `TYPESAFE_TIMEOUT_MS` | `8000` | Per-request timeout. |
+| `SOLANA_RPC_URL` | — | RPC endpoint for chain collection. Unset: Helius when keyed, else the public endpoint. Treated as a secret. |
+| `INGEST_ENABLED` | `true` | On-chain collection beside the monitor (`serve` only). |
+| `INGEST_TOKENS_PER_CYCLE` / `INGEST_TX_PER_TOKEN` | `6` / `10` | The deep-collection budget per cycle. |
+| `LAUNCH_TX_PER_CYCLE` | `60` | pump.fun launches read from the chain per cycle. |
+| `RETENTION_CHAIN_DAYS` | `30` | Days of chain history kept. See [DATA_BACKBONE.md](DATA_BACKBONE.md) for the rest. |
 
 API keys are read only by `src/config.ts`, which runs server-side. No key is ever
 serialised into an API response or reaches the browser — `/api/status` reports
@@ -245,11 +253,16 @@ against it, which is why a cold scan of 60 tokens takes about two minutes.
 Results are cached for 20 minutes, so later scans are far faster. Every host
 has its own queue in `src/util/http.ts`; 429s set a cooldown for that host only.
 
+Chain collection through the public Solana endpoint is paced at one request a
+second - what the endpoint was measured to allow for `getTransaction`, below
+its documented limit. See [DATA_BACKBONE.md](DATA_BACKBONE.md) §1.
+
 ## Documentation
 
 | File | Contents |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | What exists today, stage by stage, plus the proposed target architecture, trading modes, decision engine, persistence and performance model. |
+| [DATA_BACKBONE.md](DATA_BACKBONE.md) | **The data backbone as implemented**: provider capability matrix, on-chain launch discovery, transaction reading, the canonical event model, the processing budget, gaps, measurements and limits. |
 | [PERSISTENCE.md](PERSISTENCE.md) | **The storage layer as implemented**: SQLite schema, migrations, legacy JSON import, snapshot deduplication, retention, failure behaviour and how to extend it for transaction ingestion. |
 | [DATA_SOURCES.md](DATA_SOURCES.md) | Measured live validation of all five providers, the fields we actually receive, and the proposed provider strategy. |
 | [SCORING.md](SCORING.md) | Full scoring audit: every component, weight and penalty, with measured weaknesses. |

@@ -363,9 +363,15 @@ truth is how they diverge.
 
 ## 16. Extending this
 
-### Transaction ingestion (next planned phase)
+### Transaction ingestion — implemented as migration 2
 
-Add a migration — do not edit migration 1. The tables it will need:
+**Done, in [DATA_BACKBONE.md](DATA_BACKBONE.md) §6.** The sketch below was the
+plan; what shipped differs in one deliberate way: instead of a `swap_events`
+table holding only resolved trades, `pool_activity` holds one row per
+(transaction, pool, mint) *including* the readings that are not trades
+(UNRESOLVED, NO_POOL_ACTIVITY, liquidity), because dropping those would make
+the resolved ones look like all the pool's traffic. The conventions below were
+kept. The original sketch, for reference:
 
 ```sql
 CREATE TABLE swap_events (
@@ -392,10 +398,11 @@ retention cascades.
 
 ### Buyer Intelligence (after that)
 
-`wallets`, `wallet_first_seen`, `funding_edges`, `buyer_clusters`,
-`wallet_labels`. They hang off `swap_events.wallet` and need no change to what
-exists. **They are not created now** — empty tables are not a foundation, they
-are clutter that the next phase has to work around.
+`wallets`, `wallet_token_activity` (first arrival per wallet and mint) and
+`transfer_edges` (the raw input to funding and wallet graphs) now exist and
+are written by collection. `buyer_clusters` and `wallet_labels` are **not
+created** — they would be written by the intelligence phase, and empty tables
+are not a foundation, they are clutter that phase would have to work around.
 
 ### Technical Intelligence
 

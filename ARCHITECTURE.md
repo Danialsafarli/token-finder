@@ -65,7 +65,9 @@ src/cli.ts ── serve ──> src/server/index.ts ──> node:http ──> sr
 | Lifecycle | **DONE** | Deterministic state machine, transitions validated, nothing irreversible |
 | Initial filter | **IMPLEMENTED** | Drops `liquidity < MIN_LIQUIDITY_USD` and `age > MAX_AGE_HOURS`; sorts by liquidity and truncates to `MAX_ANALYZE_PER_SCAN` (60) |
 | Market enrichment | **IMPLEMENTED** | Batched DexScreener pairs (30/call) + Jupiter search (100/call), run concurrently |
-| On-chain safety | **NOT IMPLEMENTED in practice** | `helius.ts` exists but returns `null` without a key. Measured contribution: 0 of 60 tokens. Untested against a real response |
+| On-chain safety | **NOT IMPLEMENTED in practice** | `helius.ts` returns `null` without a key, so the evidence is UNAVAILABLE. Its parser (`parseMint`) is now verified on live mainnet accounts through the public RPC (`scripts/verify-live.ts`); the Helius request itself has not run (no key) |
+| On-chain discovery | **IMPLEMENTED** | pump.fun launches read from the chain and merged into discovery as `chain:pumpfun`, with first-sighting provenance per source. See [DATA_BACKBONE.md](DATA_BACKBONE.md) |
+| Transaction ingestion | **IMPLEMENTED** | Survivors' pool transactions read into pool activity, transfer edges, wallets and chain events, within a budget, with gaps recorded. No intelligence reads them yet |
 | Buyer / holder analysis | **PARTIAL** | `holderCount` and `topHoldersPercentage` read from Jupiter. **No wallet clustering, no sybil/bundler detection, no buyer quality** |
 | Momentum | **PARTIAL** | DexScreener `priceChange` 1h/6h blended. **Fabricates 0% when no pair exists** (35% of tokens) |
 | Scoring | **IMPLEMENTED** | 7 weighted components + multiplicative penalties — see `SCORING.md` |
@@ -146,7 +148,8 @@ The layers:
 The Board refetches on `scan`; every page listens for connection changes.
 
 **API key requirements** — none to run. `HELIUS_API_KEY` and `BIRDEYE_API_KEY` are optional
-and currently unset; both corresponding sources are inert.
+and currently unset; both corresponding sources are inert. Chain collection uses the public
+Solana endpoint when neither `SOLANA_RPC_URL` nor a Helius key is set.
 
 **Test coverage** — `npm test` runs 417 `node:test` tests (engine, persistence, DTOs, security
 boundary, render boundary). `npm run test:ui` runs 44 more in a real headless Chromium,
@@ -166,7 +169,8 @@ against live providers is still verified only manually.
 3. `lpLockedPct` is received from RugCheck and discarded.
 4. `MonitorEvent` kind `'gone'` is declared in `types.ts` but never emitted — dead contract.
 5. `cli.ts analyze` overwrites a token's `sources` with `['cli']`, destroying discovery provenance.
-6. Helius/Birdeye code paths have never executed against a real response.
+6. Helius/Birdeye requests have never executed against a real response (no keys). The
+   Helius *parser* has, on live accounts through the public RPC (DATA_BACKBONE.md §1).
 7. `store.prune` deletes tokens silently; no event records that a token stopped being tracked.
 8. ~~`pool()` in `util/http.ts` still uses `Promise.all`, so one rejected worker aborts
    the scan~~ — **FIXED.** `poolSettled()` isolates every task; the batch always
