@@ -9,6 +9,7 @@
 import { store } from '../../src/core/store.ts';
 import { serve } from '../../src/server/index.ts';
 import { bus, type ScanResult } from '../../src/core/monitor.ts';
+import { fixtureByName } from '../fixtures.ts';
 import { snapshot, token2022Onchain } from '../persist-helpers.ts';
 import type { LedgerEntry, TokenSnapshot } from '../../src/types.ts';
 
@@ -178,6 +179,38 @@ for (const [minutesAgo, score, price] of [[80, 60, 0.001], [50, 68, 0.0014], [20
 }
 
 store.finishScan(now - 2 * MIN, { analyzed: 7, fresh: 7 });
+
+// --- providers, for on-demand analysis ----------------------------------------
+// The Analyze flow runs the real pipeline; only the providers' HTTP answers are
+// substituted, and only for these two mints. ANALYZE_MINT answers as the
+// 'healthy-established' fixture does; NO_MARKET_MINT has no pool anywhere.
+// Each answer takes a moment, as a real provider would, so the stages can be
+// observed. Nothing else is reachable: the monitor is off.
+export const ANALYZE_MINT = 'AnaLyzeMe11111111111111111111111111111111111';
+export const NO_MARKET_MINT = 'NoMarket111111111111111111111111111111111111';
+const healthy = fixtureByName('healthy-established');
+const rebrand = (value: unknown, mint: string): unknown =>
+  JSON.parse(JSON.stringify(value).replaceAll('Mint1111111111111111111111111111111111111', mint).replaceAll('HEALTHY', 'CLARITY').replaceAll('Healthy Token', 'Clarity Protocol'));
+const PROVIDER_DELAY_MS = Number(process.env.FIXTURE_PROVIDER_DELAY_MS ?? 700);
+const reply = async (body: unknown, status = 200): Promise<Response> => {
+  await new Promise((resolve) => setTimeout(resolve, PROVIDER_DELAY_MS));
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+};
+globalThis.fetch = (async (input: string | URL | Request) => {
+  const url = String(input instanceof Request ? input.url : input);
+  const known = url.includes(ANALYZE_MINT);
+  if (url.startsWith('https://api.dexscreener.com/latest/dex/tokens/')) {
+    return reply({ pairs: known ? (rebrand(healthy.dexPairs, ANALYZE_MINT) as unknown[]) : [] });
+  }
+  if (url.startsWith('https://lite-api.jup.ag/tokens/v2/search')) {
+    return reply(known && healthy.jupiter ? [rebrand(healthy.jupiter, ANALYZE_MINT)] : []);
+  }
+  if (url.startsWith('https://api.rugcheck.xyz/v1/tokens/')) {
+    return known && healthy.rugcheck ? reply(rebrand(healthy.rugcheck, ANALYZE_MINT)) : reply({ error: 'not found' }, 404);
+  }
+  return new Response('not reachable from the test fixture', { status: 404 });
+}) as typeof fetch;
+
 serve({ monitor: false });
 
 // The tests drive scan state through the monitor's own bus, one event name per

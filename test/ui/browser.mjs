@@ -181,7 +181,9 @@ export async function launch() {
     },
     async key(key, code = key, keyCode = 0) {
       const base = { key, code, windowsVirtualKeyCode: keyCode };
-      await send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: key.length === 1 ? key : undefined });
+      // Enter carries a carriage return, as a real keyboard's does: without it
+      // Chrome does not submit a form.
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: key.length === 1 ? key : key === 'Enter' ? String.fromCharCode(13) : undefined });
       await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
     },
     async screenshot() {

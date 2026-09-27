@@ -25,6 +25,10 @@ export const MINTS = {
   legacy: 'LeGaCy111111111111111111111111111111111111',
   xss: 'XsSpRoBe1111111111111111111111111111111111',
   long: 'LoNgStRiNg11111111111111111111111111111111',
+  /** Not in the store; the fixture's providers answer for it as a healthy token. */
+  analyze: 'AnaLyzeMe11111111111111111111111111111111111',
+  /** Not in the store; no provider has a market for it. */
+  noMarket: 'NoMarket111111111111111111111111111111111111',
 };
 
 /** Boots the fixture server as its own process; resolves once it answers. */
