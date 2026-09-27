@@ -105,6 +105,12 @@ Intelligence, any trading or wallet code. The Dossier's tab registry reserves **
 **Buyers** and **Technical** as unavailable entries. They are not rendered: a tab with
 nothing behind it would suggest an analysis that does not exist.
 
+## Landing and on-demand analysis — **in review (`feature/landing-experience`)**
+
+`/` becomes the Landing, with two paths: analyse one token (the real pipeline, on
+request, with real stages) or discover live (`/discover`). See
+[docs/adr/0003](docs/adr/0003-landing.md). No engine semantics change.
+
 ## Observatory — **in review (`feature/intelligence-orb`)**
 
 The Board's visual signature: a live network sphere with the few live tokens

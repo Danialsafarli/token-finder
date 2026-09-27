@@ -127,11 +127,27 @@ See **[PERSISTENCE.md](PERSISTENCE.md)**.
 
 ## Dashboard
 
-Four surfaces, each with its own URL. The architecture is recorded in
+Every surface has its own URL. The architecture is recorded in
 [docs/adr/0001-frontend-architecture.md](docs/adr/0001-frontend-architecture.md):
 plain ES modules, no build step, no framework.
 
-- **Board** (`/`) — the Observatory as the page's hero, with the live ranking as
+| Route | What it is |
+| --- | --- |
+| `/` | The Landing: what Token Finder is, and the two things you can do. |
+| `/analyze/:mint` | An analysis of one token, run on request. |
+| `/discover` | Live discovery: the Observatory and the Board. |
+| `/t/:mint` | A token's Dossier, the canonical detailed view. |
+| `/changes`, `/system` | Verdict changes, and what this instance can check. |
+
+- **Landing** (`/`) — a large Observatory and two paths.
+  - *Analyze a token*: paste a mint, and Token Finder runs the same pipeline
+    the monitor does on that one token. You watch its real stages; there is no
+    percentage, because the engine has none. The result is persisted, so the
+    token's Dossier works whether or not discovery ever found it.
+  - *Discover live* opens `/discover`.
+
+  See [docs/adr/0003-landing.md](docs/adr/0003-landing.md).
+- **Board** (`/discover`) — the Observatory as the page's hero, with the live ranking as
   a compact panel beside it: Token (with the verdict reason under the symbol),
   Score, Liquidity, 1h and Age. When the Board was last scanned is stated once in
   its header. The ranking shows only tokens evaluated within
@@ -182,6 +198,7 @@ snapshots. A Board row is about 0.5 KB: 200 rows come to about 100 KB, or about
 | `GET /api/board?segment=&q=&sort=&limit=` | The live Board: rows, live-universe counts, history matches for a search, capability gaps and the qualify rules. |
 | `GET /api/tokens/:mint` | The Dossier for one token, live or not. `400` for a malformed mint, `404` for an untracked one. |
 | `GET /api/tokens/:mint/history` | Verdict changes and the score, market and holder series for one token. |
+| `POST /api/analyze` `{"mint": "..."}` | Analyses one token on request. Same-origin only; at most two at once. Streams newline-delimited JSON: a `stage` line as each real pipeline stage begins, then a `done` line with the outcome (`no-market` and `providers-down` are stated, never faked). |
 | `GET /api/orb` | The Observatory: at most eight live tokens, each with the reason it was surfaced, plus scan state. About 1 KB gzipped. |
 | `GET /api/changes?limit=` | Verdict changes, first assessments and market alerts across all tokens. |
 | `GET /api/system` | Capabilities, provider health, persistence health, the live window and the rules. |
@@ -233,7 +250,7 @@ has its own queue in `src/util/http.ts`; 429s set a cooldown for that host only.
 | [PIPELINE.md](PIPELINE.md) | **The analysis path as implemented**: provider validation, evidence model, cross-provider resolution, safety gate, coverage/confidence, eligibility and lifecycle. |
 | [TECHNICAL_INTELLIGENCE.md](TECHNICAL_INTELLIGENCE.md) | **PLANNED / FUTURE — not implemented.** Design specification and research record for a future chart-structure analysis layer. No code implements any of it. |
 | [ROADMAP.md](ROADMAP.md) | Proposed development sequence and test strategy. |
-| [docs/adr/](docs/adr/) | Architecture decision records. 0001 is the frontend architecture; 0002 is the Observatory. |
+| [docs/adr/](docs/adr/) | Architecture decision records. 0001 is the frontend architecture; 0002 is the Observatory; 0003 is the Landing and on-demand analysis. |
 
 Parts of those documents describe proposals; they are labelled **NOT IMPLEMENTED** where so.
 
