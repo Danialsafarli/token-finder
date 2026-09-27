@@ -21,6 +21,9 @@ token-finder - discover, analyze, rank and monitor new Solana tokens
   node src/cli.ts reset            clear stored tokens, history and events
   node src/cli.ts db               database size, schema version and row counts
   node src/cli.ts typesafe-check   one request to verify TypeSafe credentials
+  node src/cli.ts ingest           run one on-chain collection cycle and report it
+  node src/cli.ts chain            what the data backbone has collected
+  node src/cli.ts activity <mint>  a tracked token's collected trades and buyers
 
 Options come from .env - see .env.example.
 `;
@@ -258,6 +261,68 @@ function cmdDb(): void {
   console.log(`    counts        ${d.legacyImport.counts ?? '-'}`);
 }
 
+async function cmdIngest(): Promise<void> {
+  const { runIngestionCycle } = await import('./ingest/runner.ts');
+  const { liveIngestDeps } = await import('./ingest/wiring.ts');
+  const deps = liveIngestDeps();
+  log.step(`one collection cycle via ${deps.source}…`);
+  const r = await runIngestionCycle(deps);
+  log.ok(`${r.health.state} in ${(r.durationMs / 1000).toFixed(1)}s - ${r.health.reason}`);
+  if (r.launches) {
+    const l = r.launches;
+    console.log(`  launches   ${l.signaturesSeen} seen, ${l.failedSkipped} failed (skipped), ${l.alreadyKnown} known, ${l.fetched} fetched, ${l.recorded} new, ${l.skippedOverBudget} over budget, ${l.fetchFailed} fetch failed`);
+  }
+  const s = r.deep.skipped;
+  console.log(`  survivors  ${r.deep.pools.length} collected · left out: ${s.notSurvivor} not survivors, ${s.notLive} not live, ${s.noPool} no pool, ${s.overBudget} over budget`);
+  for (const p of r.deep.pools) {
+    const kinds = Object.entries(p.byKind).map(([k, v]) => `${k} ${v}`).join(', ') || 'nothing new';
+    console.log(`    ${p.mint.slice(0, 8)} ${p.tier.padEnd(9)} ${p.fetched}/${p.signaturesSeen} fetched · ${kinds}${p.error ? ` · error ${p.error}` : ''}`);
+  }
+  console.log(`  rpc        ${r.rpc.calls} calls, ${r.rpc.failures} failed, ${r.rpc.rateLimited} rate-limited`);
+  store.save();
+}
+
+function cmdChain(): void {
+  const chain = store.chain();
+  if (chain === null) {
+    log.error('the database is not open');
+    process.exitCode = 1;
+    return;
+  }
+  const s = chain.stats();
+  const lead = chain.chainLead(Date.now() - 24 * 3_600_000);
+  console.log(`  transactions  ${s.transactions} (${s.transactionsLastHour} in the last hour, ${s.failedLastHour} failed)`);
+  console.log(`  pool activity ${Object.entries(s.activityByKind).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`);
+  console.log(`  launches      ${s.launches} (${s.launchesLastHour} in the last hour)`);
+  console.log(`  wallets       ${s.wallets} · edges ${s.edges} · chain events ${s.chainEvents} · discoveries ${s.discoveries}`);
+  console.log(`  gaps          ${s.gapsLastDay} in the last day, ${s.skippedLastDay} transactions not collected`);
+  console.log(`  newest block  ${s.latestBlockTime ? new Date(s.latestBlockTime).toISOString() : 'none'}`);
+  if (lead.mints > 0 && lead.medianLeadMs !== null) {
+    console.log(`  chain lead    ${lead.mints} mints seen by chain and feeds; median ${(lead.medianLeadMs / 1000).toFixed(0)}s (positive: chain first)`);
+    if (lead.medianFeedDelayMs !== null) console.log(`  feed delay    a feed first listed them ${(lead.medianFeedDelayMs / 1000).toFixed(0)}s after the launch block (median)`);
+  }
+}
+
+function cmdActivity(mint: string): void {
+  const chain = store.chain();
+  if (chain === null) {
+    log.error('the database is not open');
+    process.exitCode = 1;
+    return;
+  }
+  const rows = chain.activityOf(mint, 25);
+  const buyers = chain.buyerArrivals(mint, 15);
+  const launch = chain.launch(mint);
+  if (launch) console.log(`  launched ${launch.blockTime ? new Date(launch.blockTime).toISOString() : '?'} on ${launch.venue} by fee payer ${launch.feePayer}`);
+  for (const d of chain.discoveriesOf(mint)) console.log(`  seen by ${d.source.padEnd(22)} first ${new Date(d.firstSeenAt).toISOString()} (${d.timesSeen}×)`);
+  console.log(`  recent pool activity (${rows.length}):`);
+  for (const r of rows) {
+    console.log(`    slot ${r.slot} ${r.kind.padEnd(16)} ${(r.direction ?? '').padEnd(4)} ${(r.trader ?? '-').slice(0, 8).padEnd(8)} ${r.traderResolution ?? ''} ${r.priceInQuote !== null ? r.priceInQuote.toExponential(3) : ''} ${r.reason ?? ''}`);
+  }
+  console.log(`  first buyers observed (${buyers.length}):`);
+  for (const b of buyers) console.log(`    slot ${b.firstSlot} ${b.wallet} buys ${b.buys} sells ${b.sells}${b.onCurve === false ? ' (program-derived)' : ''}`);
+}
+
 async function main(): Promise<void> {
   const [command = 'serve', ...rest] = process.argv.slice(2);
 
@@ -319,6 +384,24 @@ async function main(): Promise<void> {
         log.error(`TypeSafe check failed - ${result.detail}`);
         process.exitCode = 1;
       }
+      break;
+    }
+
+    case 'ingest':
+      await cmdIngest();
+      break;
+
+    case 'chain':
+      cmdChain();
+      break;
+
+    case 'activity': {
+      if (!rest[0]) {
+        log.error('usage: node src/cli.ts activity <mint>');
+        process.exitCode = 1;
+        break;
+      }
+      cmdActivity(rest[0]);
       break;
     }
 

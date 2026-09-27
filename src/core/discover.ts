@@ -37,20 +37,36 @@ const FEEDS: Feed[] = [
   },
 ];
 
+export interface DiscoverOptions {
+  /**
+   * Mints the data backbone read from the chain - launches recent enough to
+   * still be candidates. They join the merge as the `chain:pumpfun` feed, so a
+   * mint seen both on-chain and by an aggregator is one candidate carrying
+   * both sources. Being seen on-chain is provenance, never a verdict: a chain
+   * candidate faces exactly the same screen as any other.
+   */
+  chainLaunches?: { mint: string }[];
+}
+
 /**
  * Collects candidate mints from every feed and merges duplicates, keeping
  * track of which feeds surfaced each one. A mint seen by several independent
  * feeds is a stronger signal than one seen by a single feed.
  */
-export async function discover(): Promise<TokenCandidate[]> {
+export async function discover(options: DiscoverOptions = {}): Promise<TokenCandidate[]> {
+  const feeds: Feed[] = [...FEEDS];
+  if (options.chainLaunches !== undefined && options.chainLaunches.length > 0) {
+    const launches = options.chainLaunches;
+    feeds.push({ name: 'chain:pumpfun', run: async () => launches.map(({ mint }) => ({ mint })) });
+  }
   const settled = await Promise.allSettled(
-    FEEDS.map(async (feed) => ({ feed: feed.name, items: await feed.run() })),
+    feeds.map(async (feed) => ({ feed: feed.name, items: await feed.run() })),
   );
 
   const merged = new Map<string, TokenCandidate>();
 
   for (const [index, result] of settled.entries()) {
-    const feedName = FEEDS[index]?.name ?? 'unknown';
+    const feedName = feeds[index]?.name ?? 'unknown';
 
     if (result.status === 'rejected') {
       log.warn(`feed ${feedName} failed:`, result.reason instanceof Error ? result.reason.message : result.reason);

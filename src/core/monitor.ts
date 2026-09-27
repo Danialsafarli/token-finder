@@ -190,7 +190,25 @@ export async function runScan(): Promise<ScanResult> {
   let completed = false;
   try {
     stage({ stage: 'discover' });
-    const candidates = await discover();
+    // Launches the data backbone read from the chain join the feeds. Reading
+    // them is a local query: collection happens in its own loop.
+    const chain = store.chain();
+    const chainLaunches =
+      chain === null || config.chainCandidateMax <= 0
+        ? []
+        : chain.recentLaunches(started - config.chainCandidateWindowMin * 60_000, config.chainCandidateMax);
+    const candidates = await discover({ chainLaunches });
+    // Provenance: which source surfaced which mint, first and last. Recorded
+    // for every candidate, analysed or not, because "who saw it first" is a
+    // question about discovery, not about the verdict.
+    try {
+      chain?.recordDiscoveries(
+        candidates.flatMap((c) => c.sources.map((source) => ({ mint: c.mint, source }))),
+        started,
+      );
+    } catch (error) {
+      log.warn(`discovery provenance not recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
     stage({ stage: 'discovered', count: candidates.length });
 
     // Prior lifecycle state per mint, so a token moves QUALIFIED -> SCANNING ->

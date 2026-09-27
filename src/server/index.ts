@@ -39,6 +39,9 @@ import {
 import { hostAllowed, isLoopbackBind, sameOrigin, SECURITY_HEADERS } from './security.ts';
 import type { MonitorEvent } from '../types.ts';
 import { analyzeRequested, MINT_ADDRESS, stageView } from '../core/request.ts';
+import { ingestionStatus, startIngestion } from '../ingest/runner.ts';
+import { liveIngestDeps } from '../ingest/wiring.ts';
+import { rpcEndpoint, rpcThrottleCount } from '../sources/solana-rpc.ts';
 
 const PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), 'public');
 
@@ -186,6 +189,52 @@ function coverageBody(now = Date.now()): unknown {
   };
 }
 
+/**
+ * The data backbone, concisely: is collection running and healthy, what it
+ * has collected, and where it has holes. Counts and times only - no rows.
+ */
+function ingestionBody(now: number): unknown {
+  const status = ingestionStatus(now);
+  const chain = store.chain();
+  let stats = null;
+  let lead = null;
+  try {
+    stats = chain?.stats(now) ?? null;
+    lead = chain?.chainLead(now - 24 * 3_600_000) ?? null;
+  } catch {
+    // Diagnostics must never fail the System surface.
+  }
+  const last = status.lastCycle;
+  return {
+    enabled: status.enabled,
+    source: status.enabled ? status.source : rpcEndpoint().label,
+    keyed: rpcEndpoint().kind !== 'public',
+    /** 429s from the endpoint since start, including ones a retry recovered from. */
+    throttled: rpcThrottleCount(),
+    intervalSec: status.intervalSec,
+    health: status.health,
+    lastSuccessAt: status.lastSuccessAt,
+    lastCycle: last
+      ? {
+          at: last.at,
+          durationMs: last.durationMs,
+          rpcCalls: last.rpc.calls,
+          rpcFailures: last.rpc.failures,
+          rateLimited: last.rpc.rateLimited,
+          launches: last.launches
+            ? { seen: last.launches.signaturesSeen, recorded: last.launches.recorded, skipped: last.launches.skippedOverBudget, fetchFailed: last.launches.fetchFailed }
+            : null,
+          pools: last.deep.pools.length,
+          trades: last.deep.pools.reduce((sum, p) => sum + (p.byKind.SWAP ?? 0), 0),
+          unresolved: last.deep.pools.reduce((sum, p) => sum + (p.byKind.UNRESOLVED ?? 0), 0),
+          survivorsWaiting: last.deep.skipped.overBudget,
+        }
+      : null,
+    collected: stats,
+    chainLead: lead,
+  };
+}
+
 function systemBody(now = Date.now()): unknown {
   const { caps } = currentContext(now);
   const diagnostics = store.diagnostics();
@@ -212,6 +261,7 @@ function systemBody(now = Date.now()): unknown {
         : null,
     },
     providers: store.providerFailureSummary(now - 60 * 60_000),
+    ingestion: ingestionBody(now),
     window: { liveMinutes: config.liveWindowMin, freshMinutes: Math.round(FRESH_WITHIN_MS / 60_000) },
     coverage: coverageBody(now),
     persistence: {
@@ -563,6 +613,18 @@ export function serve(options: { monitor?: boolean } = {}): Server {
   if (options.monitor !== false) {
     log.step(`monitor every ${config.scanIntervalSec}s`);
     startMonitor();
+    // Chain collection runs beside the scanner, never inside it: its budget,
+    // its failures and its pace are its own, and a dead RPC endpoint stops
+    // collection, not scanning.
+    if (config.ingestEnabled) {
+      const endpoint = rpcEndpoint();
+      log.step(`chain collection every ${config.ingestIntervalSec}s via ${endpoint.label}`);
+      startIngestion(liveIngestDeps(), config.ingestIntervalSec, (cycle) => {
+        const launches = cycle.launches ? `${cycle.launches.recorded} launches` : 'launches off';
+        const trades = cycle.deep.pools.reduce((sum, p) => sum + (p.byKind.SWAP ?? 0), 0);
+        log.debug(`chain cycle ${cycle.health.state}: ${launches}, ${trades} trades from ${cycle.deep.pools.length} pools in ${(cycle.durationMs / 1000).toFixed(1)}s`);
+      });
+    }
   }
 
   // Returned so a caller that started the server can stop it. Tests need this:

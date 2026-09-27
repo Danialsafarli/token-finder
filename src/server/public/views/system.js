@@ -34,6 +34,43 @@ function capabilityCard(capability) {
   </li>`;
 }
 
+const HEALTH = /** @type {Record<string, { label: string, tone: string }>} */ ({
+  AVAILABLE: { label: 'Collecting', tone: 'good' },
+  PARTIAL: { label: 'Partial', tone: 'warn' },
+  STALE: { label: 'Stale', tone: 'warn' },
+  UNAVAILABLE: { label: 'Not collecting', tone: 'neutral' },
+  FAILED: { label: 'Failed', tone: 'bad' },
+});
+
+/**
+ * On-chain collection: whether it runs, from where, and what it has - with its
+ * gaps stated beside its totals.
+ * @param {any} ing
+ */
+function ingestionPanel(ing) {
+  if (!ing) return '';
+  const health = HEALTH[ing.health.state] ?? { label: ing.health.state, tone: 'neutral' };
+  const c = ing.collected;
+  const last = ing.lastCycle;
+  const kinds = c ? c.activityByKind : {};
+  return html`<section class="panel" aria-labelledby="ingest-title">
+    <h2 id="ingest-title" class="panel__title">On-chain data collection</h2>
+    <p class="small"><span class="tag tag--${health.tone}">${health.label}</span> ${ing.health.reason}</p>
+    <dl class="kv">
+      <div><dt>Source</dt><dd><code>${ing.source}</code>${ing.keyed ? '' : html` <span class="small muted">public endpoint, rate-limited; set HELIUS_API_KEY or SOLANA_RPC_URL for more</span>`}</dd></div>
+      ${last ? html`<div><dt>Last cycle</dt><dd>${timeAgo(last.at)} · ${duration(last.durationMs)} · ${count(last.rpcCalls)} calls${last.rpcFailures ? html` · <span class="tone--warn">${count(last.rpcFailures)} failed</span>` : ''}${ing.throttled ? html` · <span class="small muted">${count(ing.throttled)} throttled since start</span>` : ''}</dd></div>` : ''}
+      ${c ? html`
+        <div><dt>Launches read on-chain</dt><dd>${count(c.launchesLastHour)} in the last hour · ${count(c.launches)} stored</dd></div>
+        <div><dt>Pool transactions</dt><dd>${count(kinds.SWAP ?? 0)} trades · ${count((kinds.LIQUIDITY_ADDED ?? 0) + (kinds.LIQUIDITY_REMOVED ?? 0))} liquidity · <span title="the balances did not settle what happened">${count(kinds.UNRESOLVED ?? 0)} unresolved</span></dd></div>
+        <div><dt>Wallets observed</dt><dd>${count(c.wallets)} · ${count(c.edges)} transfer edges</dd></div>
+        <div><dt>Gaps</dt><dd>${c.gapsLastDay === 0 ? 'None in the last day' : html`${count(c.gapsLastDay)} in the last day${c.skippedLastDay ? ` · ${count(c.skippedLastDay)} transactions not collected` : ''}`}</dd></div>
+        ${c.latestBlockTime ? html`<div><dt>Newest chain data</dt><dd>${timeAgo(c.latestBlockTime)}</dd></div>` : ''}` : ''}
+      ${ing.chainLead && ing.chainLead.mints > 0 && ing.chainLead.medianLeadMs !== null ? html`<div><dt>Chain vs. feeds</dt><dd>${count(ing.chainLead.mints)} mints seen by both; ${ing.chainLead.medianLeadMs >= 0 ? `the chain saw them ${duration(ing.chainLead.medianLeadMs)} earlier` : `the feeds saw them ${duration(-ing.chainLead.medianLeadMs)} earlier`} (median)${ing.chainLead.medianFeedDelayMs !== null ? html`<br><span class="small muted">A feed first listed them ${duration(Math.max(0, ing.chainLead.medianFeedDelayMs))} after their launch block (median).</span>` : ''}</dd></div>` : ''}
+    </dl>
+    <p class="small muted">Collection covers tokens that pass the fast screen, within a per-cycle budget. What the budget leaves out is recorded as a gap, never filled in.</p>
+  </section>`;
+}
+
 /** @param {{ label: string, count: number }[]} buckets */
 function distribution(buckets) {
   const max = Math.max(1, ...buckets.map((b) => b.count));
@@ -103,6 +140,8 @@ function template(s) {
             ${cov.unknownSignals.length ? html`<p class="small muted">Most often not measured: ${cov.unknownSignals.slice(0, 4).map((u) => `${u.label} (${u.count})`).join(', ')}.</p>` : ''}
             ${cov.vetoes.length ? html`<p class="small">Live vetoes: ${cov.vetoes.map((v) => `${v.label} (${v.count})`).join(', ')}.</p>` : ''}`}
       </section>
+
+      ${ingestionPanel(s.ingestion)}
 
       <section class="panel" aria-labelledby="db-title">
         <h2 id="db-title" class="panel__title">History database</h2>

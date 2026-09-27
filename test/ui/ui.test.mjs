@@ -172,6 +172,12 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
     const t22 = await browser.eval(`[...document.querySelectorAll('.capability')].find((c) => c.textContent.includes('Token-2022'))?.textContent ?? ''`);
     assert.match(t22, /Off/);
     assert.match(t22, /HELIUS_API_KEY/);
+    // On-chain collection is stated, not implied: this fixture server runs no
+    // collector, and the page says so rather than showing an empty success.
+    const ingest = await browser.eval(`document.querySelector('[aria-labelledby="ingest-title"]')?.textContent.replace(/\\s+/g, ' ') ?? ''`);
+    assert.match(ingest, /On-chain data collection/);
+    assert.match(ingest, /Not collecting/);
+    assert.match(ingest, /solana-rpc:public/);
   });
 
   test('stale and never-evaluated Dossiers say so', async () => {
