@@ -180,6 +180,12 @@ export interface OnChainInfo {
    */
   top10Share: number | null;
   largestHolderShare: number | null;
+  /**
+   * The largest accounts labelled by owner role, with a wallet-only top-10
+   * figure beside the raw one. Absent when not measured. Nothing in the gate
+   * or the score reads it; see core/holder-roles.ts.
+   */
+  holderRoles?: import('./core/holder-roles.ts').HolderRoles | null;
   issues: FieldIssue[];
 }
 

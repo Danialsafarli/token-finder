@@ -16,6 +16,7 @@ import {
   type TokenProgram,
 } from '../core/token-program.ts';
 import type { MintExtension, OnChainInfo } from '../types.ts';
+import { classifyHolderRoles, type HolderRoles } from '../core/holder-roles.ts';
 
 const cache = new TtlCache<OnChainInfo | null>(10 * 60_000);
 
@@ -42,11 +43,16 @@ interface RpcResponse<T> {
   error?: { message?: string };
 }
 
-async function rpc<T>(method: string, params: unknown[]): Promise<ProviderResult<T>> {
+async function rpc<T>(
+  method: string,
+  params: unknown[],
+  options: { retries?: number; timeoutMs?: number } = {},
+): Promise<ProviderResult<T>> {
   const outcome = await getOutcome<RpcResponse<T>>('helius', rpcUrl(), {
     method: 'POST',
     body: { jsonrpc: '2.0', id: method, method, params },
-    retries: 1,
+    retries: options.retries ?? 1,
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
   });
 
   if (outcome.failure !== null) return { data: null, failure: outcome.failure };
@@ -109,6 +115,125 @@ interface LargestAccounts {
     uiAmount?: unknown;
     uiAmountString?: unknown;
   }[];
+}
+
+// ---------------------------------------------------------------------------
+// getTokenLargestAccounts guard
+// ---------------------------------------------------------------------------
+//
+// Measured live (2026-09-27): p50 2.8 s, p95 4.2 s, and under a burst of 5/s
+// half the calls came back as a JSON-RPC error "account index service
+// overloaded" inside an HTTP 200. On a token with millions of holder accounts
+// (USDC) it is refused outright: "Too many accounts requested".
+//
+// So the method gets its own lane, separate from every other Helius call:
+// - at most two in flight; a third waits rather than piling on;
+// - an 8 s timeout and no retry - a slow answer is not worth a second wait;
+// - an overload report opens a breaker for five minutes, during which the
+//   method is not called at all and concentration is UNAVAILABLE;
+// - "too many accounts" is remembered per mint for a day, because the answer
+//   will not change and the call is the most expensive one we make.
+// Nothing here can stall a scan: every path returns within the timeout.
+
+const LARGEST_TIMEOUT_MS = 8_000;
+const LARGEST_MAX_IN_FLIGHT = 2;
+const OVERLOAD_COOLDOWN_MS = 5 * 60_000;
+const TOO_LARGE_TTL_MS = 24 * 3_600_000;
+
+const largestGuard = {
+  inFlight: 0,
+  waiters: [] as (() => void)[],
+  breakerUntil: 0,
+  overloads: 0,
+  timeouts: 0,
+  tooLarge: new Map<string, number>(),
+  calls: 0,
+  skipped: 0,
+};
+
+export interface LargestAccountsGuardState {
+  breakerOpenUntil: number | null;
+  overloads: number;
+  timeouts: number;
+  tooLargeMints: number;
+  calls: number;
+  skipped: number;
+  inFlight: number;
+}
+
+export function largestAccountsGuardState(now: number = Date.now()): LargestAccountsGuardState {
+  return {
+    breakerOpenUntil: largestGuard.breakerUntil > now ? largestGuard.breakerUntil : null,
+    overloads: largestGuard.overloads,
+    timeouts: largestGuard.timeouts,
+    tooLargeMints: [...largestGuard.tooLarge.values()].filter((until) => until > now).length,
+    calls: largestGuard.calls,
+    skipped: largestGuard.skipped,
+    inFlight: largestGuard.inFlight,
+  };
+}
+
+/** Test seam: forget the guard's memory. */
+export function resetLargestAccountsGuard(): void {
+  largestGuard.inFlight = 0;
+  largestGuard.waiters = [];
+  largestGuard.breakerUntil = 0;
+  largestGuard.overloads = 0;
+  largestGuard.timeouts = 0;
+  largestGuard.tooLarge.clear();
+  largestGuard.calls = 0;
+  largestGuard.skipped = 0;
+}
+
+function skip(message: string): ProviderResult<never> {
+  largestGuard.skipped += 1;
+  return {
+    data: null,
+    failure: { provider: 'helius', kind: 'PROVIDER_UNAVAILABLE', message, at: Date.now(), retryable: false },
+  };
+}
+
+/**
+ * Calls getTokenLargestAccounts through the guard. `call` is injectable so
+ * the guard can be tested without a network.
+ */
+export async function guardedLargestAccounts<T>(
+  mint: string,
+  call: () => Promise<ProviderResult<T>> = () =>
+    rpc<T>('getTokenLargestAccounts', [mint], { retries: 0, timeoutMs: LARGEST_TIMEOUT_MS }),
+  now: () => number = Date.now,
+): Promise<ProviderResult<T>> {
+  if (largestGuard.breakerUntil > now()) return skip('largest-accounts paused after an overload report');
+  const tooLargeUntil = largestGuard.tooLarge.get(mint);
+  if (tooLargeUntil !== undefined && tooLargeUntil > now()) {
+    return skip('too many holder accounts for getTokenLargestAccounts');
+  }
+
+  if (largestGuard.inFlight >= LARGEST_MAX_IN_FLIGHT) {
+    await new Promise<void>((resolve) => largestGuard.waiters.push(resolve));
+  }
+  largestGuard.inFlight += 1;
+  try {
+    // Re-checked after any wait: an overload reported meanwhile applies here too.
+    if (largestGuard.breakerUntil > now()) return skip('largest-accounts paused after an overload report');
+    largestGuard.calls += 1;
+    const result = await call();
+    const message = result.failure?.message ?? '';
+    if (/overload/i.test(message)) {
+      largestGuard.overloads += 1;
+      largestGuard.breakerUntil = now() + OVERLOAD_COOLDOWN_MS;
+    } else if (/too many accounts/i.test(message)) {
+      largestGuard.tooLarge.set(mint, now() + TOO_LARGE_TTL_MS);
+    } else if (result.failure?.kind === 'TIMEOUT') {
+      largestGuard.timeouts += 1;
+      // Two timeouts read as a struggling index: step back for a minute.
+      if (largestGuard.timeouts % 2 === 0) largestGuard.breakerUntil = now() + 60_000;
+    }
+    return result;
+  } finally {
+    largestGuard.inFlight -= 1;
+    largestGuard.waiters.shift()?.();
+  }
 }
 
 /** Result of reading the extension list off a mint account. */
@@ -256,7 +381,14 @@ function readExtensions(
  * `top10Share` is an upper bound on genuine holder concentration rather than a
  * clean insider metric, and the safety gate does not veto on it.
  */
-export async function onchainInfo(mint: string): Promise<ProviderResult<OnChainInfo>> {
+export interface OnchainContext {
+  /** Pool addresses a market provider or collection names for this mint. */
+  pools?: string[];
+  /** A bonding curve a launch record names. */
+  curves?: string[];
+}
+
+export async function onchainInfo(mint: string, context: OnchainContext = {}): Promise<ProviderResult<OnChainInfo>> {
   // Not configured is a distinct, permanent condition: there is nothing to
   // retry and nothing wrong, but the signal is UNAVAILABLE, not UNKNOWN.
   if (!hasHelius()) return { data: null, failure: notConfigured('helius') };
@@ -269,7 +401,7 @@ export async function onchainInfo(mint: string): Promise<ProviderResult<OnChainI
     // other's answer, so neither can reject the pair.
     const [accountResult, largestResult] = await Promise.all([
       rpc<MintAccount>('getAccountInfo', [mint, { encoding: 'jsonParsed' }]),
-      rpc<LargestAccounts>('getTokenLargestAccounts', [mint]),
+      guardedLargestAccounts<LargestAccounts>(mint),
     ]);
 
     const failure: ProviderFailure | null = accountResult.failure ?? largestResult.failure;
@@ -278,8 +410,12 @@ export async function onchainInfo(mint: string): Promise<ProviderResult<OnChainI
 
     if (!account?.value?.data?.parsed?.info && !largest) return { data: null, failure };
 
+    const info = parseMint(account, largest, largestResult.failure !== null);
+    if (info.largestAccountsCount !== null && info.largestAccountsCount > 0 && largest?.value) {
+      info.holderRoles = await holderRolesFor(largest, info.rawSupply, context);
+    }
     return {
-      data: parseMint(account, largest, largestResult.failure !== null),
+      data: info,
       // A partial answer is still an answer; the failure is reported alongside
       // it so the gap is attributable.
       failure,
@@ -288,6 +424,38 @@ export async function onchainInfo(mint: string): Promise<ProviderResult<OnChainI
 
   if (result.data !== null) cache.set(mint, result.data);
   return result;
+}
+
+/**
+ * Labels the largest accounts by their owners' roles: one getMultipleAccounts
+ * call for all of them. A failure leaves the roles null - the raw figure
+ * stands on its own, as it always has.
+ */
+async function holderRolesFor(
+  largest: LargestAccounts,
+  rawSupply: string | null,
+  context: OnchainContext,
+): Promise<HolderRoles | null> {
+  const entries = (largest.value ?? []).flatMap((e) =>
+    typeof e?.address === 'string' && typeof e.amount === 'string' && /^\d+$/.test(e.amount)
+      ? [{ tokenAccount: e.address, amount: BigInt(e.amount) }]
+      : [],
+  );
+  if (entries.length === 0) return null;
+  const accounts = await rpc<{ value?: unknown[] }>('getMultipleAccounts', [
+    entries.map((e) => e.tokenAccount),
+    { encoding: 'jsonParsed' },
+  ]);
+  if (accounts.failure !== null) return null;
+  const owners = new Map<string, string | null>();
+  (accounts.data?.value ?? []).forEach((value, i) => {
+    const owner = (value as { data?: { parsed?: { info?: { owner?: unknown } } } } | null)?.data?.parsed?.info?.owner;
+    owners.set(entries[i]?.tokenAccount ?? '', typeof owner === 'string' ? owner : null);
+  });
+  return classifyHolderRoles(entries, owners, rawSupply === null ? null : BigInt(rawSupply), {
+    pools: new Set(context.pools ?? []),
+    curves: new Set(context.curves ?? []),
+  });
 }
 
 /**

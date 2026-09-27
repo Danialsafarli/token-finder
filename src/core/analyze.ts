@@ -225,7 +225,11 @@ export async function analyze(
     const tokenFailures: ProviderFailure[] = [];
     const [rugSettled, onchainSettled, impersonationSettled] = await Promise.allSettled([
       rugcheck.summary(candidate.mint),
-      helius.onchainInfo(candidate.mint),
+      // Pool addresses let the largest holders be labelled by role (a pool's
+      // vault is not an insider). Labels only: the gate does not read them.
+      helius.onchainInfo(candidate.mint, {
+        pools: pairs.map((pair) => pair.pairAddress).filter((a): a is string => typeof a === 'string'),
+      }),
       typesafe.screenImpersonation({
         mint: candidate.mint,
         symbol,
