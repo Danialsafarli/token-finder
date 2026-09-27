@@ -34,12 +34,12 @@
 import { log } from '../util/logger.ts';
 import { classifyFailure, type ProviderFailure } from '../util/failure.ts';
 import { poolSettled, type ProviderResult } from '../util/http.ts';
-import type { ChainRepository } from '../persist/chain-repository.ts';
+import type { ChainRepository, IngestWriteResult } from '../persist/chain-repository.ts';
 import type { TokenSnapshot } from '../types.ts';
 import type { SignatureInfo } from '../sources/solana-rpc.ts';
 import { PUMPFUN_MINT_AUTHORITY } from '../chain/programs.ts';
-import { normalizeTransaction } from './normalize.ts';
-import { derivePoolActivity, type ActivityKind } from './activity.ts';
+import { normalizeTransaction, type NormalizedTransaction } from './normalize.ts';
+import { derivePoolActivity, type ActivityKind, type PoolActivity } from './activity.ts';
 import { parsePumpfunLaunch } from './launch.ts';
 import { mintEvents, onCurve, poolCreatedEvent, transferEdges } from './derive.ts';
 import { planDeepCollection, type DeepPlan } from './budget.ts';
@@ -168,6 +168,35 @@ function select(
     chain.recordGap(key, { fromSlot: null, toSlot: page[page.length - 1]?.slot ?? null, skipped: null, reason: 'page_limit' }, now);
   }
   return chosen;
+}
+
+/**
+ * Reads one fetched transaction against a tracked pool and stores everything
+ * derived from it: the pool reading, transfer edges, mint events and the
+ * trader. Shared with deep intelligence, so a transaction it fetched for
+ * another reason is recorded exactly as collection would record it.
+ */
+export function ingestPoolTransaction(
+  chain: ChainRepository,
+  tx: NormalizedTransaction,
+  o: { mint: string; pool: string; txIndex: number | null; source: string; commitment: string; at: number },
+): { activity: PoolActivity; written: IngestWriteResult } {
+  const activity = derivePoolActivity(tx, o.mint, o.pool);
+  const excluded = new Set([o.pool, ...(activity.poolSide ? [activity.poolSide] : [])]);
+  const written = chain.saveIngested(
+    {
+      tx,
+      txIndex: o.txIndex,
+      activity: [activity],
+      edges: transferEdges(tx, o.mint, excluded),
+      events: mintEvents(tx, o.mint, o.source),
+      wallets: activity.trader === null ? [] : [{ address: activity.trader, onCurve: onCurve(activity.trader) }],
+      source: o.source,
+      commitment: o.commitment,
+    },
+    o.at,
+  );
+  return { activity, written };
 }
 
 /** Runs one cycle. Never throws. */
@@ -333,24 +362,8 @@ export async function runIngestionCycle(deps: IngestDeps): Promise<CycleReport> 
           missed.push(sig);
           continue;
         }
-        const activity = derivePoolActivity(tx, work.mint, work.pool);
+        const { activity, written } = ingestPoolTransaction(chain, tx, { mint: work.mint, pool: work.pool, txIndex: sig.transactionIndex, source: deps.source, commitment: deps.commitment, at: now() });
         pool.byKind[activity.kind] = (pool.byKind[activity.kind] ?? 0) + 1;
-        const excluded = new Set([work.pool, ...(activity.poolSide ? [activity.poolSide] : [])]);
-        const edges = transferEdges(tx, work.mint, excluded);
-        const events = mintEvents(tx, work.mint, deps.source);
-        const written = chain.saveIngested(
-          {
-            tx,
-            txIndex: sig.transactionIndex,
-            activity: [activity],
-            edges,
-            events,
-            wallets: activity.trader === null ? [] : [{ address: activity.trader, onCurve: onCurve(activity.trader) }],
-            source: deps.source,
-            commitment: deps.commitment,
-          },
-          now(),
-        );
         pool.edges += written.edgesInserted;
         pool.events += written.eventsInserted;
       }

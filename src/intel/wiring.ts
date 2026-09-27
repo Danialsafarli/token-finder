@@ -21,6 +21,7 @@ export function liveIntelDeps(): IntelDeps {
     intel: store.intel(),
     tokens: () => store.tokens(),
     source: solanaRpc.rpcEndpoint().label,
+    commitment: solanaRpc.COMMITMENT,
     settings: {
       tokensPerCycle: config.intelTokensPerCycle,
       walletsPerToken: config.intelWalletsPerToken,

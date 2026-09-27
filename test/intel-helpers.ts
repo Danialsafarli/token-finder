@@ -160,6 +160,7 @@ export function toRaw(n: NormalizedTransaction): unknown {
   for (const a of n.lamportDeltas.keys()) index(a);
   for (const b of n.tokenBalances) index(b.account);
   for (const t of n.solTransfers) (index(t.from), index(t.to));
+  for (const k of n.accountKeys) index(k);
   const pre = keys.map(() => BASE_LAMPORTS);
   const post = keys.map((k, i) => (pre[i] as bigint) + (n.lamportDeltas.get(k) ?? 0n));
   const balance = (side: 'pre' | 'post') =>

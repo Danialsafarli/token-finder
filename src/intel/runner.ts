@@ -48,6 +48,7 @@ import type { TokenSnapshot } from '../types.ts';
 import type { AddressHistory, SignatureInfo } from '../sources/solana-rpc.ts';
 import { isOnCurve } from '../chain/address.ts';
 import { normalizeTransaction, type NormalizedTransaction } from '../ingest/normalize.ts';
+import { ingestPoolTransaction } from '../ingest/runner.ts';
 import { walletTrades, type WalletTrade } from './wallet-trades.ts';
 import { computeFeatures, type LaunchTime } from './features.ts';
 import { classifyBuyer, type BuyerClass, type BuyerClassification } from './classify.ts';
@@ -87,6 +88,8 @@ export interface IntelDeps {
   intel: IntelRepository | null;
   tokens: () => TokenSnapshot[];
   source: string;
+  /** Commitment the history port reads at, recorded with each stored transaction. */
+  commitment?: string;
   settings: IntelSettings;
   now?: () => number;
 }
@@ -242,6 +245,8 @@ export interface IntelCycleReport {
 const WALLET_CONCURRENCY = 2;
 const MAX_NETWORK_NODES = 300;
 const SIGNATURE_PROBE = 1000;
+/** Pool readings at or above this rest on the pool's own balances, not an inferred side. */
+const DIRECT_READING = 0.9;
 
 function normalizeAll(raw: unknown[]): NormalizedTransaction[] {
   const out: NormalizedTransaction[] = [];
@@ -322,9 +327,10 @@ export async function analyzeToken(
   };
 
   // === stage 2: transaction collection =====================================================
-  const activity: ActivityRow[] = chain.activityOf(mint, 1000);
-  if (activity.length === 1000) truncation.push('POOL_ACTIVITY: newest 1000 pool readings used');
   const launchRow = chain.launch(mint);
+  // Trades are read on the live market pool, as collection reads them; a
+  // launch's curve is only a fallback, since most tokens migrate off it.
+  const pool = deps.tokens().find((t) => t.mint === mint)?.pair?.pairAddress || launchRow?.pool || null;
   let creation: NormalizedTransaction | null = null;
   let mintTxs: NormalizedTransaction[] = [];
   let mintHistoryComplete: 'COMPLETE' | 'PARTIAL' | 'NONE' = 'NONE';
@@ -348,7 +354,21 @@ export async function analyzeToken(
     const r = await deps.history.history(mint, { order: 'desc', limit: 100, succeededOnly: true });
     fail(r.failure);
     if (r.data) {
-      mintTxs.push(...normalizeAll(r.data.txs));
+      const recent = normalizeAll(r.data.txs);
+      mintTxs.push(...recent);
+      // Most of a mint's recent transactions are trades on its pool. They
+      // were fetched anyway, so the ones that load the pool account - exactly
+      // the set collection reads - are recorded as collection would record
+      // them: a deeper sample for wash and activity at no extra cost. The
+      // rest (escrows, routers, transfers) never touched the pool, and
+      // reading them as pool activity would invent liquidity events.
+      if (pool !== null) {
+        const known = chain.knownSignatures(recent.map((t) => t.signature));
+        for (const tx of recent) {
+          if (known.has(tx.signature) || !tx.accountKeys.includes(pool)) continue;
+          ingestPoolTransaction(chain, tx, { mint, pool, txIndex: null, source: deps.source, commitment: deps.commitment ?? 'finalized', at });
+        }
+      }
       mintHistoryComplete = r.data.complete ? 'COMPLETE' : 'PARTIAL';
       if (!r.data.complete) truncation.push('MINT_HISTORY: only the newest 100 transactions of the mint were scanned for security facts');
     } else transactionsStage = 'PARTIAL';
@@ -356,10 +376,12 @@ export async function analyzeToken(
   if (creation) mintTxs.push(creation);
   mintTxs = [...new Map(mintTxs.map((t) => [t.signature, t])).values()];
   report.stages.transactions = transactionsStage;
+  const activity: ActivityRow[] = chain.activityOf(mint, 1000);
+  if (activity.length === 1000) truncation.push('POOL_ACTIVITY: newest 1000 pool readings used');
+  if (pool === null) truncation.push('POOL_UNKNOWN: no pool is known for this token, so its trades could not be read from the mint history');
 
-  const pool = launchRow?.pool ?? null;
   let attribution: Attribution = creation
-    ? attributeCreation(creation, mint, pool)
+    ? attributeCreation(creation, mint, launchRow?.pool ?? null)
     : unknownAttribution(mint, launchRow ? 'the creation transaction could not be read' : 'the creation transaction was not located');
   const launchTime: LaunchTime | null = creation
     ? { slot: creation.slot, timeMs: creation.blockTimeMs, source: 'chain' }
@@ -624,7 +646,15 @@ export async function analyzeToken(
   report.stages.graph = runs.size === 0 ? 'SKIPPED' : graphStage;
 
   // === activity quality and wash ====================================================================
-  const clustered = new Set<string>(clusters.flatMap((c) => c.members));
+  // Coordinated means sharing a cluster with another trader of this token.
+  // A buyer clustered only with its own funding wallet is one actor with two
+  // addresses, not coordinated trading.
+  const tokenTraders = new Set(swaps.map((a) => a.trader as string));
+  const clustered = new Set<string>();
+  for (const c of clusters) {
+    const inToken = c.members.filter((m) => tokenTraders.has(m));
+    if (inToken.length >= 2) for (const m of inToken) clustered.add(m);
+  }
   const relatedPairs = new Set(pairs.filter((p) => p.level === 'STRONG_CANDIDATE' || p.level === 'CONFIRMED_RELATIONSHIP').map((p) => pairId(p.a, p.b)));
   const washTrades: WashTrade[] = swaps.map((a) => ({
     signature: a.signature,
@@ -638,7 +668,7 @@ export async function analyzeToken(
   const unresolved = activity.filter((a) => a.kind === 'UNRESOLVED').length;
   const wash = analyzeWash({ trades: washTrades, unresolved, relatedPairs, clusteredWallets: clustered });
   report.wash = wash.risk;
-  const traders = [...new Set(swaps.map((a) => a.trader as string))];
+  const traders = [...tokenTraders];
   const classes = new Map<string, BuyerClass>();
   for (const [w, p] of intel.profiles(traders)) classes.set(w, p.classification);
   const quality = activityQuality({ trades: swaps.map((a) => ({ trader: a.trader, quoteAmount: toBig(a.quoteAmount) })), classes, clustered });
@@ -693,11 +723,15 @@ export async function analyzeToken(
         ? []
         : tx.freezes.filter((f) => f.mint === mint).map((f) => ({ signature: tx.signature, slot: tx.slot, blockTimeMs: tx.blockTimeMs, kind: f.kind, owner: f.owner, authority: f.authority })),
     ),
+    // Only removals read from the pool's own balances: an inferred pool side
+    // is good enough to count a trade, not to accuse anyone.
     liquidityRemovals: activity
-      .filter((a) => a.kind === 'LIQUIDITY_REMOVED')
+      .filter((a) => a.kind === 'LIQUIDITY_REMOVED' && a.confidence >= DIRECT_READING)
       .map((a) => ({ signature: a.signature, slot: a.slot, blockTimeMs: a.blockTime, actor: a.liquidityActor, reserveFraction: a.reserveFraction, tokenAmount: toBig(a.tokenAmount) })),
     sells: [...sells.values()],
   };
+  const inferred = activity.filter((a) => a.kind === 'LIQUIDITY_REMOVED' && a.confidence < DIRECT_READING).length;
+  if (inferred > 0) truncation.push(`LIQUIDITY_INFERRED: ${inferred} liquidity removal(s) rest on an inferred pool side and were not used as security evidence`);
   const events: SecurityEvent[] = detectSecurityEvents(security);
   intel.saveSecurityEvents(events, at);
   report.securityEvents = events.length;

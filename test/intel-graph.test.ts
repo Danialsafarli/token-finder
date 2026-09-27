@@ -226,14 +226,15 @@ describe('activity quality', () => {
     { trader: wallet('aq-human'), quoteAmount: 5n * 10n ** 9n },
     { trader: wallet('aq-sniper'), quoteAmount: 10n ** 8n },
     { trader: wallet('aq-unknown'), quoteAmount: 10n ** 8n },
+    { trader: wallet('aq-human-2'), quoteAmount: 3n * 10n ** 8n },
   ];
 
   test('three views, three denominators: wallets, trades and volume', () => {
-    const classes = new Map<string, BuyerClass>([[wallet('aq-bot'), 'AUTOMATED_TRADER'], [wallet('aq-human'), 'LIKELY_ORGANIC'], [wallet('aq-sniper'), 'SNIPER']]);
+    const classes = new Map<string, BuyerClass>([[wallet('aq-bot'), 'AUTOMATED_TRADER'], [wallet('aq-human'), 'LIKELY_ORGANIC'], [wallet('aq-human-2'), 'LIKELY_ORGANIC'], [wallet('aq-sniper'), 'SNIPER']]);
     const q = activityQuality({ trades, classes, clustered: new Set() });
-    assert.equal(q.byWallets.total, 4);
-    assert.equal(q.byTrades.total, 9);
-    assert.equal(q.byVolume.total, 6 * 1e9 + 5e9 + 2e8);
+    assert.equal(q.byWallets.total, 5);
+    assert.equal(q.byTrades.total, 10);
+    assert.equal(q.byVolume.total, 6 * 1e9 + 5e9 + 2e8 + 3e8);
     assert.equal(q.byWallets.counts.unknown, 1, 'unknown stays visible');
     assert.equal(q.byTrades.counts.automated, 6);
     assert.ok(q.byWallets.shares !== null);
@@ -244,6 +245,15 @@ describe('activity quality', () => {
     assert.equal(q.byWallets.shares, null);
     assert.equal(q.byTrades.shares, null);
     assert.equal(q.status, 'INSUFFICIENT_DATA');
+  });
+
+  test('four wallets are anecdotes: no shares, however well classified', () => {
+    const few = trades.filter((t) => t.trader !== wallet('aq-human-2'));
+    const all = new Map<string, BuyerClass>([[wallet('aq-bot'), 'AUTOMATED_TRADER'], [wallet('aq-human'), 'LIKELY_ORGANIC'], [wallet('aq-sniper'), 'SNIPER'], [wallet('aq-unknown'), 'LIKELY_ORGANIC']]);
+    const q = activityQuality({ trades: few, classes: all, clustered: new Set() });
+    assert.equal(q.byWallets.shares, null);
+    assert.equal(q.status, 'INSUFFICIENT_DATA');
+    assert.equal(q.byWallets.counts.likely_organic, 2, 'counts are still shown');
   });
 
   test('clustered wallets are counted as coordinated, whatever their class', () => {

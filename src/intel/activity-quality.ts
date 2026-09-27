@@ -9,7 +9,7 @@
  * 20% by volume, and both facts matter. Categories, in precedence order for a
  * wallet that fits several:
  *
- *   coordinated (in a strong or confirmed cluster)
+ *   coordinated (in a strong or confirmed cluster with another of its traders)
  *   sniper
  *   automated (automated trader or high-frequency trader)
  *   likely organic
@@ -17,12 +17,15 @@
  *
  * Unknown is always reported. When less than {@link MIN_COVERAGE} of a view is
  * classified, that view gives counts only and no shares: a percentage of a
- * fifth of the evidence is not a percentage of the token.
+ * fifth of the evidence is not a percentage of the token. Nor are shares given
+ * for fewer than {@link MIN_WALLETS} trading wallets: four wallets are
+ * anecdotes, not a composition.
  */
 
 import type { BuyerClass } from './classify.ts';
 
 export const MIN_COVERAGE = 0.3;
+export const MIN_WALLETS = 5;
 
 export type ActivityCategory = 'coordinated' | 'sniper' | 'automated' | 'likely_organic' | 'unknown';
 
@@ -63,7 +66,7 @@ function categoryOf(wallet: string, input: ActivityInput): ActivityCategory {
   }
 }
 
-function view(weights: Map<string, number>, input: ActivityInput): ActivityView {
+function view(weights: Map<string, number>, input: ActivityInput, enough: boolean): ActivityView {
   const counts: Record<ActivityCategory, number> = { coordinated: 0, sniper: 0, automated: 0, likely_organic: 0, unknown: 0 };
   let total = 0;
   for (const [wallet, weight] of weights) {
@@ -72,7 +75,7 @@ function view(weights: Map<string, number>, input: ActivityInput): ActivityView 
   }
   const coverage = total === 0 ? 0 : (total - counts.unknown) / total;
   const shares =
-    coverage >= MIN_COVERAGE && total > 0
+    enough && coverage >= MIN_COVERAGE && total > 0
       ? (Object.fromEntries(Object.entries(counts).map(([k, n]) => [k, Math.round((n / total) * 1000) / 1000])) as Record<ActivityCategory, number>)
       : null;
   return { counts, shares, total, coverage: Math.round(coverage * 1000) / 1000 };
@@ -88,11 +91,12 @@ export function activityQuality(input: ActivityInput): ActivityQuality {
     tradeWeights.set(t.trader, (tradeWeights.get(t.trader) ?? 0) + 1);
     if (t.quoteAmount !== null) volumeWeights.set(t.trader, (volumeWeights.get(t.trader) ?? 0) + Number(t.quoteAmount));
   }
-  const byWallets = view(walletWeights, input);
-  const byTrades = view(tradeWeights, input);
-  const byVolume = view(volumeWeights, input);
+  const enough = walletWeights.size >= MIN_WALLETS;
+  const byWallets = view(walletWeights, input, enough);
+  const byTrades = view(tradeWeights, input, enough);
+  const byVolume = view(volumeWeights, input, enough);
   const worst = Math.min(byWallets.coverage, byTrades.coverage, byVolume.coverage);
-  const status = byWallets.total === 0 ? 'INSUFFICIENT_DATA' : worst >= 0.7 ? 'MEASURED' : byWallets.shares || byTrades.shares || byVolume.shares ? 'PARTIAL' : 'INSUFFICIENT_DATA';
+  const status = !enough ? 'INSUFFICIENT_DATA' : worst >= 0.7 ? 'MEASURED' : byWallets.shares || byTrades.shares || byVolume.shares ? 'PARTIAL' : 'INSUFFICIENT_DATA';
   return {
     status,
     byWallets,
@@ -100,7 +104,9 @@ export function activityQuality(input: ActivityInput): ActivityQuality {
     byVolume,
     note:
       status === 'INSUFFICIENT_DATA'
-        ? 'too few of the trading wallets were classified to state shares'
+        ? enough
+          ? 'too few of the trading wallets were classified to state shares'
+          : `${walletWeights.size} trading wallet(s) seen; ${MIN_WALLETS} are needed to state shares`
         : 'shares are of the trades collected, not of all trading; unknown is shown, not redistributed',
   };
 }

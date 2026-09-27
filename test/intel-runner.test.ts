@@ -33,7 +33,7 @@ import type { SignatureInfo } from '../src/sources/solana-rpc.ts';
 import type { ProviderFailure } from '../src/util/failure.ts';
 import type { TokenSnapshot } from '../src/types.ts';
 import { cleanupTempDirs, harness, snapshot, tempDir } from './persist-helpers.ts';
-import { fund, idle, mintOf, ntx, pda, swap, toRaw, wallet } from './intel-helpers.ts';
+import { fund, idle, mintOf, ntx, pda, swap, T0, toRaw, wallet } from './intel-helpers.ts';
 
 after(cleanupTempDirs);
 
@@ -60,7 +60,7 @@ function buildWorld(now: number): World {
   const t = (min: number): number => launchAt + min * 60_000;
   const creation = ntx({
     signature: 'creation',
-    slot: Math.floor(launchAt / 400),
+    slot: Math.floor((launchAt - T0) / 400),
     blockTimeMs: launchAt,
     feePayer: DEV,
     signers: [DEV, MINT],
@@ -69,7 +69,7 @@ function buildWorld(now: number): World {
   });
   const buyOf = (w: string, min: number, sol: number): NormalizedTransaction => swap({ wallet: w, mint: MINT, direction: 'BUY', tokens: BigInt(Math.round(sol * 1e12)), sol, timeMs: t(min), signature: `buy-${w.slice(0, 6)}` });
   const buys = [buyOf(A, 1, 1.5), buyOf(B, 2, 0.8), buyOf(C, 3, 2.2), buyOf(E, 5, 0.4)];
-  const drain = ntx({ signature: 'drain', slot: Math.floor(t(20) / 400), blockTimeMs: t(20), feePayer: DEV, signers: [DEV] });
+  const drain = ntx({ signature: 'drain', slot: Math.floor((t(20) - T0) / 400), blockTimeMs: t(20), feePayer: DEV, signers: [DEV] });
 
   const desc = new Map<string, NormalizedTransaction[]>();
   const asc = new Map<string, NormalizedTransaction[]>();
@@ -78,7 +78,11 @@ function buildWorld(now: number): World {
     asc.set(w, sorted);
     desc.set(w, [...sorted].reverse());
   };
-  history(MINT, [creation, ...buys]);
+  const unseen = { ...swap({ wallet: wallet('runner-unseen'), mint: MINT, direction: 'BUY', tokens: 77_000n, sol: 0.05, timeMs: t(25), signature: 'mint-only-buy' }) };
+  unseen.accountKeys = [POOL];
+  // An escrow fill: it moves the token but never loads the pool.
+  const escrow = swap({ wallet: wallet('runner-escrow-user'), mint: MINT, direction: 'SELL', tokens: 10_100n, sol: 0.01, timeMs: t(26), signature: 'escrow-fill' });
+  history(MINT, [creation, ...buys, unseen, escrow]);
   history(DEV, [fund(F, DEV, 3, t(-120), 'fund-dev'), creation, drain]);
   history(A, [fund(F, A, 2, t(-60), 'fund-a'), buys[0] as NormalizedTransaction, fund(A, B, 0.3, t(4), 'a-pays-b'), idle(A, t(6))]);
   history(B, [fund(F, B, 1, t(-50), 'fund-b'), fund(A, B, 0.3, t(4), 'a-pays-b'), buys[1] as NormalizedTransaction]);
@@ -147,7 +151,8 @@ function activity(tx: NormalizedTransaction, a: Partial<PoolActivity>): PoolActi
 function setup(now = Date.now()) {
   const h = harness();
   const world = buildWorld(now);
-  const token: TokenSnapshot = { ...snapshot({ mint: MINT, at: now, eligibility: 'QUALIFIED', state: 'QUALIFIED' }) };
+  const base = snapshot({ mint: MINT, at: now, eligibility: 'QUALIFIED', state: 'QUALIFIED' });
+  const token: TokenSnapshot = { ...base, pair: base.pair ? { ...base.pair, pairAddress: POOL } : null };
   h.repo.saveTokenSnapshot(token, { scanId: null });
   const chain = new ChainRepository(h.db);
   for (const tx of world.buys) {
@@ -184,6 +189,7 @@ describe('the intelligence cycle', () => {
     assert.equal(r.health.state, 'AVAILABLE', r.health.reason);
     const t = r.tokens[0];
     assert.ok(t);
+    assert.equal(t.error, null);
     assert.equal(t.attribution, 'ATTRIBUTED');
     assert.equal(t.wallets.selected, 5, 'four buyers and the creator');
     assert.equal(t.wallets.analyzed, 5);
@@ -217,6 +223,15 @@ describe('the intelligence cycle', () => {
     assert.equal(wallets.length, 5);
     assert.ok(wallets.every((w) => typeof w.classification === 'string'));
     assert.ok(count(h.db, 'SELECT COUNT(*) AS c FROM wallet_trades') >= 4);
+
+    // Coordination is among this token's traders: A and B, not a buyer and
+    // its own funding wallet, and not the exchange's customers.
+    const quality = snap.activity as { byWallets: { counts: Record<string, number>; shares: unknown } };
+    assert.equal(quality.byWallets.counts.coordinated, 2);
+    // A trade seen only in the mint's history is recorded like collection would.
+    assert.equal(count(h.db, "SELECT COUNT(*) AS c FROM pool_activity WHERE signature = 'mint-only-buy'"), 1);
+    // One that never loaded the pool is not pool activity at all.
+    assert.equal(count(h.db, "SELECT COUNT(*) AS c FROM pool_activity WHERE signature = 'escrow-fill'"), 0);
     h.close();
   });
 
@@ -292,6 +307,20 @@ describe('the intelligence cycle', () => {
     assert.ok(t.coverage < 0.5);
     assert.equal(count(h.db, 'SELECT COUNT(*) AS c FROM wallet_profiles'), 0, 'no profile invented');
     assert.ok(intel.latestTokenIntelligence(MINT), 'the thin reading is still recorded, with its coverage');
+    h.close();
+  });
+
+  test('a liquidity removal read from an inferred pool side is never security evidence', async () => {
+    const { h, world, chain, intel, deps } = setup();
+    const tx = ntx({ signature: 'inferred-removal', slot: 999_999, feePayer: wallet('runner-escrow'), signers: [wallet('runner-escrow')] });
+    chain.saveIngested({
+      tx, txIndex: null,
+      activity: [activity(tx, { kind: 'LIQUIDITY_REMOVED', poolSideInferred: true, liquidityActor: wallet('runner-escrow'), reserveFraction: 1, tokenAmount: 10_100n, confidence: 0.6 })],
+      edges: [], events: [], wallets: [], source: 'test', commitment: 'finalized',
+    });
+    const r = await runIntelCycle(deps(fakePort(world)));
+    assert.ok(!intel.eventsOf([MINT]).some((e) => e.signature === 'inferred-removal'));
+    assert.ok(r.tokens[0]?.truncation.some((x) => x.startsWith('LIQUIDITY_INFERRED')));
     h.close();
   });
 
