@@ -537,8 +537,9 @@ export class Repository {
         .prepare(
           `INSERT INTO holder_snapshots (
              mint, scan_id, observed_at, recorded_at, holder_count,
-             top_holders_pct, largest_holder_pct, raw_top10, raw_supply, source
-           ) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+             top_holders_pct, largest_holder_pct, raw_top10, raw_supply, source,
+             wallet_top10_pct, role_breakdown
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           snapshot.mint,
@@ -551,6 +552,9 @@ export class Repository {
           onchain?.rawTop10 ?? null,
           onchain?.rawSupply ?? null,
           snapshot.jupiter?.audit.topHoldersPercentage != null ? 'jupiter' : onchain ? 'helius' : null,
+          // Role-adjusted share is kept beside the raw one, never in its place.
+          onchain?.holderRoles?.walletTop10Share == null ? null : onchain.holderRoles.walletTop10Share * 100,
+          onchain?.holderRoles ? JSON.stringify({ byRole: onchain.holderRoles.byRole, resolved: onchain.holderRoles.resolved, total: onchain.holderRoles.total }) : null,
         );
     }
 
@@ -1026,6 +1030,17 @@ export class Repository {
           'token_discoveries',
           'ingest_cursors',
           'ingest_gaps',
+          'cluster_members',
+          'wallet_clusters',
+          'wallet_edges',
+          'wallet_trades',
+          'wallet_profiles',
+          'funding_edges',
+          'address_stats',
+          'launch_attributions',
+          'security_events',
+          'creator_profiles',
+          'token_intelligence',
           'tokens',
         ]) {
           this.#db.exec(`DELETE FROM ${table}`);

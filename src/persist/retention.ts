@@ -185,6 +185,27 @@ export function applyRetention(
         .prepare('DELETE FROM ingest_cursors WHERE updated_at < ?')
         .run(tokenCutoff).changes as number;
 
+      // --- deep intelligence ---------------------------------------------------
+      // Behavioural readings are as perishable as the chain history they were
+      // read from, so they share its window. Attribution, funding and creator
+      // history are what make a later launch recognisable, so they are kept
+      // as long as tokens are. A CONFIRMED security event is never pruned: it
+      // is the proof behind a creator's history, and without it that history
+      // could not be re-derived.
+      const intel = (key: string, sql: string, cutoff: number): void => {
+        result.chain[key] = db.prepare(sql).run(cutoff).changes as number;
+      };
+      intel('wallet_trades', 'DELETE FROM wallet_trades WHERE COALESCE(block_time, recorded_at) < ?', chainCutoff);
+      intel('wallet_profiles', 'DELETE FROM wallet_profiles WHERE analyzed_at < ?', chainCutoff);
+      intel('wallet_edges', 'DELETE FROM wallet_edges WHERE updated_at < ?', chainCutoff);
+      intel('wallet_clusters', 'DELETE FROM wallet_clusters WHERE updated_at < ?', chainCutoff);
+      intel('address_stats', 'DELETE FROM address_stats WHERE checked_at < ?', chainCutoff);
+      intel('token_intelligence', 'DELETE FROM token_intelligence WHERE analyzed_at < ?', chainCutoff);
+      intel('funding_edges', 'DELETE FROM funding_edges WHERE recorded_at < ?', tokenCutoff);
+      intel('launch_attributions', 'DELETE FROM launch_attributions WHERE attributed_at < ?', tokenCutoff);
+      intel('creator_profiles', 'DELETE FROM creator_profiles WHERE updated_at < ?', tokenCutoff);
+      intel('security_events', "DELETE FROM security_events WHERE detected_at < ? AND status <> 'CONFIRMED'", tokenCutoff);
+
       // Tokens last. ON DELETE CASCADE removes whatever history remains, so a
       // token is only dropped after being cold for `tokenDays` - twice the
       // history window by default.

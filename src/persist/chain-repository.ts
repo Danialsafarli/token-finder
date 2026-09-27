@@ -91,6 +91,10 @@ export interface ActivityRow {
   quoteAmount: string | null;
   priceInQuote: number | null;
   confidence: number;
+  /** For a liquidity event, the single owner who moved it; null otherwise or when not one owner. */
+  liquidityActor: string | null;
+  /** The pool's change in the token as a share of its prior holding, 0-1. */
+  reserveFraction: number | null;
 }
 
 export interface BackboneStats {
@@ -319,8 +323,8 @@ export class ChainRepository {
                    signature, pool, mint, slot, tx_index, block_time, kind, reason, direction,
                    trader, trader_resolution, fee_payer, token_amount, token_decimals,
                    quote_mint, quote_amount, quote_decimals, price_in_quote,
-                   pool_side_inferred, confidence, source, recorded_at
-                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                   pool_side_inferred, confidence, source, recorded_at, liquidity_actor, reserve_fraction
+                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
               )
               .run(
                 tx.signature,
@@ -345,6 +349,8 @@ export class ChainRepository {
                 a.confidence,
                 input.source,
                 recordedAt,
+                a.liquidityActor,
+                a.reserveFraction,
               ).changes,
           ) > 0;
         if (!inserted) continue;
@@ -496,7 +502,8 @@ export class ChainRepository {
     const rows = this.#db
       .prepare(
         `SELECT signature, pool, slot, block_time, kind, reason, direction, trader, trader_resolution,
-                token_amount, quote_mint, quote_amount, price_in_quote, confidence
+                token_amount, quote_mint, quote_amount, price_in_quote, confidence,
+                liquidity_actor, reserve_fraction
            FROM pool_activity WHERE mint = ?
           ORDER BY slot DESC, tx_index DESC LIMIT ?`,
       )
@@ -516,6 +523,8 @@ export class ChainRepository {
       quoteAmount: (r.quote_amount as string | null) ?? null,
       priceInQuote: r.price_in_quote === null ? null : Number(r.price_in_quote),
       confidence: Number(r.confidence),
+      liquidityActor: (r.liquidity_actor as string | null) ?? null,
+      reserveFraction: r.reserve_fraction == null ? null : Number(r.reserve_fraction),
     }));
   }
 

@@ -62,6 +62,7 @@ import {
   type VerdictPoint,
 } from '../persist/repository.ts';
 import { ChainRepository } from '../persist/chain-repository.ts';
+import { IntelRepository } from '../persist/intel-repository.ts';
 import { importLegacyState } from '../persist/legacy-import.ts';
 import { applyRetention, type RetentionPolicy } from '../persist/retention.ts';
 import { diagnose, formatBytes, type DatabaseDiagnostics } from '../persist/diagnostics.ts';
@@ -94,6 +95,7 @@ interface Runtime {
   repo: Repository | null;
   /** The data backbone's tables. Null exactly when `repo` is. */
   chain: ChainRepository | null;
+  intel: IntelRepository | null;
   failure: PersistenceFailure | null;
   /** Current snapshots, write-through cache over the `tokens` table. */
   tokens: Map<string, TokenSnapshot>;
@@ -109,6 +111,7 @@ function boot(dbPath: string = DB_PATH): Runtime {
     db: null,
     repo: null,
     chain: null,
+    intel: null,
     failure: null,
     tokens: new Map(),
     events: [],
@@ -129,6 +132,7 @@ function boot(dbPath: string = DB_PATH): Runtime {
   runtime.db = opened.db;
   runtime.repo = new Repository(opened.db, SNAPSHOT_POLICY);
   runtime.chain = new ChainRepository(opened.db);
+  runtime.intel = new IntelRepository(opened.db);
   if (opened.applied.length > 0) {
     log.ok(`database schema migrated to v${opened.schemaVersion} (applied: ${opened.applied.join(', ')})`);
   }
@@ -311,6 +315,11 @@ export const store = {
     return runtime.chain;
   },
 
+  /** Deep-intelligence storage, or null when persistence is unavailable. */
+  intel(): IntelRepository | null {
+    return runtime.intel;
+  },
+
   /** True when history reads and writes are working. */
   persistenceHealthy(): boolean {
     return runtime.repo !== null && runtime.failure === null;
@@ -361,6 +370,7 @@ export const store = {
     runtime.db = null;
     runtime.repo = null;
     runtime.chain = null;
+    runtime.intel = null;
   },
 };
 

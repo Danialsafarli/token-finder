@@ -51,6 +51,15 @@ const COUNTED_TABLES = [
   'wallet_token_activity',
   'chain_events',
   'ingest_gaps',
+  'wallet_profiles',
+  'wallet_trades',
+  'funding_edges',
+  'wallet_edges',
+  'wallet_clusters',
+  'launch_attributions',
+  'security_events',
+  'creator_profiles',
+  'token_intelligence',
 ] as const;
 
 function sizeOf(path: string): number | null {

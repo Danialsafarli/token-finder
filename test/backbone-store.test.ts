@@ -50,14 +50,14 @@ describe('migration 2', () => {
   test('a fresh database reaches the target version with every backbone table', () => {
     const h = harness();
     assert.equal(currentSchemaVersion(h.db), TARGET_SCHEMA_VERSION);
-    assert.equal(TARGET_SCHEMA_VERSION, 2);
+    assert.equal(TARGET_SCHEMA_VERSION, 3);
     for (const table of ['token_discoveries', 'token_launches', 'chain_transactions', 'pool_activity', 'transfer_edges', 'wallets', 'wallet_token_activity', 'chain_events', 'ingest_cursors', 'ingest_gaps']) {
       assert.equal(count(h, table), 0, table);
     }
     h.close();
   });
 
-  test('a v1 database with history migrates to v2 without touching that history', () => {
+  test('a v1 database with history migrates forward without touching that history', () => {
     const dir = tempDir();
     const path = join(dir, 'v1.sqlite');
     const opened = openDatabase({ path, migrateSchema: false });
@@ -70,10 +70,10 @@ describe('migration 2', () => {
     opened.db.exec('COMMIT');
     new Repository(opened.db).saveTokenSnapshot(snapshot({ mint: META.mint }), { scanId: null });
     const before = (opened.db.prepare('SELECT COUNT(*) AS c FROM token_snapshots').get() as { c: number }).c;
-    assert.deepEqual(migrate(opened.db), [2]);
+    assert.deepEqual(migrate(opened.db), [2, 3]);
     assert.deepEqual(migrate(opened.db), [], 'idempotent');
     assert.equal((opened.db.prepare('SELECT COUNT(*) AS c FROM token_snapshots').get() as { c: number }).c, before);
-    assert.equal(currentSchemaVersion(opened.db), 2);
+    assert.equal(currentSchemaVersion(opened.db), TARGET_SCHEMA_VERSION);
     opened.db.close();
   });
 

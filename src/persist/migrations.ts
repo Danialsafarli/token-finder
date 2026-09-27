@@ -462,9 +462,206 @@ const DATA_BACKBONE: Migration = {
 };
 
 /**
+ * Migration 3 - deep intelligence.
+ *
+ * What the actor analysis produces, and nothing it does not: wallet profiles
+ * and the trades they rest on, funding observations with their
+ * classification, relationship edges, clusters, launch attribution, security
+ * events, creator profiles and per-token intelligence snapshots. Readers are
+ * in `intel-repository.ts`; retention in `retention.ts` - confirmed security
+ * events are never pruned. See DEEP_INTELLIGENCE.md.
+ */
+const DEEP_INTELLIGENCE: Migration = {
+  to: 3,
+  name: 'deep-intelligence',
+  purpose: 'wallet profiles, funding, relationships, clusters, attribution, security events, creator profiles, token intelligence',
+  statements: [
+    // Liquidity attribution and reserve share, read by security detection.
+    `ALTER TABLE pool_activity ADD COLUMN liquidity_actor TEXT`,
+    `ALTER TABLE pool_activity ADD COLUMN reserve_fraction REAL`,
+    // Role-aware concentration, beside the raw figure it never replaces.
+    `ALTER TABLE holder_snapshots ADD COLUMN wallet_top10_pct REAL`,
+    `ALTER TABLE holder_snapshots ADD COLUMN role_breakdown TEXT`,
+
+    `CREATE TABLE wallet_profiles (
+       wallet            TEXT PRIMARY KEY,
+       analyzed_at       INTEGER NOT NULL,
+       window_from       INTEGER,
+       window_to         INTEGER,
+       transactions      INTEGER NOT NULL,
+       history_complete  INTEGER NOT NULL,
+       first_seen_at     INTEGER,
+       on_curve          INTEGER,
+       features          TEXT NOT NULL,
+       classification    TEXT NOT NULL,
+       confidence        REAL NOT NULL,
+       signals           TEXT NOT NULL,
+       counter_signals   TEXT NOT NULL,
+       coverage          REAL NOT NULL,
+       truncation        TEXT,
+       source            TEXT NOT NULL,
+       CHECK (classification IN ('LIKELY_ORGANIC','AUTOMATED_TRADER','SNIPER','HIGH_FREQUENCY_TRADER','UNKNOWN','INSUFFICIENT_DATA')),
+       CHECK (confidence >= 0 AND confidence <= 1 AND coverage >= 0 AND coverage <= 1)
+     )`,
+    `CREATE INDEX idx_wallet_profiles_analyzed ON wallet_profiles(analyzed_at)`,
+
+    `CREATE TABLE wallet_trades (
+       wallet          TEXT NOT NULL,
+       signature       TEXT NOT NULL,
+       mint            TEXT NOT NULL,
+       direction       TEXT NOT NULL,
+       token_amount    TEXT NOT NULL,
+       token_decimals  INTEGER,
+       quote_mint      TEXT,
+       quote_amount    TEXT,
+       quote_decimals  INTEGER,
+       slot            INTEGER NOT NULL,
+       tx_index        INTEGER,
+       block_time      INTEGER,
+       wallet_paid_fee INTEGER NOT NULL,
+       source          TEXT NOT NULL,
+       recorded_at     INTEGER NOT NULL,
+       PRIMARY KEY (wallet, signature, mint),
+       CHECK (direction IN ('BUY','SELL'))
+     )`,
+    `CREATE INDEX idx_wallet_trades_mint ON wallet_trades(mint, slot)`,
+
+    `CREATE TABLE funding_edges (
+       wallet            TEXT NOT NULL,
+       funder            TEXT NOT NULL,
+       signature         TEXT NOT NULL,
+       lamports          TEXT NOT NULL,
+       slot              INTEGER NOT NULL,
+       block_time        INTEGER,
+       first_inbound     INTEGER NOT NULL,
+       history_from_start INTEGER NOT NULL,
+       classification    TEXT NOT NULL,
+       confidence        REAL NOT NULL,
+       reasons           TEXT NOT NULL,
+       source            TEXT NOT NULL,
+       recorded_at       INTEGER NOT NULL,
+       PRIMARY KEY (wallet, funder, signature),
+       CHECK (classification IN ('DIRECT','LIKELY','INFRASTRUCTURE','UNKNOWN'))
+     )`,
+    `CREATE INDEX idx_funding_edges_funder ON funding_edges(funder)`,
+
+    `CREATE TABLE address_stats (
+       address         TEXT PRIMARY KEY,
+       on_curve        INTEGER,
+       recent_tx_count INTEGER,
+       window_ms       INTEGER,
+       checked_at      INTEGER NOT NULL
+     )`,
+
+    `CREATE TABLE wallet_edges (
+       id          TEXT PRIMARY KEY,
+       type        TEXT NOT NULL,
+       a           TEXT NOT NULL,
+       b           TEXT NOT NULL,
+       directed    INTEGER NOT NULL,
+       confidence  REAL NOT NULL,
+       count       INTEGER NOT NULL,
+       first_at    INTEGER,
+       last_at     INTEGER,
+       evidence    TEXT NOT NULL,
+       detail      TEXT NOT NULL,
+       updated_at  INTEGER NOT NULL,
+       CHECK (type IN ('FUNDED','SHARED_FUNDER','TOKEN_TRANSFER','COORDINATED_ENTRY','REPEATED_ORDER_SIZE','SAME_LAUNCH_PARTICIPATION','CREATOR_ASSOCIATION'))
+     )`,
+    `CREATE INDEX idx_wallet_edges_a ON wallet_edges(a)`,
+    `CREATE INDEX idx_wallet_edges_b ON wallet_edges(b)`,
+
+    `CREATE TABLE wallet_clusters (
+       id          TEXT PRIMARY KEY,
+       level       TEXT NOT NULL,
+       size        INTEGER NOT NULL,
+       confidence  REAL NOT NULL,
+       signals     TEXT NOT NULL,
+       reasons     TEXT NOT NULL,
+       updated_at  INTEGER NOT NULL,
+       CHECK (level IN ('CONFIRMED_RELATIONSHIP','STRONG_CANDIDATE'))
+     )`,
+    `CREATE TABLE cluster_members (
+       cluster_id  TEXT NOT NULL REFERENCES wallet_clusters(id) ON DELETE CASCADE,
+       wallet      TEXT NOT NULL,
+       PRIMARY KEY (cluster_id, wallet)
+     )`,
+    `CREATE INDEX idx_cluster_members_wallet ON cluster_members(wallet)`,
+
+    `CREATE TABLE launch_attributions (
+       mint                TEXT PRIMARY KEY,
+       status              TEXT NOT NULL,
+       creator             TEXT,
+       confidence          REAL NOT NULL,
+       basis               TEXT NOT NULL,
+       fee_payer           TEXT,
+       deployers           TEXT NOT NULL,
+       mint_authority      TEXT,
+       mint_authority_role TEXT,
+       freeze_authority    TEXT,
+       liquidity_creator   TEXT,
+       initial_funder      TEXT,
+       signature           TEXT,
+       attributed_at       INTEGER NOT NULL,
+       CHECK (status IN ('ATTRIBUTED','AMBIGUOUS','UNKNOWN'))
+     )`,
+    `CREATE INDEX idx_launch_attributions_creator ON launch_attributions(creator)`,
+
+    `CREATE TABLE security_events (
+       id             TEXT PRIMARY KEY,
+       mint           TEXT NOT NULL,
+       type           TEXT NOT NULL,
+       status         TEXT NOT NULL,
+       actor          TEXT,
+       creator_linked INTEGER NOT NULL,
+       signature      TEXT NOT NULL,
+       slot           INTEGER NOT NULL,
+       block_time     INTEGER,
+       amount         TEXT,
+       reasons        TEXT NOT NULL,
+       evidence       TEXT NOT NULL,
+       confidence     REAL NOT NULL,
+       detected_at    INTEGER NOT NULL,
+       CHECK (status IN ('CONFIRMED','STRONGLY_SUSPECTED','SUSPICIOUS','UNKNOWN')),
+       CHECK (type IN ('SUPPLY_EXPANSION','AUTHORITY_REASSIGNED','FREEZE_ABUSE','LIQUIDITY_DRAIN','CREATOR_DUMP'))
+     )`,
+    `CREATE INDEX idx_security_events_mint ON security_events(mint)`,
+
+    `CREATE TABLE creator_profiles (
+       address             TEXT PRIMARY KEY,
+       launches            INTEGER NOT NULL,
+       first_launch_at     INTEGER,
+       last_launch_at      INTEGER,
+       confirmed           INTEGER NOT NULL,
+       strongly_suspected  INTEGER NOT NULL,
+       suspicious          INTEGER NOT NULL,
+       status              TEXT NOT NULL,
+       events              TEXT NOT NULL,
+       reasons             TEXT NOT NULL,
+       updated_at          INTEGER NOT NULL,
+       CHECK (status IN ('MALICIOUS_HISTORY','SUSPICIOUS','CLEAN','INSUFFICIENT_HISTORY'))
+     )`,
+
+    `CREATE TABLE token_intelligence (
+       id          INTEGER PRIMARY KEY AUTOINCREMENT,
+       mint        TEXT NOT NULL,
+       analyzed_at INTEGER NOT NULL,
+       activity    TEXT NOT NULL,
+       wash        TEXT NOT NULL,
+       attribution TEXT NOT NULL,
+       network     TEXT NOT NULL,
+       wallets     TEXT NOT NULL,
+       coverage    REAL NOT NULL,
+       truncation  TEXT NOT NULL
+     )`,
+    `CREATE INDEX idx_token_intelligence_mint ON token_intelligence(mint, analyzed_at)`,
+  ],
+};
+
+/**
  * Every migration, in order. Append only.
  */
-export const MIGRATIONS: readonly Migration[] = [INITIAL, DATA_BACKBONE];
+export const MIGRATIONS: readonly Migration[] = [INITIAL, DATA_BACKBONE, DEEP_INTELLIGENCE];
 
 /** The version a fully migrated database reports. */
 export const TARGET_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.to), 0);
