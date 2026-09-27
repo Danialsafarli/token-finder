@@ -25,7 +25,7 @@ is tested against recorded payloads but has not seen a live response.
 | Price, liquidity, volume, txn counts | DexScreener pairs | primary | none | indexed | provider rolling windows | 120/min (our cap) | metric UNAVAILABLE | **live** |
 | Price, liquidity, holders, audit | Jupiter search | fallback / cross-check | none | indexed | provider | 120/min (our cap) | metric UNAVAILABLE | **live** |
 | Risk findings, authority, LP | RugCheck summary | primary report | none | indexed | 20-min cache | 30/min (our cap) | UNAVAILABLE, not cached | **live** |
-| Mint/freeze authority (chain) | Helius `getAccountInfo` | authoritative when keyed | `HELIUS_API_KEY` | raw | per scan, 10-min cache | 120/min (our cap) | UNAVAILABLE | parser **live-verified via public RPC**; keyed path not run |
+| Mint/freeze authority (chain) | Helius `getAccountInfo` | authoritative when keyed | `HELIUS_API_KEY` | raw | per scan, 10-min cache | 300/min (our cap; 120 until [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) §12) | UNAVAILABLE | parser **live-verified via public RPC**; keyed path not run |
 | Token program, Token-2022 extensions | Helius `getAccountInfo` | only source | `HELIUS_API_KEY` | raw | per scan | as above | UNAVAILABLE | parser **live-verified via public RPC** (USDC, BONK, PYUSD, a fresh launch); keyed path not run |
 | Exact holder concentration | Helius `getTokenLargestAccounts` | only source | `HELIUS_API_KEY` | raw | per scan | as above | concentration UNKNOWN (null) | public RPC returns 429 unconditionally - **verified to degrade to UNKNOWN, not 0** |
 | Transaction history | `getSignaturesForAddress` | backbone | none (public) / Helius / custom | raw | finalized | see RPC below | cycle PARTIAL, gap | **live** |

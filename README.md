@@ -29,6 +29,8 @@ The dashboard listens on loopback only unless `HOST` says otherwise.
 | `node src/cli.ts ingest` | One on-chain collection cycle (launches and survivors' trades), with its report. |
 | `node src/cli.ts chain` | What the data backbone has collected, its gaps, and chain-vs-feed timing. |
 | `node src/cli.ts activity <mint>` | A tracked token's collected trades, first buyers and discovery sightings. |
+| `node src/cli.ts intel-run` | One deep-intelligence cycle over the surviving tokens, with its budget and truncation report. |
+| `node src/cli.ts intel <mint> [--run]` | A token's stored deep intelligence as JSON; `--run` analyses it now, within the budgets. |
 
 `npm run serve`, `npm run scan` and friends are the same thing.
 
@@ -72,6 +74,9 @@ without any API key.**
 | `INGEST_TOKENS_PER_CYCLE` / `INGEST_TX_PER_TOKEN` | `6` / `10` | The deep-collection budget per cycle. |
 | `LAUNCH_TX_PER_CYCLE` | `60` | pump.fun launches read from the chain per cycle. |
 | `RETENTION_CHAIN_DAYS` | `30` | Days of chain history kept. See [DATA_BACKBONE.md](DATA_BACKBONE.md) for the rest. |
+| `INTEL_ENABLED` | `true` | Deep intelligence beside the monitor (`serve` only). Diagnostics; feeds no score. |
+| `INTEL_TOKENS_PER_CYCLE` / `INTEL_WALLETS_PER_TOKEN` | `2` / `12` | Tokens per cycle; wallets analysed per token. |
+| `INTEL_REQUESTS_PER_CYCLE` / `INTEL_CYCLE_MAX_MS` | `150` / `90000` | The hard budget every stage draws on. See [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) for the rest. |
 
 API keys are read only by `src/config.ts`, which runs server-side. No key is ever
 serialised into an API response or reaches the browser — `/api/status` reports
@@ -257,12 +262,19 @@ Chain collection through the public Solana endpoint is paced at one request a
 second - what the endpoint was measured to allow for `getTransaction`, below
 its documented limit. See [DATA_BACKBONE.md](DATA_BACKBONE.md) §1.
 
+Through Helius, chain reads are paced at 300 a minute, measured clean at 15 a
+second. `getTokenLargestAccounts` has its own lane: two in flight, an 8-second
+timeout, and a five-minute pause after Helius reports its index overloaded.
+Deep intelligence spends at most `INTEL_REQUESTS_PER_CYCLE` per cycle. See
+[DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) §12.
+
 ## Documentation
 
 | File | Contents |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | What exists today, stage by stage, plus the proposed target architecture, trading modes, decision engine, persistence and performance model. |
 | [DATA_BACKBONE.md](DATA_BACKBONE.md) | **The data backbone as implemented**: provider capability matrix, on-chain launch discovery, transaction reading, the canonical event model, the processing budget, gaps, measurements and limits. |
+| [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) | **Actor analysis as implemented, diagnostics only**: buyer classes, funding, the wallet graph, clusters, wash, activity quality, attribution, security events, creator history, serial networks, budgets, Helius strategy, live measurements and limits. |
 | [PERSISTENCE.md](PERSISTENCE.md) | **The storage layer as implemented**: SQLite schema, migrations, legacy JSON import, snapshot deduplication, retention, failure behaviour and how to extend it for transaction ingestion. |
 | [DATA_SOURCES.md](DATA_SOURCES.md) | Measured live validation of all five providers, the fields we actually receive, and the proposed provider strategy. |
 | [SCORING.md](SCORING.md) | Full scoring audit: every component, weight and penalty, with measured weaknesses. |

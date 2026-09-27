@@ -67,8 +67,9 @@ src/cli.ts ── serve ──> src/server/index.ts ──> node:http ──> sr
 | Market enrichment | **IMPLEMENTED** | Batched DexScreener pairs (30/call) + Jupiter search (100/call), run concurrently |
 | On-chain safety | **NOT IMPLEMENTED in practice** | `helius.ts` returns `null` without a key, so the evidence is UNAVAILABLE. Its parser (`parseMint`) is now verified on live mainnet accounts through the public RPC (`scripts/verify-live.ts`); the Helius request itself has not run (no key) |
 | On-chain discovery | **IMPLEMENTED** | pump.fun launches read from the chain and merged into discovery as `chain:pumpfun`, with first-sighting provenance per source. See [DATA_BACKBONE.md](DATA_BACKBONE.md) |
-| Transaction ingestion | **IMPLEMENTED** | Survivors' pool transactions read into pool activity, transfer edges, wallets and chain events, within a budget, with gaps recorded. No intelligence reads them yet |
-| Buyer / holder analysis | **PARTIAL** | `holderCount` and `topHoldersPercentage` read from Jupiter. **No wallet clustering, no sybil/bundler detection, no buyer quality** |
+| Transaction ingestion | **IMPLEMENTED** | Survivors' pool transactions read into pool activity, transfer edges, wallets and chain events, within a budget, with gaps recorded. Read by deep intelligence |
+| Deep intelligence | **IMPLEMENTED — diagnostics only** | `src/intel/`: buyer classes, funding, a typed wallet graph, conservative clusters, wash analysis, activity quality, attribution, security events, creator history and serial networks, in a staged cycle with hard budgets and recorded truncation. **Feeds no score, ranking or veto.** See [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) |
+| Buyer / holder analysis | **PARTIAL** | `holderCount` and `topHoldersPercentage` read from Jupiter; large holders labelled by role, with a wallet-only share stored beside the raw one. Deep intelligence produces buyer classes and clusters, **not yet used by scoring or the gate** |
 | Momentum | **PARTIAL** | DexScreener `priceChange` 1h/6h blended. **Fabricates 0% when no pair exists** (35% of tokens) |
 | Scoring | **IMPLEMENTED** | 7 weighted components + multiplicative penalties — see `SCORING.md` |
 | Ranking | **IMPLEMENTED** | In-memory sort by one of 6 keys, filtered, capped at 500 |

@@ -125,6 +125,14 @@ applied — never between two.
 | `events` | monitor notification feed |
 | `meta` | key/value, including the legacy-import marker |
 
+Migration 2 added the data backbone's tables ([DATA_BACKBONE.md](DATA_BACKBONE.md) §6).
+Migration 3 added deep intelligence's: `wallet_profiles`, `wallet_trades`,
+`funding_edges`, `address_stats`, `wallet_edges`, `wallet_clusters`,
+`cluster_members`, `launch_attributions`, `security_events`,
+`creator_profiles` and `token_intelligence`, plus nullable columns on
+`pool_activity` and `holder_snapshots`. Writers, readers, indexes and
+retention for each are in [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) §13.
+
 **Current state is a document; history is normalized.** `tokens.payload` holds
 the whole current `TokenSnapshot` as JSON so the existing dashboard works
 untouched and there is exactly one answer to "what is this token now". History
@@ -304,6 +312,9 @@ conservative and the rules are stated in one place.
 | Token unseen before it is dropped | 180 days | `RETENTION_TOKEN_DAYS` |
 | Provider-failure diagnostics | 14 days | `RETENTION_DIAGNOSTICS_DAYS` |
 | Monitor events | 500 newest | `MAX_EVENTS` |
+| Chain history and behavioural readings (pool activity, wallet trades, profiles, edges, clusters, probes, token intelligence) | 30 days | `RETENTION_CHAIN_DAYS` |
+| Attribution, funding, creator profiles, unconfirmed security events | as tokens: 180 days | `RETENTION_TOKEN_DAYS` |
+| **CONFIRMED security events** | never pruned | — |
 
 - **State transitions are never deleted**, whatever their age.
 - **Deletion is by age, not by count.** A row cap would discard a busy token's
@@ -396,13 +407,15 @@ The conventions that must carry over: raw amounts as TEXT, `block_time` and
 `ingested_at` kept separate, `source` recorded, and the mint foreign key so
 retention cascades.
 
-### Buyer Intelligence (after that)
+### Deep intelligence — implemented as migration 3
 
-`wallets`, `wallet_token_activity` (first arrival per wallet and mint) and
-`transfer_edges` (the raw input to funding and wallet graphs) now exist and
-are written by collection. `buyer_clusters` and `wallet_labels` are **not
-created** — they would be written by the intelligence phase, and empty tables
-are not a foundation, they are clutter that phase would have to work around.
+**Done, in [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) §13.** Every table it
+added is written by the intelligence cycle and read by a named consumer; none
+was created ahead of its writer. Two retention choices are deliberate: a
+CONFIRMED security event is never pruned, because a creator's history rests on
+it and it cannot be re-derived once its transactions age out; and a stored
+event's status can rise on re-detection but never fall, because a later,
+more truncated read can miss the fact.
 
 ### Technical Intelligence
 

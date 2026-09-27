@@ -178,6 +178,12 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
     assert.match(ingest, /On-chain data collection/);
     assert.match(ingest, /Not collecting/);
     assert.match(ingest, /solana-rpc:public/);
+    // Deep intelligence is diagnostics only, and says both that it is not
+    // running here and that it feeds nothing.
+    const intel = await browser.eval(`document.querySelector('[aria-labelledby="intel-title"]')?.textContent.replace(/\\s+/g, ' ') ?? ''`);
+    assert.match(intel, /Deep intelligence \(diagnostics\)/);
+    assert.match(intel, /Not running/);
+    assert.match(intel, /None of this feeds a score/);
   });
 
   test('stale and never-evaluated Dossiers say so', async () => {
