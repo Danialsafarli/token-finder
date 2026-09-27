@@ -19,6 +19,11 @@ export const DATA_DIR = resolve(
  * dotenv dependency. Real environment variables always win.
  */
 function loadDotEnv(): void {
+  // Never under the test runner (node --test marks its processes with
+  // NODE_TEST_CONTEXT): the suite must be hermetic, and must not be able to
+  // read - or behave differently because of - a developer's local secrets.
+  // A test that needs a key sets it explicitly in its own environment.
+  if (process.env.NODE_TEST_CONTEXT !== undefined) return;
   const file = resolve(ROOT, '.env');
   if (!existsSync(file)) return;
   for (const raw of readFileSync(file, 'utf8').split(/\r?\n/)) {
