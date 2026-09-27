@@ -448,6 +448,8 @@ export interface Dossier {
     label: string;
     tone: Tone;
     reason: string;
+    /** The reason's own tone: a caveat on a Qualified token is amber, not green. */
+    reasonTone: Tone;
     facts: VerdictFact[];
     vetoes: VetoView[];
     watchpoints: Watchpoint[];
@@ -606,6 +608,7 @@ export function dossier(token: TokenSnapshot, stored: readonly StoredEvidence[],
       label: evaluation ? VERDICT_LABEL[evaluation.eligibility] : 'Not assessed',
       tone: evaluation ? VERDICT_TONE[evaluation.eligibility] : 'neutral',
       reason: reason.text,
+      reasonTone: reason.tone,
       facts,
       vetoes: (evaluation?.vetoes ?? []).map(vetoView),
       watchpoints: watchpoints(token, evidence.rows, context),

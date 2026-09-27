@@ -38,6 +38,7 @@ import {
 } from './dto.ts';
 import { hostAllowed, isLoopbackBind, sameOrigin, SECURITY_HEADERS } from './security.ts';
 import type { MonitorEvent } from '../types.ts';
+import { analyzeRequested, MINT_ADDRESS, stageView } from '../core/request.ts';
 
 const PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), 'public');
 
@@ -285,6 +286,77 @@ function scanSummary(result: ScanResult): unknown {
   };
 }
 
+// ---------------------------------------------------------------------------
+// On-demand analysis
+// ---------------------------------------------------------------------------
+
+/** At most this many requested analyses at once: they share rate-limited providers with the monitor. */
+const MAX_REQUESTED = 2;
+const requested = new Set<string>();
+
+/** Reads a small JSON body, or null if it is too large or not JSON. */
+async function readJson(req: IncomingMessage, limit: number): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > limit) return null;
+    chunks.push(chunk as Buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /api/analyze {"mint": "..."}: analyses one token on request.
+ *
+ * The response is a stream of newline-delimited JSON: one `stage` line as each
+ * real pipeline stage begins, then one `done` line with the outcome. Stages
+ * are reported only as they happen; there is no progress estimate, because the
+ * pipeline does not have one.
+ */
+async function analyzeRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const origin = sameOrigin(req);
+  if (!origin.ok) return sendJson(res, 403, { error: `refused: ${origin.reason}` });
+  if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) {
+    return sendJson(res, 415, { error: 'expected application/json' });
+  }
+  const body = await readJson(req, 1024);
+  const mint = body && typeof body === 'object' && typeof (body as { mint?: unknown }).mint === 'string' ? (body as { mint: string }).mint.trim() : '';
+  if (!MINT_ADDRESS.test(mint)) return sendJson(res, 400, { error: 'not a Solana mint address' });
+  if (requested.has(mint)) return sendJson(res, 409, { error: 'this token is already being analysed' });
+  if (requested.size >= MAX_REQUESTED) return sendJson(res, 429, { error: 'too many analyses running; try again shortly' });
+
+  requested.add(mint);
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'content-type': 'application/x-ndjson; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  const line = (payload: unknown): void => {
+    if (!res.writableEnded) res.write(`${JSON.stringify(payload)}\n`);
+  };
+  try {
+    line({ type: 'stage', ...stageView('validate'), at: Date.now() });
+    const outcome = await analyzeRequested(mint, (stage) => line({ type: 'stage', ...stageView(stage), at: Date.now() }));
+    const failures = outcome.providerFailures.map((failure) => ({ provider: failure.provider, kind: failure.kind }));
+    if (outcome.ok) {
+      line({ type: 'done', ok: true, mint, symbol: outcome.snapshot.symbol, providerFailures: failures, at: Date.now() });
+    } else {
+      line({ type: 'done', ok: false, mint, code: outcome.code, message: outcome.message, providerFailures: failures, at: Date.now() });
+    }
+  } catch (error) {
+    log.error('requested analysis failed:', error instanceof Error ? error.message : error);
+    line({ type: 'done', ok: false, mint, code: 'failed', message: 'The analysis failed unexpectedly. Nothing was recorded.', providerFailures: [], at: Date.now() });
+  } finally {
+    requested.delete(mint);
+    res.end();
+  }
+}
+
 function stream(res: ServerResponse): void {
   res.writeHead(200, {
     ...SECURITY_HEADERS,
@@ -337,7 +409,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const method = req.method ?? 'GET';
 
   if (path.startsWith('/api/')) {
-    if (method !== 'GET' && method !== 'HEAD' && !(method === 'POST' && path === '/api/scan')) {
+    const postable = path === '/api/scan' || path === '/api/analyze';
+    if (method !== 'GET' && method !== 'HEAD' && !(method === 'POST' && postable)) {
       sendJson(res, 405, { error: 'method not allowed' });
       return;
     }
@@ -419,6 +492,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
       const { context } = currentContext();
       return sendJson(res, 200, dossier(token, token.ledger ? [] : store.latestEvidence(mint), context));
+    }
+
+    if (path === '/api/analyze' && method === 'POST') {
+      await analyzeRoute(req, res);
+      return;
     }
 
     if (path === '/api/scan' && method === 'POST') {

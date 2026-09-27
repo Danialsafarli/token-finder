@@ -54,7 +54,19 @@ export interface AnalyzeResult {
   evidence: Map<string, TokenEvidence>;
 }
 
+/**
+ * The pipeline's real stages, in order. Reported to `onStage` as each begins,
+ * so a caller watching one token can say truthfully what is happening now.
+ */
+export type AnalyzeStage = 'market' | 'safety' | 'evidence' | 'gate' | 'verdict';
+
 export interface AnalyzeOptions {
+  /**
+   * Called as each stage begins. Instrumentation only: it changes nothing
+   * about what is analysed or concluded. For a batch the per-token stages
+   * fire once per token.
+   */
+  onStage?: (stage: AnalyzeStage) => void;
   /** Skip the liquidity and age filters; used by the single-token CLI command. */
   includeAll?: boolean;
   /** Cap on how many candidates get the slow safety lookups. */
@@ -110,6 +122,7 @@ export async function analyze(
   // The two market feeds are fetched independently. `Promise.all` here meant a
   // single DexScreener timeout threw away a complete, already-fetched Jupiter
   // response and ended the scan; `allSettled` keeps whichever side answered.
+  options.onStage?.('market');
   const [pairsSettled, jupSettled] = await Promise.allSettled([
     dexscreener.pairsForMints(mints),
     jupiter.infoForMints(mints),
@@ -195,6 +208,8 @@ export async function analyze(
   /** Populated per token inside the pool below; see AnalyzeResult.evidence. */
   const evidenceByMint = new Map<string, TokenEvidence>();
 
+  if (deep.length > 0) options.onStage?.('safety');
+
   const settled = await poolSettled(deep, 4, async (draft): Promise<TokenSnapshot> => {
     const { candidate, pairs, jup } = draft;
 
@@ -254,6 +269,7 @@ export async function analyze(
     const safetyObservedAt = Date.now();
 
     // --- cross-provider evidence -------------------------------------------
+    options.onStage?.('evidence');
     const evidence: TokenEvidence = resolveEvidence({
       pairs,
       jupiter: jup,
@@ -272,6 +288,7 @@ export async function analyze(
     evidenceByMint.set(candidate.mint, evidence);
 
     // --- safety gate --------------------------------------------------------
+    options.onStage?.('gate');
     const vetoes = [
       ...evaluateGate(evidence, gateConfig),
       ...evaluateRugcheckGate(rug?.risks ?? [], safetyObservedAt),
@@ -279,6 +296,7 @@ export async function analyze(
     ];
 
     // --- coverage and confidence -------------------------------------------
+    options.onStage?.('verdict');
     const coverage = buildCoverage(evidence);
 
     // --- scoring ------------------------------------------------------------
