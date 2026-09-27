@@ -615,9 +615,13 @@ export function mountOrb(host, options = {}) {
     g.beginPath();
     g.arc(cx, cy, radius * 1.08, 0, TAU);
     g.fill();
-    // Atmosphere: the faintest halo beyond the limb, for depth, not glow.
+    // Atmosphere: the faintest halo beyond the limb, for depth, not glow. It
+    // eases out to nothing: a straight fade ending at zero reads as a rim.
     const air = g.createRadialGradient(cx, cy, radius * 0.98, cx, cy, radius * 1.32);
     air.addColorStop(0, `rgba(${A},0.05)`);
+    air.addColorStop(0.25, `rgba(${A},0.028)`);
+    air.addColorStop(0.5, `rgba(${A},0.0125)`);
+    air.addColorStop(0.75, `rgba(${A},0.003)`);
     air.addColorStop(1, `rgba(${A},0)`);
     g.fillStyle = air;
     g.beginPath();

@@ -45,13 +45,28 @@ describe('the Landing', { skip: SKIP, timeout: 300_000 }, () => {
     assert.match(await browser.eval(`document.querySelector('h1').textContent`), /Find the signal/);
     const layout = await browser.eval(`(() => {
       const lede = document.querySelector('.landing__lede').getBoundingClientRect();
-      const stage = document.querySelector('.landing__orb').getBoundingClientRect();
+      const stage = document.querySelector('.landing .orb__stage').getBoundingClientRect();
       const paths = document.querySelector('.paths').getBoundingClientRect();
-      const sphere = document.querySelector('.landing .orb').__orb;
-      return { ledeBottom: lede.bottom, stageTop: stage.top, stageBottom: stage.bottom, pathsTop: paths.top };
+      const place = document.querySelector('.landing .orb').__orb.placement;
+      const radius = Math.min(stage.height * 0.345, stage.width * 0.27) * place.size;
+      const cy = stage.top + stage.height * place.fy;
+      return { ledeBottom: lede.bottom, sphereTop: cy - radius, sphereBottom: cy + radius, pathsTop: paths.top };
     })()`);
-    assert.ok(layout.stageTop - layout.ledeBottom >= 40, `only ${layout.stageTop - layout.ledeBottom}px between the words and the Observatory`);
-    assert.ok(layout.pathsTop >= layout.stageBottom, 'the ways in overlap the Observatory');
+    // Close enough to read as one composition, clear enough to breathe.
+    const above = layout.sphereTop - layout.ledeBottom;
+    const below = layout.pathsTop - layout.sphereBottom;
+    assert.ok(above >= 24 && above <= 72, `${Math.round(above)}px between the words and the sphere`);
+    assert.ok(below >= 24 && below <= 72, `${Math.round(below)}px between the sphere and the ways in`);
+    // The Observatory's light is never cut by its box: the canvas holds the whole halo.
+    const halo = await browser.eval(`(() => {
+      const canvas = document.querySelector('.landing .orb__canvas').getBoundingClientRect();
+      const stage = document.querySelector('.landing .orb__stage').getBoundingClientRect();
+      const place = document.querySelector('.landing .orb').__orb.placement;
+      const reach = Math.min(stage.height * 0.345, stage.width * 0.27) * place.size * 1.32;
+      const cy = stage.top + stage.height * place.fy;
+      return { top: cy - reach - canvas.top, bottom: canvas.bottom - (cy + reach) };
+    })()`);
+    assert.ok(halo.top >= 0 && halo.bottom >= 0, `the halo is cut by the canvas: ${JSON.stringify(halo)}`);
     // Roughly 30% larger than before - the page scrolls rather than shrinking it.
     const radius = await browser.eval(`(() => { const s = document.querySelector('.landing .orb .orb__stage').getBoundingClientRect(); const p = document.querySelector('.landing .orb').__orb.placement; return Math.min(s.height * 0.345, s.width * 0.27) * p.size; })()`);
     assert.ok(radius >= PREVIOUS_RADIUS * 1.2, `radius ${radius} is not ~30% larger than ${PREVIOUS_RADIUS}`);

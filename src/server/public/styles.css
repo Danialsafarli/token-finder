@@ -3256,10 +3256,12 @@ th.col-num {
   inset: 0;
   z-index: -1;
   pointer-events: none;
+  /* Every fade eases to nothing: a straight ramp ending at zero reads as an
+     edge, and several of them together read as a box around the sphere. */
   background:
-    radial-gradient(ellipse 60% 55% at 50% 62%, rgba(96, 128, 214, 0.05), transparent 74%),
-    radial-gradient(ellipse 30% 34% at 16% 12%, rgba(153, 110, 255, 0.035), transparent 72%),
-    radial-gradient(ellipse 120% 95% at 50% 50%, transparent 58%, rgba(3, 4, 7, 0.55) 100%);
+    radial-gradient(ellipse 60% 55% at 50% 62%, rgba(96, 128, 214, 0.05), rgba(96, 128, 214, 0.028) 34%, rgba(96, 128, 214, 0.01) 58%, transparent 78%),
+    radial-gradient(ellipse 30% 34% at 16% 12%, rgba(153, 110, 255, 0.035), rgba(153, 110, 255, 0.012) 44%, transparent 76%),
+    radial-gradient(ellipse 120% 95% at 50% 50%, transparent 52%, rgba(3, 4, 7, 0.14) 68%, rgba(3, 4, 7, 0.38) 84%, rgba(3, 4, 7, 0.55) 100%);
 }
 
 .landing__content {
@@ -3269,6 +3271,9 @@ th.col-num {
 }
 
 .landing__intro {
+  /* Above the Observatory's light, which may reach behind the words. */
+  position: relative;
+  z-index: 1;
   max-width: 820px;
   margin: 0 auto;
   text-align: center;
@@ -3303,25 +3308,121 @@ th.col-num {
   color: var(--text-3);
 }
 
-/* The Observatory: its own space, well clear of the words above it. */
+/*
+ * The Observatory. Its box keeps ~9% of its height free above and below the
+ * sphere; the words and the ways in reach into that space, so the sphere sits
+ * ~40-50 px from each - related to both, crowding neither.
+ */
 .landing__orb {
   position: relative;
   height: clamp(560px, 80vh, 780px);
-  margin: clamp(40px, 7vh, 80px) calc(-1 * var(--gutter)) 0;
+  margin: clamp(-24px, -2vh, -10px) calc(-1 * var(--gutter)) 0;
 }
 
+/* The light around the sphere, centred on it and larger than the box; it
+   eases to nothing before its own edge, so no edge of it is ever seen. */
 .landing__orb::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: -14% 0;
   pointer-events: none;
-  background: radial-gradient(ellipse 34% 46% at 50% 50%, rgba(138, 180, 255, 0.07), transparent 72%);
+  background: radial-gradient(
+    circle closest-side,
+    rgba(138, 180, 255, 0.06),
+    rgba(138, 180, 255, 0.034) 30%,
+    rgba(138, 180, 255, 0.014) 56%,
+    rgba(138, 180, 255, 0.004) 80%,
+    transparent
+  );
 }
 
 .landing__deck {
-  margin-top: clamp(32px, 5vh, 56px);
+  position: relative;
+  z-index: 1;
+  margin-top: clamp(-28px, -2.4vh, -12px);
 }
 
+/* The two ways in: one instrument, split in two. Not two identical cards. */
+.paths {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  max-width: 1000px;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(12, 15, 21, 0.78);
+  overflow: hidden;
+}
+
+.path {
+  display: block;
+  padding: 28px 30px 24px;
+  color: var(--text);
+}
+
+.path--discover {
+  border-left: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(138, 180, 255, 0.04), transparent 70%);
+}
+
+.path__kicker {
+  display: block;
+  margin: 0;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.path__title {
+  margin: 6px 0 8px;
+  font: 600 22px / 1.2 var(--font-display);
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+
+.path__body {
+  max-width: 46ch;
+  margin: 0 0 18px;
+  font-size: var(--fs-s);
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.mint-field {
+  display: flex;
+  gap: 8px;
+}
+
+.mint-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--bg-sunk);
+  color: var(--text);
+  font: 500 var(--fs) var(--mono);
+}
+
+.mint-field input::placeholder {
+  font-family: var(--font);
+  color: var(--text-4);
+}
+
+.mint-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mint-field.is-invalid input {
+  border-color: var(--bad-line);
+}
+
+.path__help,
 .path__error {
   display: block;
   margin: 12px 0 0;
@@ -3638,7 +3739,10 @@ th.col-num {
   }
   .landing__orb {
     height: 380px;
-    margin: 28px calc(-1 * var(--gutter)) 0;
+    margin: -18px calc(-1 * var(--gutter)) 0;
+  }
+  .landing__deck {
+    margin-top: -14px;
   }
   .paths {
     grid-template-columns: minmax(0, 1fr);
