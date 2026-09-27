@@ -44,7 +44,7 @@ import { dossierUrl, tokenIcon, verdictChip, toneClass } from './components.js';
  * @typedef {{
  *   mint: string, symbol: string, name: string, icon: string | null,
  *   verdict: string, verdictLabel: string, tone: string, score: number, reason: string,
- *   role: 'changed' | 'top' | 'newest' | 'watch' | 'rejected', why: string, whyAt: number | null,
+ *   role: 'changed' | 'top' | 'newest' | 'watch' | 'rejected' | 'subject', why: string, whyAt: number | null,
  *   change: { from: string, to: string, fromLabel: string, toLabel: string, at: number } | null,
  *   lastSeenAt: number, freshness: 'FRESH' | 'AGING'
  * }} OrbToken
@@ -293,6 +293,39 @@ function pathToHub(network, start) {
   return null;
 }
 
+/**
+ * Shortest route between two nodes, by breadth-first search, no longer than
+ * `limit` hops.
+ * @param {Network} network @param {number} from @param {number} to @param {number} limit @returns {number[] | null}
+ */
+function pathBetween(network, from, to, limit) {
+  /** @type {Map<number, number>} */
+  const parent = new Map([[from, -1]]);
+  let frontier = [from];
+  for (let depth = 0; depth < limit && frontier.length > 0; depth++) {
+    /** @type {number[]} */
+    const next = [];
+    for (const n of frontier) {
+      for (const m of network.adjacency[n]) {
+        if (parent.has(m)) continue;
+        parent.set(m, n);
+        if (m === to) {
+          const path = [m];
+          let p = n;
+          while (p !== -1) {
+            path.unshift(p);
+            p = /** @type {number} */ (parent.get(p));
+          }
+          return path;
+        }
+        next.push(m);
+      }
+    }
+    frontier = next;
+  }
+  return null;
+}
+
 // --- templates ---------------------------------------------------------------
 
 const shell = () => html`
@@ -326,6 +359,7 @@ const ROLE_SHORT = /** @type {Record<OrbToken['role'], string>} */ ({
   newest: 'Newest',
   watch: 'On watch',
   rejected: 'Rejected',
+  subject: 'Analyzed',
 });
 
 /**
@@ -361,13 +395,56 @@ const previewTemplate = (token) => html`<div class="orb-preview">
 // --- the instrument ----------------------------------------------------------
 
 /**
+ * Where the sphere sits in its stage, as fractions of the stage, and how large
+ * it is relative to the stage's natural size.
+ * @typedef {{ fx: number, fy: number, size: number }} Placement
+ * @typedef {{
+ *   bare?: boolean,
+ *   follow?: boolean,
+ *   reveal?: boolean,
+ *   placement?: Placement,
+ *   composition?: 'auto' | 'sphere',
+ *   ring?: 'orbit' | 'sides'
+ * }} OrbOptions
+ */
+
+/**
  * Mounts the Observatory into `host`. Returns a handle whose `dispose()` stops
  * every loop, observer, listener and timer it started.
+ *
+ * The same instrument serves every surface. Options:
+ * - `bare`: the stage only, without the Observatory's own heading and footer;
+ * - `follow` (default true): reflect the monitor's scans;
+ * - `reveal` (default true): show the live tokens around the sphere;
+ * - `placement`: where the sphere sits in its stage;
+ * - `composition`: 'auto' (a short stage gets the horizon) or always 'sphere';
+ * - `ring`: 'orbit' (tokens all round, slowly drifting) or 'sides' (only on
+ *   the sphere's flanks, clear of content above and below it).
+ *
+ * The handle also steers it: `setIntent` (a person leaning toward analysing
+ * one token or discovering many), `beginAnalysis`/`stage`/`endAnalysis` (a
+ * requested analysis, driven by the real pipeline's stages), and
+ * `setPlacement` (moving the sphere within its stage, animated).
  * @param {HTMLElement} host
+ * @param {OrbOptions} [options]
  */
-export function mountOrb(host) {
+export function mountOrb(host, options = {}) {
   render(host, shell());
   const root = /** @type {HTMLElement} */ (host.querySelector('.orb'));
+  if (options.bare) root.classList.add('orb--bare');
+  /** Whether the monitor's scans drive this Observatory's scanning state. */
+  const follow = options.follow !== false;
+  const revealByDefault = options.reveal !== false;
+  let reveal = revealByDefault;
+  /** A requested analysis is running. Its stages are real; there is no progress figure. */
+  let activity = false;
+  /** Attention rests on one node: while a person leans toward analysing, and on the analysed token. */
+  let attentionGoal = false;
+  let attentionNode = -1;
+  /** @type {Map<number, number> | null} */
+  let attentionNeighbourhood = null;
+  /** The token a requested analysis produced, shown alone. @type {OrbToken | null} */
+  let subject = null;
   const stage = /** @type {HTMLElement} */ (root.querySelector('.orb__stage'));
   const canvas = /** @type {HTMLCanvasElement} */ (root.querySelector('.orb__canvas'));
   const list = /** @type {HTMLOListElement} */ (root.querySelector('.orb__markers'));
@@ -428,11 +505,15 @@ export function mountOrb(host) {
     nextRewireAt: 18,
     focusWaveAt: 0,
     /** Scan-completion ripples waiting to be released. @type {number[]} */ pendingRipples: [],
+    /** @type {Placement} */ place: { fx: 0.5, fy: 0.5, size: 1, ...options.placement },
+    /** @type {Placement} */ placeGoal: { fx: 0.5, fy: 0.5, size: 1, ...options.placement },
+    attention: 0,
+    nextConvergeAt: 0,
   };
 
   const status = {
     connection: liveState().connection,
-    scanning: liveState().status?.scanning === true,
+    scanning: follow && liveState().status?.scanning === true,
     /** @type {number | null} */ scanStartedAt: null,
     /** @type {'ok' | 'failed' | 'complete'} */ lastOutcome: 'ok',
     /** @type {{ at: number, analyzed: number, fresh: number } | null} */ lastResult: null,
@@ -482,15 +563,26 @@ export function mountOrb(host) {
       get composition() {
         return scene.composition;
       },
+      get attention() {
+        return attentionGoal;
+      },
+      get subject() {
+        return subject?.mint ?? null;
+      },
+      get placement() {
+        return { ...scene.place };
+      },
     },
   });
 
   /** @type {HTMLCanvasElement | null} */
   let body = null;
+  const bodyGeo = { cx: 0, cy: 0, r: 1 };
 
   /** Renders the static body once per layout: gradients are the costliest thing to fill. */
   const renderBody = () => {
     const { width, height, dpr, cx, cy, radius } = scene;
+    Object.assign(bodyGeo, { cx, cy, r: radius });
     body = document.createElement('canvas');
     body.width = Math.round(width * dpr);
     body.height = Math.round(height * dpr);
@@ -529,6 +621,20 @@ export function mountOrb(host) {
     g.stroke();
   };
 
+  /** The sphere's centre, radius and token ring for a placement. @param {Placement} place */
+  const sphereGeometry = (place) => {
+    const { width, height } = scene;
+    scene.radius = Math.min(height * 0.345, width * 0.27) * place.size;
+    scene.cx = width * place.fx;
+    scene.cy = height * place.fy;
+    scene.ringRadius = scene.radius * 1.4;
+    scene.ringY = Math.max(40, Math.min(scene.radius * 1.36, Math.min(scene.cy, height - scene.cy) - 34));
+    scene.ringX = Math.max(scene.ringY, Math.min(scene.radius * 1.7, Math.min(scene.cx, width - scene.cx) - 64));
+  };
+
+  const placementMoving = () =>
+    Math.abs(scene.place.fx - scene.placeGoal.fx) + Math.abs(scene.place.fy - scene.placeGoal.fy) + Math.abs(scene.place.size - scene.placeGoal.size) > 0.002;
+
   // --- layout ----------------------------------------------------------------
 
   const layout = () => {
@@ -543,7 +649,7 @@ export function mountOrb(host) {
     canvas.height = Math.round(height * scene.dpr);
 
     // A short band gets the horizon; anything with room for a sphere gets one.
-    const horizon = height < 260;
+    const horizon = options.composition !== 'sphere' && height < 260;
     scene.composition = horizon ? 'horizon' : 'sphere';
     if (horizon) {
       // A planet rising from the bottom of the band, seen from above its pole:
@@ -554,17 +660,14 @@ export function mountOrb(host) {
       scene.ringRadius = scene.radius + height * 0.28;
       scene.maxMarkers = width < 560 ? 3 : width < 820 ? 4 : 5;
     } else {
-      scene.radius = Math.min(height * 0.345, width * 0.27);
-      scene.cx = width / 2;
-      scene.cy = height / 2;
-      scene.ringRadius = scene.radius * 1.4;
-      scene.ringY = Math.min(scene.radius * 1.36, height / 2 - 34);
-      scene.ringX = Math.max(scene.ringY, Math.min(scene.radius * 1.7, width / 2 - 64));
-      scene.maxMarkers = 7;
+      sphereGeometry(scene.place);
+      scene.maxMarkers = options.ring === 'sides' ? 6 : 7;
     }
     // Density follows size: a large sphere gets a richer network, in steps so a
-    // resize does not rebuild it on every pixel.
-    const surface = horizon ? (width < 560 ? 104 : 150) : Math.round(clamp(scene.radius * 1.55, 110, 300) / 20) * 20;
+    // resize does not rebuild it on every pixel. Sized from where the sphere is
+    // going, so a placement animation never rebuilds it mid-flight.
+    const goalRadius = Math.min(height * 0.345, width * 0.27) * scene.placeGoal.size;
+    const surface = horizon ? (width < 560 ? 104 : 150) : Math.round(clamp(goalRadius * 1.55, 110, 300) / 20) * 20;
     const key = `${scene.composition}-${surface}`;
     if (key !== scene.networkKey) {
       scene.network = buildNetwork(surface, 1905, horizon);
@@ -671,6 +774,42 @@ export function mountOrb(host) {
   /** @param {number} i */
   const inView = (i) => proj.x[i] > -8 && proj.x[i] < scene.width + 8 && proj.y[i] > -8 && proj.y[i] < scene.height + 8;
 
+  /** Chooses, or keeps, the node attention rests on. */
+  const keepAttention = () => {
+    const network = scene.network;
+    if (!network || proj.z.length !== network.nodes.length) return;
+    const ok = attentionNode >= 0 && proj.z[attentionNode] > 0.3 && inView(attentionNode);
+    if (ok) return;
+    // Near where attention was, or just right of centre and slightly high.
+    const target =
+      attentionNode >= 0
+        ? { x: proj.x[attentionNode], y: proj.y[attentionNode] }
+        : { x: scene.cx + scene.radius * 0.18, y: scene.cy - scene.radius * 0.12 };
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < network.nodes.length; i++) {
+      if (network.nodes[i].inner || proj.z[i] < 0.5 || !inView(i)) continue;
+      const d = (proj.x[i] - target.x) ** 2 + (proj.y[i] - target.y) ** 2;
+      if (d < bestD) (bestD = d), (best = i);
+    }
+    if (best >= 0 && best !== attentionNode) {
+      attentionNode = best;
+      attentionNeighbourhood = neighbourhood(network.adjacency, best, 2);
+    }
+  };
+
+  /** Signals that travel from elsewhere on the network to the attended node. @param {number} count */
+  const converge = (count) => {
+    const network = scene.network;
+    if (!network || attentionNode < 0) return;
+    for (let c = 0; c < count; c++) {
+      const from = frontNode();
+      if (from < 0 || from === attentionNode) continue;
+      const path = pathBetween(network, from, attentionNode, 7);
+      if (path && path.length > 1) scene.signals.push({ nodes: path, start: scene.t, hop: 0.32, strength: 0.95 });
+    }
+  };
+
   /** Occasionally retire one link and grow another nearby: the topology is never static. */
   const rewire = () => {
     const network = /** @type {Network} */ (scene.network);
@@ -693,6 +832,7 @@ export function mountOrb(host) {
    */
   const transitioning = () => {
     if (Math.abs(scene.focusAmount - (focused ? 1 : 0)) > 0.01) return true;
+    if (placementMoving() || Math.abs(scene.attention - (attentionGoal ? 1 : 0)) > 0.01) return true;
     for (const marker of markers.values()) {
       if (marker.enter < 1 || marker.exit > 0 || marker.appear < 1 || marker.pulseAt > 0 || marker.glintAt > 0) return true;
     }
@@ -738,12 +878,25 @@ export function mountOrb(host) {
 
   /** Advances every eased quantity and the scene clock. @param {number} dt */
   const step = (dt) => {
-    const scanning = status.scanning && status.connection === 'live';
+    const scanning = (follow && status.scanning && status.connection === 'live') || activity;
     const offline = status.connection === 'offline' || status.connection === 'reconnecting';
     scene.scanAmount = approach(scene.scanAmount, scanning ? 1 : 0, scanning ? 1.6 : 0.9, dt);
     scene.focusAmount = approach(scene.focusAmount, focused ? 1 : 0, 7, dt);
     scene.offlineAmount = approach(scene.offlineAmount, offline ? 1 : 0, 1.4, dt);
-    const targetSpeed = offline ? 0 : focused ? 0.28 : scanning ? 1.35 : 1;
+    scene.attention = approach(scene.attention, attentionGoal ? 1 : 0, 3.5, dt);
+    if (placementMoving()) {
+      // Ease toward the new placement; exponential approach reads as ease-out.
+      const k = 1 - Math.exp(-2.6 * dt);
+      scene.place.fx += (scene.placeGoal.fx - scene.place.fx) * k;
+      scene.place.fy += (scene.placeGoal.fy - scene.place.fy) * k;
+      scene.place.size += (scene.placeGoal.size - scene.place.size) * k;
+      if (!placementMoving()) {
+        scene.place = { ...scene.placeGoal };
+        if (scene.composition === 'sphere') sphereGeometry(scene.place);
+        renderBody();
+      } else if (scene.composition === 'sphere') sphereGeometry(scene.place);
+    }
+    const targetSpeed = offline ? 0 : focused ? 0.28 : activity ? 0.45 : attentionGoal ? 0.35 : scanning ? 1.35 : 1;
     scene.speed = approach(scene.speed, targetSpeed, 1.1, dt);
     scene.tiltX = approach(scene.tiltX, scene.pointerX, 2.2, dt);
     scene.tiltY = approach(scene.tiltY, scene.pointerY, 2.2, dt);
@@ -788,6 +941,14 @@ export function mountOrb(host) {
       const anchor = /** @type {number} */ (scene.pendingRipples.shift());
       if (anchor >= 0) walk(anchor, 4, 0.95);
     }
+    // Attention stays on a node that faces us; if the sphere turns it away,
+    // it passes to the nearest node that does.
+    if (attentionGoal) keepAttention();
+    // A requested analysis: signals converge on the attended node.
+    if (activity && attentionNode >= 0 && scene.t >= scene.nextConvergeAt) {
+      converge(1);
+      scene.nextConvergeAt = scene.t + 0.35 + Math.random() * 0.4;
+    }
     // While a token is focused, its neighbourhood carries a slow pulse outward.
     if (focused && scene.t >= scene.focusWaveAt) {
       const anchor = markers.get(focused)?.anchor ?? -1;
@@ -807,7 +968,7 @@ export function mountOrb(host) {
     const yaw = cam.yaw;
     const horizon = scene.composition === 'horizon';
     const t = scene.t;
-    const dim = 1 - 0.62 * scene.focusAmount;
+    const dim = 1 - 0.62 * Math.max(scene.focusAmount, scene.attention * 0.8);
     const life = 1 - 0.55 * scene.offlineAmount;
     const A = colors.accent;
     const N = colors.node;
@@ -815,7 +976,18 @@ export function mountOrb(host) {
     // The body - lit disc, rim, rim light - is static: one blit per frame.
     if (body) {
       ctx.globalAlpha = life;
-      ctx.drawImage(body, 0, 0, width, height);
+      if (bodyGeo.cx === scene.cx && bodyGeo.cy === scene.cy && bodyGeo.r === scene.radius) {
+        ctx.drawImage(body, 0, 0, width, height);
+      } else {
+        // Mid-placement: the cached body, moved and scaled to where the sphere is.
+        const k = scene.radius / bodyGeo.r;
+        ctx.save();
+        ctx.translate(scene.cx, scene.cy);
+        ctx.scale(k, k);
+        ctx.translate(-bodyGeo.cx, -bodyGeo.cy);
+        ctx.drawImage(body, 0, 0, width, height);
+        ctx.restore();
+      }
       ctx.globalAlpha = 1;
     }
 
@@ -889,7 +1061,7 @@ export function mountOrb(host) {
     /** @param {Node} p */
     const shellAlpha = (p) => (p.shell === 2 ? 0.45 : p.shell === 1 ? 0.62 : 1);
 
-    const near = focusNeighbourhood;
+    const near = focusNeighbourhood ?? (scene.attention > 0.01 ? attentionNeighbourhood : null);
 
     // Edges, batched into alpha buckets: a handful of strokes per frame.
     const BUCKETS = 8;
@@ -1019,6 +1191,31 @@ export function mountOrb(host) {
     // The sweep's leading edge, drawn only on the facing hemisphere.
     if (scene.scanAmount > 0.02) drawSweep(cam, sweepAngle);
 
+    // The attended node: one quiet ring, and a slow second one while analysing.
+    if (scene.attention > 0.02 && attentionNode >= 0 && !subject) {
+      const x = proj.x[attentionNode], y = proj.y[attentionNode];
+      ctx.fillStyle = `rgba(${A},${0.1 * scene.attention * life})`;
+      ctx.beginPath();
+      ctx.arc(x, y, 20, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(${A},${0.75 * scene.attention * life})`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(x, y, 7 + (reduced ? 0 : 1.5 * Math.sin(t * 2)), 0, TAU);
+      ctx.stroke();
+      if (activity && !reduced) {
+        const k = (performance.now() % 1600) / 1600;
+        ctx.strokeStyle = `rgba(${A},${0.5 * (1 - k) * scene.attention})`;
+        ctx.beginPath();
+        ctx.arc(x, y, 8 + 26 * easeOutCubic(k), 0, TAU);
+        ctx.stroke();
+      }
+      ctx.fillStyle = `rgba(${colors.node},${scene.attention})`;
+      ctx.beginPath();
+      ctx.arc(x, y, 2.4, 0, TAU);
+      ctx.fill();
+    }
+
     drawTethers();
     placeMarkers();
   };
@@ -1051,11 +1248,17 @@ export function mountOrb(host) {
    * selection re-spaces them smoothly instead of teleporting them.
    * @param {number} slot @param {number} total
    */
-  const slotFraction = (slot, total) => (scene.composition === 'horizon' ? (slot + 0.5) / total : slot / total);
+  const slotFraction = (slot, total) =>
+    scene.composition === 'horizon' || options.ring === 'sides' ? (slot + 0.5) / total : slot / total;
 
-  /** Screen position at `fraction` along the ring or band, at scene time t. @param {number} fraction @param {number} bob */
-  const slotPosition = (fraction, bob) => {
-    const t = scene.t;
+  /**
+   * Screen position at `fraction` along the ring or band, at scene time t.
+   * `still` holds it in place (the analysed token, which must not drift toward
+   * the result beside it).
+   * @param {number} fraction @param {number} bob @param {boolean} [still]
+   */
+  const slotPosition = (fraction, bob, still = false) => {
+    const t = still ? 0 : scene.t;
     if (scene.composition === 'horizon') {
       // Evenly across the band, riding an arc concentric with the limb.
       const margin = Math.min(64, scene.width * 0.12);
@@ -1065,7 +1268,12 @@ export function mountOrb(host) {
       const y = scene.cy - Math.sqrt(Math.max(0, r * r - dx * dx));
       return { x, y: Math.min(y, scene.height * 0.62) };
     }
-    const angle = -Math.PI / 2 + 0.42 + fraction * TAU + t * (TAU / 520);
+    const sides = options.ring === 'sides' && !still;
+    const angle = sides
+      ? fraction < 0.5
+        ? -0.62 + fraction * 2 * 1.24 + 0.03 * Math.sin(t / 27 + bob)
+        : Math.PI - 0.62 + (fraction - 0.5) * 2 * 1.24 + 0.03 * Math.sin(t / 27 + bob)
+      : -Math.PI / 2 + 0.42 + fraction * TAU + t * (TAU / 520);
     const breathe = 1 + 0.012 * Math.sin(t * 0.45 + bob);
     return { x: scene.cx + Math.cos(angle) * scene.ringX * breathe, y: scene.cy + Math.sin(angle) * scene.ringY * breathe };
   };
@@ -1105,10 +1313,13 @@ export function mountOrb(host) {
     const active = [...markers.values()].filter((m) => m.exit === 0);
     const total = Math.max(1, active.length);
     const now = scene.t;
-    const horizon = scene.composition === 'horizon';
+    // Around a ring, positions wrap; across a band or two flanks they do not.
+    const horizon = scene.composition === 'horizon' || options.ring === 'sides';
     for (const marker of markers.values()) {
+      const isSubject = marker.token.role === 'subject';
       if (marker.exit === 0) {
-        const goal = slotFraction(marker.slot, total);
+        // The analysed token hangs upper left, away from the result card.
+        const goal = isSubject ? 0.86 : slotFraction(marker.slot, total);
         if (marker.fraction < 0 || reduced) marker.fraction = goal;
         else {
           // Around the ring, take the short way; across the band, straight.
@@ -1118,10 +1329,19 @@ export function mountOrb(host) {
           if (!horizon) marker.fraction = ((marker.fraction % 1) + 1) % 1;
         }
       }
-      const target = slotPosition(marker.fraction, marker.bob);
+      const target = slotPosition(marker.fraction, marker.bob, isSubject);
       // Re-anchor with hysteresis: only when the current node has turned away.
       const current = marker.anchor;
+      // The analysed token hangs from the node the analysis converged on.
+      if (marker.token.role === 'subject' && attentionNode >= 0) {
+        if (marker.anchor !== attentionNode) {
+          marker.anchorFrom = marker.anchor < 0 ? attentionNode : marker.anchor;
+          marker.anchorBlend = marker.anchor < 0 ? 1 : 0;
+          marker.anchor = attentionNode;
+        }
+      }
       const needsAnchor =
+        marker.token.role !== 'subject' &&
         current < 0 || proj.z[current] < 0.3 || !inView(current) || (now >= marker.anchorCheckAt && focused !== marker.token.mint);
       if (needsAnchor && scene.network) {
         const next = nearestAnchor(target);
@@ -1194,7 +1414,7 @@ export function mountOrb(host) {
     for (const marker of markers.values()) {
       if (marker.anchor < 0 || marker.fraction < 0) continue;
       const from = anchorPoint(marker);
-      const to = slotPosition(marker.fraction, marker.bob);
+      const to = slotPosition(marker.fraction, marker.bob, marker.token.role === 'subject');
       const isFocused = focused === marker.token.mint;
       const presence = marker.exit > 0 ? 1 - marker.exit : marker.enter;
       const rest = marker.primary ? 0.42 : 0.24;
@@ -1262,7 +1482,7 @@ export function mountOrb(host) {
    * @param {{ emerge?: boolean }} [options]
    */
   const syncMarkers = ({ emerge = false } = {}) => {
-    const tokens = (data?.tokens ?? []).slice(0, scene.maxMarkers);
+    const tokens = (subject ? [subject] : reveal ? data?.tokens ?? [] : []).slice(0, scene.maxMarkers);
     const wanted = new Set(tokens.map((token) => token.mint));
 
     for (const [mint, marker] of markers) {
@@ -1374,14 +1594,16 @@ export function mountOrb(host) {
   const stateName = () => {
     if (focused) return 'focus';
     if (status.connection === 'offline' || status.connection === 'reconnecting') return 'offline';
-    if (status.scanning) return 'scanning';
+    if (activity) return 'analyzing';
+    if (follow && status.scanning) return 'scanning';
     return 'idle';
   };
 
   const paintReadout = () => {
     const state = stateName();
     if (root.dataset.state !== state) root.dataset.state = state;
-    root.dataset.scanning = String(status.scanning);
+    root.dataset.scanning = String(follow && status.scanning);
+    root.dataset.subject = subject?.mint ?? '';
     root.dataset.motion = reduced ? 'reduced' : 'full';
 
     const offline = state === 'offline' || (focused && (status.connection === 'offline' || status.connection === 'reconnecting'));
@@ -1462,7 +1684,17 @@ export function mountOrb(host) {
       if (disposed) return;
       if (reduced) {
         scene.t = STILL_T;
-        scene.scanAmount = status.scanning && status.connection === 'live' ? 1 : 0;
+        scene.scanAmount = (follow && status.scanning && status.connection === 'live') || activity ? 1 : 0;
+        scene.attention = attentionGoal ? 1 : 0;
+        if (placementMoving()) {
+          scene.place = { ...scene.placeGoal };
+          if (scene.composition === 'sphere') sphereGeometry(scene.place);
+          renderBody();
+        }
+        if (attentionGoal) {
+          project();
+          keepAttention();
+        }
         scene.offlineAmount = stateName() === 'offline' ? 1 : 0;
         scene.focusAmount = focused ? 1 : 0;
         for (const marker of markers.values()) {
@@ -1500,7 +1732,7 @@ export function mountOrb(host) {
       data = next;
       // The response describes the moment it was generated. If a scan event
       // arrived since the request went out, the event is newer: keep it.
-      if (seenEvents === scanEvents) status.scanning = next.scan.scanning;
+      if (follow && seenEvents === scanEvents) status.scanning = next.scan.scanning;
       if (!first) {
         for (const token of next.tokens) {
           const marker = markers.get(token.mint);
@@ -1604,13 +1836,18 @@ export function mountOrb(host) {
   const offLive = onLive((state) => {
     const before = status.connection;
     status.connection = state.connection;
-    if (state.status && state.connection === 'live') status.scanning = state.status.scanning;
+    if (follow && state.status && state.connection === 'live') status.scanning = state.status.scanning;
     if (before !== state.connection) {
       paintReadout();
       requestDraw();
     }
   });
   const offEvents = onServerEvent((kind, payload) => {
+    if (!follow) {
+      // A surface that does not reflect scans still shows current tokens.
+      if (kind === 'scan' || kind === 'reconnected') void load();
+      return;
+    }
     if (kind === 'scan-start' || kind === 'scan' || kind === 'scan-failed') scanEvents += 1;
     if (kind === 'scan-start') {
       status.scanning = true;
@@ -1647,9 +1884,85 @@ export function mountOrb(host) {
   layout();
   void load();
 
+  /** Applies a state change now under reduced motion, or lets the loop ease it. */
+  const changed = () => {
+    paintReadout();
+    requestDraw();
+    start();
+  };
+
   return {
     /** A slot in the Observatory's footer that the host page may fill. */
     aside: /** @type {HTMLElement} */ (root.querySelector('.orb__aside')),
+    /**
+     * A person leaning toward one of the two things they can do.
+     * 'analyze' quiets the network onto one node; 'discover' reveals the live
+     * tokens around it. Neither invents anything: the node is the one an
+     * analysis will converge on, and the tokens are the real live selection.
+     * @param {'analyze' | 'discover' | null} intent
+     */
+    setIntent(intent) {
+      if (activity || subject) return;
+      attentionGoal = intent === 'analyze';
+      const nextReveal = intent === 'discover' ? true : revealByDefault;
+      if (nextReveal !== reveal) {
+        reveal = nextReveal;
+        syncMarkers();
+      }
+      root.dataset.intent = intent ?? '';
+      changed();
+    },
+    /** A requested analysis has started. */
+    beginAnalysis() {
+      activity = true;
+      attentionGoal = true;
+      subject = null;
+      reveal = false;
+      syncMarkers();
+      root.dataset.intent = '';
+      changed();
+    },
+    /** A real pipeline stage began: a burst of signals converges on the node. */
+    stage() {
+      if (!reduced) converge(3);
+      requestDraw();
+    },
+    /**
+     * The analysis finished. With a token, it emerges from the node the
+     * analysis converged on and one analysis wave crosses the network. Without
+     * one (no market, providers down), attention is released.
+     * @param {OrbToken | null} token
+     */
+    endAnalysis(token) {
+      activity = false;
+      subject = token;
+      attentionGoal = token !== null;
+      if (token && !reduced) scene.waveStart = performance.now();
+      syncMarkers({ emerge: token !== null });
+      changed();
+    },
+    /** Back to the ambient state. */
+    reset() {
+      activity = false;
+      subject = null;
+      attentionGoal = false;
+      reveal = revealByDefault;
+      root.dataset.intent = '';
+      syncMarkers();
+      changed();
+    },
+    /**
+     * Moves the sphere within its stage: eased, or at once under reduced motion.
+     * @param {Placement} placement
+     */
+    setPlacement(placement) {
+      scene.placeGoal = { ...placement };
+      if (reduced) {
+        scene.place = { ...placement };
+        layout();
+      }
+      changed();
+    },
     dispose() {
       disposed = true;
       stop();
