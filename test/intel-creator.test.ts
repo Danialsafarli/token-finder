@@ -108,6 +108,16 @@ describe('security events', () => {
     assert.equal(detectSecurityEvents(base({ freezes }))[0]?.status, 'CONFIRMED');
   });
 
+  test('freezing a program-owned account is not freezing a holder', () => {
+    const freezes = [1, 2, 3].map((i) => ({ ...fact(i), kind: 'FREEZE' as const, owner: pda(`vault-${i}`), authority: dev }));
+    assert.deepEqual(detectSecurityEvents(base({ freezes })), []);
+  });
+
+  test('a freeze whose owner was not reported is at most suspicious', () => {
+    const [e] = detectSecurityEvents(base({ freezes: [{ ...fact(1), kind: 'FREEZE', owner: null, authority: dev }] }));
+    assert.equal(e?.status, 'SUSPICIOUS');
+  });
+
   test('a creator selling is at most strongly suspected, never confirmed', () => {
     const [e] = detectSecurityEvents(base({ sells: [{ ...fact(1), trader: dev, tokenAmount: 400_000n }] }));
     assert.equal(e?.type, 'CREATOR_DUMP');
@@ -160,6 +170,13 @@ describe('serial networks', () => {
     assert.equal(n.findings[0]?.path.length, 1, 'the path is shown');
     assert.equal(n.findings[0]?.path[0]?.evidence, 'fund-sig');
     assert.ok(n.confidence > 0.5);
+  });
+
+  test('a creator with its own suspected history is described as such, not as a path', () => {
+    const own = buildCreatorProfile(fresh, [{ mint: mintOf('own'), blockTimeMs: T0 }], [{ mint: mintOf('own'), type: 'FREEZE_ABUSE', status: 'STRONGLY_SUSPECTED', signature: 'f' }]);
+    const n = analyzeNetwork([fresh], [], new Map([[fresh, own]]));
+    assert.equal(n.level, 'MODERATE');
+    assert.match(n.reasons[0] ?? '', /the creator itself/);
   });
 
   test('a weak association must not become malicious', () => {

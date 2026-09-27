@@ -171,12 +171,16 @@ export function parseSignatures(raw: unknown[]): SignatureInfo[] {
 }
 
 // --- transaction cache ------------------------------------------------------
-// A finalized transaction never changes, so a fetched one is kept (bounded,
-// oldest evicted first) and a request already in flight is shared rather than
-// repeated. Wallet histories overlap heavily - the same swap is in the buyer's
-// history, the pool's and the next buyer's - so this is most of the saving.
+// A finalized transaction never changes, so one fetched by signature is kept
+// (bounded, oldest evicted first) and a request already in flight is shared
+// rather than repeated.
+//
+// Address-history pages are deliberately not cached here. A page is one
+// request whatever it overlaps with, so caching its transactions saves no
+// request; measured live (2026-09-27), a six-token intelligence cycle put
+// 3,019 transactions in this cache for 0 hits and ~200 MB of memory.
 
-const TX_CACHE_LIMIT = 4_000;
+const TX_CACHE_LIMIT = 1_000;
 const txCache = new Map<string, unknown>();
 const inFlight = new Map<string, Promise<ProviderResult<unknown>>>();
 let txCacheHits = 0;
@@ -272,10 +276,6 @@ export async function addressHistory(
     ]);
     if (result.failure !== null) return { data: null, failure: result.failure };
     const txs = Array.isArray(result.data?.data) ? result.data.data : [];
-    for (const tx of txs) {
-      const signature = (tx as { transaction?: { signatures?: unknown[] } })?.transaction?.signatures?.[0];
-      if (typeof signature === 'string') remember(signature, tx);
-    }
     return { data: { txs, complete: txs.length < limit, method: 'gtfa' }, failure: null };
   }
   if (options.order === 'asc') {

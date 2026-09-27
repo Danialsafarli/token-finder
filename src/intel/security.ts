@@ -9,7 +9,7 @@
  * |---|---|---|
  * | SUPPLY_EXPANSION | supply minted after the launch | CONFIRMED when minted to a creator-linked wallet that then sold at least half of it within 24 h; STRONGLY_SUSPECTED when minted to a creator-linked wallet; SUSPICIOUS otherwise |
  * | AUTHORITY_REASSIGNED | a mint or freeze authority moved to a new address instead of being revoked | SUSPICIOUS |
- * | FREEZE_ABUSE | the freeze authority froze holders' token accounts | CONFIRMED at three or more distinct holders, STRONGLY_SUSPECTED at one or two |
+ * | FREEZE_ABUSE | the freeze authority froze holders' token accounts | CONFIRMED at three or more distinct holder wallets, STRONGLY_SUSPECTED at one or two, SUSPICIOUS when the owner was not reported; program-owned accounts are not holders |
  * | LIQUIDITY_DRAIN | a wallet removed pool liquidity | CONFIRMED when creator-linked and at least 80% of the reserve; STRONGLY_SUSPECTED when creator-linked and at least 30%; SUSPICIOUS when unlinked and at least 80% |
  * | CREATOR_DUMP | creator-linked wallets sold a large share of supply within an hour | STRONGLY_SUSPECTED at 30% of supply, SUSPICIOUS at 10%; never CONFIRMED - selling is not provably malicious |
  *
@@ -109,12 +109,18 @@ export function detectSecurityEvents(input: SecurityInput): SecurityEvent[] {
   }
 
   // --- freezes of holders ---------------------------------------------------------------
-  const frozen = input.freezes.filter((f) => f.kind === 'FREEZE' && !linked(f.owner));
-  const holders = new Set(frozen.map((f) => f.owner ?? f.signature));
+  // A holder is a wallet. Freezing a program-owned account (a vault, an
+  // escrow, a launchpad's lock) is setup, not an attack on holders; an
+  // account whose owner was not reported is at most suspicious.
+  const frozen = input.freezes.filter((f) => f.kind === 'FREEZE' && !linked(f.owner) && (f.owner === null || isOnCurve(f.owner) === true));
+  const holders = new Set(frozen.filter((f) => f.owner !== null).map((f) => f.owner as string));
   if (frozen.length > 0) {
     const first = frozen[0] as (typeof frozen)[number];
-    const status: SecurityStatus = holders.size >= 3 ? 'CONFIRMED' : 'STRONGLY_SUSPECTED';
-    push('FREEZE_ABUSE', status, first, first.authority, null, [`the freeze authority froze ${holders.size} holder account${holders.size === 1 ? '' : 's'}`], frozen.slice(1).map((f) => f.signature));
+    const status: SecurityStatus = holders.size >= 3 ? 'CONFIRMED' : holders.size >= 1 ? 'STRONGLY_SUSPECTED' : 'SUSPICIOUS';
+    const reasons = holders.size > 0
+      ? [`the freeze authority froze ${holders.size} holder wallet${holders.size === 1 ? '' : 's'}`]
+      : [`the freeze authority froze ${frozen.length} account(s) whose owner was not reported`];
+    push('FREEZE_ABUSE', status, first, first.authority, null, reasons, frozen.slice(1).map((f) => f.signature));
   }
 
   // --- liquidity drains ---------------------------------------------------------------------

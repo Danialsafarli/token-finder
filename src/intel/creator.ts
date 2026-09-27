@@ -185,7 +185,8 @@ export function analyzeNetwork(
     reasons.push(best.path.length === 0 ? 'the creator itself has a confirmed malicious history' : `${best.path.length}-hop link to an address with ${best.confirmed} confirmed malicious event(s)`);
   } else if (best) {
     level = 'MODERATE';
-    reasons.push(best.confirmed > 0 ? 'a confirmed malicious history, reachable only through weaker links' : 'a strongly suspected history reachable through strong links; nothing confirmed');
+    if (best.path.length === 0) reasons.push(best.confirmed > 0 ? 'the creator itself has a confirmed malicious history' : 'the creator itself has a strongly suspected history; nothing confirmed');
+    else reasons.push(best.confirmed > 0 ? `a confirmed malicious history ${best.path.length} hop(s) away, through links too weak to call it strong` : `a strongly suspected history ${best.path.length} hop(s) away through strong links; nothing confirmed`);
   } else if (weak.length > 0) {
     level = 'WEAK_ASSOCIATION';
     reasons.push('reachable only through behavioural coincidence (shared launches or buy sizes); this is not a malicious finding');
