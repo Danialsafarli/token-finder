@@ -131,7 +131,10 @@ Four surfaces, each with its own URL. The architecture is recorded in
 [docs/adr/0001-frontend-architecture.md](docs/adr/0001-frontend-architecture.md):
 plain ES modules, no build step, no framework.
 
-- **Board** (`/`) — the live ranking. It shows only tokens evaluated within
+- **Board** (`/`) — the Observatory as the page's hero, with the live ranking as
+  a compact panel beside it: Token (with the verdict reason under the symbol),
+  Score, Liquidity, 1h and Age. When the Board was last scanned is stated once in
+  its header. The ranking shows only tokens evaluated within
   `LIVE_WINDOW_MIN`, grouped by verdict, so a rejected token can never sit above
   a qualified one. There are segments (all, qualified, watch, rejected), search
   and sort. A search also lists matching tokens that are *not* live, labelled as

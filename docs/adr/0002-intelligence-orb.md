@@ -27,15 +27,34 @@ stays inside the product's rules:
 A slowly turning network sphere, the Observatory, with up to seven real live
 tokens tethered around it.
 
-- **Desktop (side column ≥ 1240 px):** a sphere at the top of the right column,
-  beside the title. The recent-changes rail follows below it. The table does not
-  move.
-- **Below 1240 px, down to phones:** a *planetary horizon*. The camera looks down
-  at the sphere's pole, so only its cap shows, rising from the bottom of a short
-  band between the title and the table. The cap turns in place, and a scan's
-  sweep becomes a radar arm around the pole. It shows five tokens on a tablet and
-  three on a phone, with a band 176 px or 128 px tall. It is a different
-  composition, not a shrunken sphere.
+- **Desktop (≥ 1180 px):** the Observatory is the page's hero, about 69% of the
+  width, sticky and a viewport tall. It has no frame: it sits on the page itself,
+  in one fixed atmospheric layer (a low cool field centred on the sphere, a trace
+  of violet, a vignette, all below 8% opacity). The Board is a compact console on
+  the right, clamped to 380–460 px (about 31% at 1440), in five columns: Token
+  (with the verdict reason under the symbol, up to two lines; the full name moves
+  to the tooltip on desktop), Score, Liquidity, 1h, Age. Scan freshness is
+  stated once in the panel's header, not per row; a row older than the fresh
+  window keeps a small amber marker. Recent verdict changes sit in the hero's
+  footer, beside the readout.
+- **Tablet (761–1179 px):** stacked. The hero comes first, full width and 660 px
+  tall, still a full sphere; then the Board.
+- **Phone (≤ 760 px):** the hero becomes a *planetary horizon*. The camera looks
+  down at the sphere's pole, so only its cap shows, rising from the bottom of a
+  212 px band. The cap turns in place, a scan's sweep becomes a radar arm around
+  the pole, and three tokens sit above the limb. It is a different composition,
+  not a shrunken sphere. The Orb picks it whenever its stage is shorter than
+  260 px.
+
+The sphere's token ring is an ellipse that uses the hero's width. The first two
+tokens in priority order are *primary*: larger, captioned with score and role,
+more strongly tethered. The rest are quieter. Tethers leave the sphere along its
+surface normal before bending to the token, so tokens emerge from the network
+rather than floating beside it.
+
+The network scales with the sphere: up to 300 surface nodes pulled into
+clusters around 7–11 hubs, a middle shell and a small core (front, middle and
+back depth), and up to 16 lifted hub-to-hub arcs.
 
 ### Which tokens, and why (`/api/orb`)
 
@@ -62,9 +81,9 @@ padded or invented. The payload is about 1.2 KB gzipped.
 |---|---|---|
 | idle | connection live, no scan | slow rotation with incommensurate periods (never visibly loops), breathing nodes, occasional faint pulses and couriers along backbone routes: decoration, never attached to a token |
 | scanning | `scan-start` on the stream, or `status.scanning` | a sweep crosses the network with a wake; the readout says "Scan in progress" (with the start time only if it saw the start). No progress bar: the engine reports none |
-| scan complete | `scan` event | readout gives the scan's own numbers (analysed, new). Tokens new to the selection *emerge* from their anchor node; a real verdict change pulses once; tokens the scan re-evaluated glint and release a ripple |
+| scan complete | `scan` event | an analysis wave crosses the network once; the readout gives the scan's own numbers (analysed, new). Tokens new to the selection *emerge* from their anchor node; a real verdict change pulses once; tokens the scan re-evaluated glint and release a ripple |
 | scan failed | `scan-failed` | "The last scan failed. These are the previous results." |
-| focus | hover, or keyboard focus | everything else dims, rotation slows, the token's anchor and its two-hop neighbourhood light, its tether takes the verdict colour, and the readout previews verdict, score, reason and why it was surfaced |
+| focus | hover, or keyboard focus | everything else dims, rotation slows, the token's anchor and its two-hop neighbourhood light, its shortest route to a network hub is traced, its tether takes the verdict colour, and the readout previews verdict, score, reason and why it was surfaced |
 | offline | connection offline or reconnecting | rotation eases to a stop and the network dims: an instrument that is not observing must not look as if it were |
 
 A token *emerges* only after a scan changed the selection. On first load, or when
@@ -94,7 +113,8 @@ Measured with Chrome's Performance metrics on the real database at 1440×900:
 | | main thread at rest |
 |---|---|
 | first implementation, 60 fps | 60% (DPR 1) / 92% (DPR 2), software-rendered |
-| shipped, GPU (Intel Iris Xe, D3D11) | 12% (DPR 1) / 16% (DPR 2) |
+| shipped, GPU (Intel Iris Xe, D3D11), sidebar sphere | 12% (DPR 1) / 16% (DPR 2) |
+| hero sphere (~820×540 stage, ~300 surface nodes), GPU | 14% (DPR 1) / 15% (DPR 2) |
 | loop paused (hidden tab, off-screen) | < 1% |
 
 This came from, in order of effect:
@@ -125,9 +145,10 @@ lights the token's neighbourhood.
 
 ## Consequences
 
-- The Board's layout gains a side column that holds the Observatory above the
-  rail. It is rendered once per mount, and the Board repaints its own slots
-  around it.
+- The Board page is recomposed around the Observatory: hero on the left, the
+  Board as a compact panel on the right. The Observatory is rendered once per
+  mount, and the Board repaints its own slots (head, table, and the changes list
+  in the Observatory's footer) around it.
 - Rule 4 of the visual system ("motion only when something changed") gains one
   stated exception, recorded in `styles.css`.
 - The test fixture can now emit the monitor's own `scan-start`, `scan` and

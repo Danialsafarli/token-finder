@@ -55,7 +55,7 @@ import { dossierUrl, tokenIcon, verdictChip, toneClass } from './components.js';
  *           last: { at: number, durationMs: number, analyzed: number, fresh: number } | null },
  *   tokens: OrbToken[]
  * }} OrbResponse
- * @typedef {{ x: number, y: number, z: number, hub: boolean, inner: boolean, freq: number, phase: number, size: number, density: number }} Node
+ * @typedef {{ x: number, y: number, z: number, hub: boolean, inner: boolean, shell: number, freq: number, phase: number, size: number, density: number }} Node
  * @typedef {{ a: number, b: number, w: number, target: number }} Edge
  * @typedef {{ points: { x: number, y: number, z: number }[] }} Route
  * @typedef {{ nodes: Node[], edges: Edge[], adjacency: number[][], near: number[][], routes: Route[] }} Network
@@ -105,23 +105,27 @@ function randomUnit(rand) {
 }
 
 /**
- * The network: a Fibonacci sphere pulled into a few clusters, so it has dense,
- * bright regions and quiet ones; hubs that carry more links; a small inner
- * shell for depth; nearest-neighbour edges; and a few backbone routes - great
- * circle arcs between hubs, lifted just off the surface - so it reads as a
- * network with structure rather than a wireframe globe.
+ * The network, built once per composition and size, never per frame.
+ *
+ * - A Fibonacci surface pulled toward a few hubs, so it has dense, bright
+ *   regions and quiet ones. Dense regions are richly linked, quiet ones
+ *   sparsely: topology, not mesh.
+ * - Two inner shells - a middle shell and a small core - so the sphere has a
+ *   front, a middle and a back rather than being a hollow wireframe.
+ * - Backbone arcs between hubs, lifted off the surface by varying heights:
+ *   the long-range paths a network has and a globe does not.
  *
  * `cap` builds only the northern cap, densely: the horizon composition looks
  * at the pole, so the cap turns in place and never leaves the view.
- * Built once per composition, never per frame.
- * @param {number} count @param {number} seed @param {boolean} cap @returns {Network}
+ * @param {number} count surface nodes @param {number} seed @param {boolean} cap @returns {Network}
  */
 function buildNetwork(count, seed, cap) {
   const rand = prng(seed);
   /** @type {Node[]} */
   const nodes = [];
   const minY = cap ? 0.12 : -1;
-  const hubs = Array.from({ length: cap ? 6 : 7 }, () => {
+  const hubCount = cap ? 6 : Math.round(clamp(count / 24, 7, 11));
+  const hubs = Array.from({ length: hubCount }, () => {
     const u = randomUnit(rand);
     return cap ? { x: u.x, y: minY + (1 - minY) * (0.35 + 0.6 * Math.abs(u.y)), z: u.z } : u;
   }).map((h) => {
@@ -129,14 +133,16 @@ function buildNetwork(count, seed, cap) {
     return { x: h.x / n, y: h.y / n, z: h.z / n };
   });
   const golden = Math.PI * (3 - Math.sqrt(5));
-  const node = (/** @type {{x:number,y:number,z:number}} */ p, hub = false, inner = false, density = 0) => ({
+  /** @param {{x:number,y:number,z:number}} p @param {boolean} hub @param {number} shell 0 surface, 1 middle, 2 core @param {number} density */
+  const node = (p, hub, shell, density) => ({
     ...p,
     hub,
-    inner,
+    inner: shell > 0,
+    shell,
     density,
     freq: 0.3 + rand() * 0.55,
     phase: rand() * TAU,
-    size: hub ? 2 : inner ? 0.8 : 0.7 + density * 0.6 + rand() * 0.35,
+    size: hub ? 2.1 : shell === 2 ? 0.8 : shell === 1 ? 0.85 : 0.62 + density * 0.7 + rand() * 0.32,
   });
 
   for (let i = 0; i < count; i++) {
@@ -156,17 +162,24 @@ function buildNetwork(count, seed, cap) {
       const n = Math.hypot(q.x, q.y, q.z);
       p = { x: q.x / n, y: q.y / n, z: q.z / n };
     }
-    nodes.push(node(p, false, false, clamp((bestDot - 0.55) / 0.45)));
+    nodes.push(node(p, false, 0, clamp((bestDot - 0.55) / 0.45)));
   }
-  for (const h of hubs) nodes.push(node(h, true, false, 1));
-  const innerCount = cap ? 0 : Math.round(count * 0.09);
-  for (let i = 0; i < innerCount; i++) {
-    const u = randomUnit(rand);
-    const r = 0.46 + rand() * 0.14;
-    nodes.push(node({ x: u.x * r, y: u.y * r, z: u.z * r }, false, true));
+  for (const h of hubs) nodes.push(node(h, true, 0, 1));
+  if (!cap) {
+    const shells = [
+      { shell: 1, share: 0.14, from: 0.72, to: 0.84 },
+      { shell: 2, share: 0.07, from: 0.34, to: 0.5 },
+    ];
+    for (const { shell, share, from, to } of shells) {
+      for (let i = 0; i < Math.round(count * share); i++) {
+        const u = randomUnit(rand);
+        const r = from + rand() * (to - from);
+        nodes.push(node({ x: u.x * r, y: u.y * r, z: u.z * r }, false, shell, 0));
+      }
+    }
   }
 
-  // Nearest neighbours by direction (outer) and by distance (inner).
+  // Nearest neighbours by distance.
   const near = nodes.map((a, i) =>
     nodes
       .map((b, j) => ({ j, d: i === j ? Infinity : (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2 }))
@@ -185,27 +198,32 @@ function buildNetwork(count, seed, cap) {
     edges.push({ a, b, w: 1, target: 1 });
   };
   nodes.forEach((n, i) => {
-    // Dense regions are richly linked, quiet ones sparsely: topology, not mesh.
-    const k = n.hub ? 6 : n.inner ? 2 : n.density > 0.45 ? 4 : n.density > 0.1 ? 3 : 2;
+    const k = n.hub ? 6 : n.inner ? 2 : n.density > 0.45 ? 4 : 3;
     for (const j of near[i].slice(0, k)) link(i, j);
   });
 
-  // Backbones: arcs between hub pairs, a little above the surface.
+  // Backbones: arcs between hub pairs at varied heights above the surface.
   /** @type {Route[]} */
   const routes = [];
   const hubIndex = nodes.map((n, i) => (n.hub ? i : -1)).filter((i) => i >= 0);
+  const pairs = [];
   for (let a = 0; a < hubIndex.length; a++) {
-    const from = nodes[hubIndex[a]];
-    const to = nodes[hubIndex[(a + 2) % hubIndex.length]];
-    const dot = from.x * to.x + from.y * to.y + from.z * to.z;
-    const omega = Math.acos(clamp(dot, -1, 1));
-    if (omega < 0.4 || omega > 2.6) continue;
+    for (let b = a + 1; b < hubIndex.length; b++) {
+      const from = nodes[hubIndex[a]];
+      const to = nodes[hubIndex[b]];
+      const omega = Math.acos(clamp(from.x * to.x + from.y * to.y + from.z * to.z, -1, 1));
+      if (omega > 0.5 && omega < 2.2) pairs.push({ from, to, omega, order: rand() });
+    }
+  }
+  pairs.sort((p, q) => p.order - q.order);
+  for (const { from, to, omega } of pairs.slice(0, cap ? 7 : 16)) {
+    const height = 0.04 + rand() * 0.1;
     const points = [];
     for (let k = 0; k <= 28; k++) {
       const f = k / 28;
       const s1 = Math.sin((1 - f) * omega) / Math.sin(omega);
       const s2 = Math.sin(f * omega) / Math.sin(omega);
-      const lift = 1 + 0.07 * Math.sin(Math.PI * f);
+      const lift = 1 + height * Math.sin(Math.PI * f);
       points.push({ x: (from.x * s1 + to.x * s2) * lift, y: (from.y * s1 + to.y * s2) * lift, z: (from.z * s1 + to.z * s2) * lift });
     }
     routes.push({ points });
@@ -246,31 +264,87 @@ function neighbourhood(adjacency, start, depth) {
   return distance;
 }
 
+/**
+ * Shortest route from `start` to the nearest hub, by breadth-first search.
+ * @param {Network} network @param {number} start @returns {number[] | null}
+ */
+function pathToHub(network, start) {
+  /** @type {Map<number, number>} */
+  const parent = new Map([[start, -1]]);
+  const queue = [start];
+  while (queue.length > 0) {
+    const n = /** @type {number} */ (queue.shift());
+    if (network.nodes[n].hub && n !== start) {
+      const path = [n];
+      let p = /** @type {number} */ (parent.get(n));
+      while (p !== -1) {
+        path.unshift(p);
+        p = /** @type {number} */ (parent.get(p));
+      }
+      return path;
+    }
+    for (const m of network.adjacency[n]) {
+      if (!parent.has(m)) {
+        parent.set(m, n);
+        queue.push(m);
+      }
+    }
+  }
+  return null;
+}
+
 // --- templates ---------------------------------------------------------------
 
 const shell = () => html`
   <section class="orb" aria-labelledby="orb-title" data-state="idle">
     <header class="orb__head">
-      <h2 class="section-title" id="orb-title">Observatory</h2>
+      <div class="orb__title">
+        <p class="orb__eyebrow">Live token intelligence · Solana</p>
+        <h2 class="orb__name" id="orb-title">Observatory</h2>
+        <p class="orb__sub">The live tokens that matter right now, each surfaced for a stated reason.</p>
+      </div>
       <p class="orb__status" role="status"><span class="orb__beacon" aria-hidden="true"></span><span class="orb__status-text">Connecting</span></p>
     </header>
     <div class="orb__stage">
       <canvas class="orb__canvas" aria-hidden="true"></canvas>
       <ol class="orb__markers" aria-label="Tokens the Observatory is surfacing"></ol>
     </div>
-    <div class="orb__readout"></div>
+    <div class="orb__footer">
+      <div class="orb__readout"></div>
+      <div class="orb__aside"></div>
+    </div>
   </section>`;
 
 /** @param {OrbToken} token */
 const markerLabel = (token) =>
   `${token.symbol} — ${token.verdictLabel}, score ${token.score}. ${token.why}${token.whyAt ? `, ${ago(token.whyAt)}` : ''}. ${token.reason}. Opens the token's dossier.`;
 
-/** @param {OrbToken} token */
-const markerInner = (token) => html`${tokenIcon(token, 28)}<span class="orb-marker__symbol">${token.symbol}</span>`;
+/** The role in two words, for the primary tokens' caption. */
+const ROLE_SHORT = /** @type {Record<OrbToken['role'], string>} */ ({
+  changed: 'Verdict changed',
+  top: 'Top score',
+  newest: 'Newest',
+  watch: 'On watch',
+  rejected: 'Rejected',
+});
 
-/** @param {OrbToken} token */
-const markerTemplate = (token) => html`<li class="orb__item">
-  <a class="orb-marker orb-marker--${token.tone}" href="${dossierUrl(token.mint)}" data-link data-mint="${token.mint}" aria-label="${markerLabel(token)}">${markerInner(token)}</a>
+/**
+ * The first two tokens in priority order are primary: larger, captioned, and
+ * more strongly tethered. The rest stay quiet. A disciplined hierarchy rather
+ * than seven equal stickers.
+ * @param {OrbToken} token @param {boolean} primary
+ */
+const markerInner = (token, primary) =>
+  html`${tokenIcon(token, primary ? 40 : 28)}<span class="orb-marker__symbol">${token.symbol}</span>${primary
+    ? html`<span class="orb-marker__caption">${token.score} · ${ROLE_SHORT[token.role]}</span>`
+    : ''}`;
+
+/** @param {OrbToken} token @param {boolean} primary */
+const markerClass = (token, primary) => `orb-marker orb-marker--${token.tone}${primary ? ' orb-marker--primary' : ''}`;
+
+/** @param {OrbToken} token @param {boolean} primary */
+const markerTemplate = (token, primary) => html`<li class="orb__item">
+  <a class="${markerClass(token, primary)}" href="${dossierUrl(token.mint)}" data-link data-mint="${token.mint}" aria-label="${markerLabel(token)}">${markerInner(token, primary)}</a>
 </li>`;
 
 /** @param {OrbToken} token */
@@ -327,6 +401,11 @@ export function mountOrb(host) {
     cy: 0,
     radius: 0,
     ringRadius: 0,
+    /** The sphere's token ring is an ellipse: it uses the hero's width. */
+    ringX: 0,
+    ringY: 0,
+    /** A real scan just completed: an analysis wave crosses the network (wall-clock ms). */
+    waveStart: -1,
     maxMarkers: 7,
     /** @type {Network | null} */ network: null,
     networkKey: '',
@@ -364,7 +443,7 @@ export function mountOrb(host) {
   let data = null;
   /**
    * Marker state by mint.
-   * @type {Map<string, { token: OrbToken, el: HTMLAnchorElement, item: HTMLLIElement, slot: number, fraction: number,
+   * @type {Map<string, { token: OrbToken, primary: boolean, el: HTMLAnchorElement, item: HTMLLIElement, slot: number, fraction: number,
    *   enter: number, appear: number, exit: number, anchor: number, anchorFrom: number, anchorBlend: number, anchorCheckAt: number,
    *   bob: number, glintAt: number, pulseAt: number, last: string, lastOpacity: string }>}
    */
@@ -377,6 +456,8 @@ export function mountOrb(host) {
   let focused = null;
   /** @type {Map<number, number> | null} */
   let focusNeighbourhood = null;
+  /** The focused token's shortest route to a hub, as node indices. @type {number[] | null} */
+  let focusPath = null;
 
   let frame = 0;
   let frames = 0;
@@ -424,6 +505,14 @@ export function mountOrb(host) {
     g.beginPath();
     g.arc(cx, cy, radius * 1.08, 0, TAU);
     g.fill();
+    // Atmosphere: the faintest halo beyond the limb, for depth, not glow.
+    const air = g.createRadialGradient(cx, cy, radius * 0.98, cx, cy, radius * 1.32);
+    air.addColorStop(0, `rgba(${A},0.05)`);
+    air.addColorStop(1, `rgba(${A},0)`);
+    g.fillStyle = air;
+    g.beginPath();
+    g.arc(cx, cy, radius * 1.32, 0, TAU);
+    g.fill();
     g.lineWidth = 1;
     g.strokeStyle = `rgba(${A},0.09)`;
     g.beginPath();
@@ -453,7 +542,8 @@ export function mountOrb(host) {
     canvas.width = Math.round(width * scene.dpr);
     canvas.height = Math.round(height * scene.dpr);
 
-    const horizon = width / height > 1.7;
+    // A short band gets the horizon; anything with room for a sphere gets one.
+    const horizon = height < 260;
     scene.composition = horizon ? 'horizon' : 'sphere';
     if (horizon) {
       // A planet rising from the bottom of the band, seen from above its pole:
@@ -464,15 +554,20 @@ export function mountOrb(host) {
       scene.ringRadius = scene.radius + height * 0.28;
       scene.maxMarkers = width < 560 ? 3 : width < 820 ? 4 : 5;
     } else {
-      scene.radius = Math.min(width, height) * 0.315;
+      scene.radius = Math.min(height * 0.345, width * 0.27);
       scene.cx = width / 2;
       scene.cy = height / 2;
       scene.ringRadius = scene.radius * 1.4;
+      scene.ringY = Math.min(scene.radius * 1.36, height / 2 - 34);
+      scene.ringX = Math.max(scene.ringY, Math.min(scene.radius * 1.7, width / 2 - 64));
       scene.maxMarkers = 7;
     }
-    const key = horizon ? (width < 560 ? 'horizon-s' : 'horizon-l') : 'sphere';
+    // Density follows size: a large sphere gets a richer network, in steps so a
+    // resize does not rebuild it on every pixel.
+    const surface = horizon ? (width < 560 ? 104 : 150) : Math.round(clamp(scene.radius * 1.55, 110, 300) / 20) * 20;
+    const key = `${scene.composition}-${surface}`;
     if (key !== scene.networkKey) {
-      scene.network = buildNetwork(key === 'horizon-s' ? 104 : key === 'horizon-l' ? 150 : 118, 1905, horizon);
+      scene.network = buildNetwork(surface, 1905, horizon);
       scene.couriers = [];
       scene.networkKey = key;
       scene.signals = [];
@@ -779,6 +874,21 @@ export function mountOrb(host) {
       return g * scene.scanAmount;
     };
 
+    // A completed scan sends one analysis wave out across the network.
+    const waveK = scene.waveStart >= 0 ? (performance.now() - scene.waveStart) / 2600 : 2;
+    if (waveK >= 1) scene.waveStart = -1;
+    const origin = horizon ? toScreen(cam, 0, 1, 0, scene.radius) : { x: scene.cx, y: scene.cy };
+    /** @param {number} i */
+    const waveGlow = (i) => {
+      if (waveK >= 1 || proj.z[i] < -0.1) return 0;
+      const d = Math.hypot(proj.x[i] - origin.x, proj.y[i] - origin.y) / scene.radius - waveK * 1.15;
+      return Math.exp(-(d * d) / 0.005) * (1 - waveK);
+    };
+    /** @param {number} i */
+    const glowOf = (i) => Math.max(sweepGlow(network.nodes[i]), waveGlow(i)) * (network.nodes[i].inner ? 0.35 : 1);
+    /** @param {Node} p */
+    const shellAlpha = (p) => (p.shell === 2 ? 0.45 : p.shell === 1 ? 0.62 : 1);
+
     const near = focusNeighbourhood;
 
     // Edges, batched into alpha buckets: a handful of strokes per frame.
@@ -792,10 +902,10 @@ export function mountOrb(host) {
       const { a, b } = edge;
       if (horizon && !inView(a) && !inView(b)) continue;
       const z = (proj.z[a] + proj.z[b]) / 2;
-      let alpha = depthAlpha(z) * 0.3 * edge.w;
+      let alpha = depthAlpha(z) * 0.3 * edge.w * Math.min(shellAlpha(network.nodes[a]), shellAlpha(network.nodes[b]));
       const inFocus = near && near.has(a) && near.has(b);
       alpha *= inFocus ? 1 : dim;
-      const glow = Math.max(sweepGlow(network.nodes[a]), sweepGlow(network.nodes[b]));
+      const glow = Math.max(glowOf(a), glowOf(b));
       if (glow > 0.4 && z > -0.1) {
         hot.moveTo(proj.x[a], proj.y[a]);
         hot.lineTo(proj.x[b], proj.y[b]);
@@ -817,9 +927,24 @@ export function mountOrb(host) {
       ctx.stroke(paths[i]);
     }
     if (hotCount > 0) {
-      ctx.strokeStyle = `rgba(${A},${(0.28 + 0.3 * Math.max(scene.scanAmount, scene.focusAmount)) * life})`;
+      ctx.strokeStyle = `rgba(${A},${(0.28 + 0.3 * Math.max(scene.scanAmount, scene.focusAmount, waveK < 1 ? 1 - waveK : 0)) * life})`;
       ctx.lineWidth = 1;
       ctx.stroke(hot);
+    }
+    // The focused token's route into the network: anchor to its nearest hub.
+    if (focusPath && focusPath.length > 1 && scene.focusAmount > 0.02) {
+      ctx.strokeStyle = `rgba(${colors.accent},${0.85 * scene.focusAmount * life})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(proj.x[focusPath[0]], proj.y[focusPath[0]]);
+      for (const n of focusPath.slice(1)) ctx.lineTo(proj.x[n], proj.y[n]);
+      ctx.stroke();
+      const hub = focusPath[focusPath.length - 1];
+      ctx.strokeStyle = `rgba(${colors.accent},${0.6 * scene.focusAmount * life})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(proj.x[hub], proj.y[hub], 7, 0, TAU);
+      ctx.stroke();
     }
 
     // Signals travelling along edges.
@@ -866,8 +991,8 @@ export function mountOrb(host) {
       const z = proj.z[i];
       const breath = (0.62 + 0.38 * p.density) * (0.8 + 0.2 * breathing * Math.sin(t * p.freq + p.phase));
       const inFocus = near ? near.has(i) : false;
-      const glow = sweepGlow(p);
-      const alpha = clamp(depthAlpha(z) * breath * (inFocus ? 1 : dim) * life + glow * 0.6 * depthAlpha(z));
+      const glow = glowOf(i);
+      const alpha = clamp(depthAlpha(z) * breath * shellAlpha(p) * (inFocus ? 1 : dim) * life + glow * 0.6 * depthAlpha(z));
       const r = p.size * proj.s[i] * (0.75 + 0.45 * clamp((z + 1) / 2)) + glow * 0.8;
       if (glow > 0.3 || (inFocus && scene.focusAmount > 0.05)) {
         litPath.moveTo(proj.x[i] + r + 0.6, proj.y[i]);
@@ -941,8 +1066,8 @@ export function mountOrb(host) {
       return { x, y: Math.min(y, scene.height * 0.62) };
     }
     const angle = -Math.PI / 2 + 0.42 + fraction * TAU + t * (TAU / 520);
-    const r = scene.ringRadius + 3 * Math.sin(t * 0.45 + bob);
-    return { x: scene.cx + Math.cos(angle) * r, y: scene.cy + Math.sin(angle) * r * 0.96 };
+    const breathe = 1 + 0.012 * Math.sin(t * 0.45 + bob);
+    return { x: scene.cx + Math.cos(angle) * scene.ringX * breathe, y: scene.cy + Math.sin(angle) * scene.ringY * breathe };
   };
 
   /**
@@ -1072,18 +1197,20 @@ export function mountOrb(host) {
       const to = slotPosition(marker.fraction, marker.bob);
       const isFocused = focused === marker.token.mint;
       const presence = marker.exit > 0 ? 1 - marker.exit : marker.enter;
-      let alpha = (isFocused ? 0.3 + 0.55 * scene.focusAmount : 0.3 * (1 - 0.7 * scene.focusAmount)) * presence;
+      const rest = marker.primary ? 0.42 : 0.24;
+      let alpha = (isFocused ? 0.3 + 0.55 * scene.focusAmount : rest * (1 - 0.7 * scene.focusAmount)) * presence;
       alpha *= 1 - 0.5 * scene.offlineAmount;
       // Pull the line back from the marker so it meets the icon's edge.
       const dx = to.x - from.x, dy = to.y - from.y;
       const length = Math.hypot(dx, dy) || 1;
-      const end = { x: to.x - (dx / length) * 16, y: to.y - (dy / length) * 16 };
-      // Bow slightly outward from the centre: a tether, not a ruler line.
-      const mx = (from.x + end.x) / 2, my = (from.y + end.y) / 2;
-      const ox = mx - scene.cx, oy = my - scene.cy;
-      const olen = Math.hypot(ox, oy) || 1;
-      const bow = Math.min(18, length * 0.18);
-      const cx = mx + (ox / olen) * bow, cy = my + (oy / olen) * bow;
+      const inset = marker.primary ? 22 : 16;
+      const end = { x: to.x - (dx / length) * inset, y: to.y - (dy / length) * inset };
+      // The tether leaves the sphere along its surface normal, then bends to
+      // the token: it emerges from the network rather than being ruled to it.
+      const nx = from.x - scene.cx, ny = from.y - scene.cy;
+      const nlen = Math.hypot(nx, ny) || 1;
+      const reach = Math.min(length * 0.5, 80);
+      const cx = from.x + (nx / nlen) * reach, cy = from.y + (ny / nlen) * reach;
       const tone = isFocused ? toneRgb(marker.token.tone) : colors.accent;
       const gradient = ctx.createLinearGradient(from.x, from.y, end.x, end.y);
       gradient.addColorStop(0, `rgba(${tone},${alpha})`);
@@ -1161,12 +1288,21 @@ export function mountOrb(host) {
         existing.el.removeAttribute('aria-hidden');
       }
       if (existing) {
+        const primary = index < 2;
         const verdictChanged = existing.token.verdict !== token.verdict;
         const reevaluated = existing.token.lastSeenAt !== token.lastSeenAt;
-        if (verdictChanged || existing.token.score !== token.score || existing.token.symbol !== token.symbol || existing.token.why !== token.why) {
-          render(existing.el, markerInner(token));
-          existing.el.className = `orb-marker orb-marker--${token.tone}`;
+        if (
+          verdictChanged ||
+          primary !== existing.primary ||
+          existing.token.score !== token.score ||
+          existing.token.symbol !== token.symbol ||
+          existing.token.why !== token.why
+        ) {
+          render(existing.el, markerInner(token, primary));
+          existing.el.className = markerClass(token, primary);
+          if (existing.el.classList.contains('is-focused') || focused === token.mint) existing.el.classList.add('is-focused');
           existing.el.setAttribute('aria-label', markerLabel(token));
+          existing.primary = primary;
         }
         if (verdictChanged && !reduced) {
           existing.el.classList.add('is-changed');
@@ -1178,7 +1314,7 @@ export function mountOrb(host) {
         return;
       }
       const holder = document.createElement('ol');
-      render(holder, markerTemplate(token));
+      render(holder, markerTemplate(token, index < 2));
       const item = /** @type {HTMLLIElement} */ (holder.firstElementChild);
       const el = /** @type {HTMLAnchorElement} */ (item.querySelector('a'));
       // Keep DOM (and so tab) order equal to priority order.
@@ -1186,6 +1322,7 @@ export function mountOrb(host) {
       list.insertBefore(item, before);
       markers.set(token.mint, {
         token,
+        primary: index < 2,
         el,
         item,
         slot: freeSlot(),
@@ -1292,6 +1429,7 @@ export function mountOrb(host) {
     for (const marker of markers.values()) marker.el.classList.toggle('is-focused', marker.token.mint === focused);
     const marker = focused ? markers.get(focused) : null;
     focusNeighbourhood = marker && marker.anchor >= 0 && scene.network ? neighbourhood(scene.network.adjacency, marker.anchor, 2) : null;
+    focusPath = marker && marker.anchor >= 0 && scene.network ? pathToHub(scene.network, marker.anchor) : null;
     if (marker && marker.anchor >= 0 && !reduced) walk(marker.anchor, 4, 1);
     if (reduced) scene.focusAmount = focused ? 1 : 0;
     paintReadout();
@@ -1317,6 +1455,8 @@ export function mountOrb(host) {
   let drawQueued = 0;
   const requestDraw = () => {
     if (frame !== 0 || timer !== 0 || drawQueued !== 0 || disposed) return;
+    // Nothing is drawn into a hidden tab; showing it again redraws.
+    if (document.visibilityState !== 'visible') return;
     drawQueued = requestAnimationFrame(() => {
       drawQueued = 0;
       if (disposed) return;
@@ -1340,15 +1480,27 @@ export function mountOrb(host) {
   // --- data ----------------------------------------------------------------
 
   let loading = false;
+  /** Bumped by every scan event, so a response cannot overrule a newer event. */
+  let scanEvents = 0;
+  let reloadQueued = false;
   const load = async () => {
-    if (loading || disposed) return;
+    if (disposed) return;
+    // A scan finishing while a request is in flight must still be reflected:
+    // queue one more load rather than dropping this one.
+    if (loading) {
+      reloadQueued = true;
+      return;
+    }
     loading = true;
+    const seenEvents = scanEvents;
     try {
       const next = /** @type {OrbResponse} */ (await api('/api/orb'));
       if (disposed) return;
       const first = data === null;
       data = next;
-      status.scanning = next.scan.scanning;
+      // The response describes the moment it was generated. If a scan event
+      // arrived since the request went out, the event is newer: keep it.
+      if (seenEvents === scanEvents) status.scanning = next.scan.scanning;
       if (!first) {
         for (const token of next.tokens) {
           const marker = markers.get(token.mint);
@@ -1362,6 +1514,10 @@ export function mountOrb(host) {
       // The connection banner says the server is unreachable; keep what we have.
     } finally {
       loading = false;
+      if (reloadQueued && !disposed) {
+        reloadQueued = false;
+        void load();
+      }
     }
   };
 
@@ -1410,7 +1566,11 @@ export function mountOrb(host) {
   const onImageError = (event) => {
     if (event.target instanceof HTMLImageElement) event.target.classList.add('is-broken');
   };
-  const onVisibility = () => (document.visibilityState === 'visible' ? start() : stop());
+  const onVisibility = () => {
+    if (document.visibilityState !== 'visible') return stop();
+    start();
+    requestDraw();
+  };
   const onMotionPreference = () => {
     reduced = reducedQuery.matches;
     stop();
@@ -1451,11 +1611,13 @@ export function mountOrb(host) {
     }
   });
   const offEvents = onServerEvent((kind, payload) => {
+    if (kind === 'scan-start' || kind === 'scan' || kind === 'scan-failed') scanEvents += 1;
     if (kind === 'scan-start') {
       status.scanning = true;
       status.scanStartedAt = typeof payload?.at === 'number' ? payload.at : Date.now();
       status.lastOutcome = 'ok';
     } else if (kind === 'scan') {
+      if (!reduced) scene.waveStart = performance.now();
       status.scanning = false;
       status.scanStartedAt = null;
       status.lastOutcome = 'complete';
@@ -1486,6 +1648,8 @@ export function mountOrb(host) {
   void load();
 
   return {
+    /** A slot in the Observatory's footer that the host page may fill. */
+    aside: /** @type {HTMLElement} */ (root.querySelector('.orb__aside')),
     dispose() {
       disposed = true;
       stop();

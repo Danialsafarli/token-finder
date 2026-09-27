@@ -11,9 +11,9 @@
 
 import { appUrl, html, render } from '../lib/html.js';
 import { api } from '../lib/api.js';
-import { age, count, pct, span, usd } from '../lib/format.js';
+import { age, ago, count, pct, span, usd } from '../lib/format.js';
 import { navigate, setQuery } from '../lib/router.js';
-import { onServerEvent } from '../lib/live.js';
+import { liveState, onServerEvent } from '../lib/live.js';
 import { mountOrb } from '../ui/orb.js';
 import {
   dossierUrl,
@@ -130,26 +130,36 @@ function move(value) {
   return html`<span class="move move--${dir}">${pct(value)}</span>`;
 }
 
-/** @param {BoardRow} row */
+/**
+ * A row in five columns. The reason - Token Finder's own intelligence, and the
+ * most important thing in the row - rides under the symbol rather than taking
+ * a column. When a scan evaluated the token is shown once, in the Board's
+ * header; a row older than the fresh window keeps a small marker, because
+ * that is information, not repetition.
+ * @param {BoardRow} row
+ */
 function rowTemplate(row) {
   const href = dossierUrl(row.mint);
+  const aging = row.freshness === 'AGING';
   return html`<tr class="board-row" data-mint="${row.mint}" data-verdict="${row.verdict}">
     <td class="col-token">
-      <a class="token-link" href="${href}" data-link data-row-link>
+      <a class="token-link" href="${href}" data-link data-row-link title="${row.symbol} · ${row.name}">
         ${tokenIcon(row)}
         <span class="token-link__text">
           <span class="sr-only">${VERDICT_LABEL[row.verdict] ?? row.verdict}: </span>
-          <span class="token-link__symbol">${row.symbol}${row.verified ? html`<span class="badge badge--verified" title="Verified on Jupiter">Verified</span>` : ''}${row.program === 'TOKEN_2022' ? html`<span class="badge" title="Token-2022 program">T22</span>` : ''}</span>
-          <span class="token-link__name">${row.name}</span>
+          <span class="token-link__line">
+            <span class="token-link__symbol">${row.symbol}</span>${row.verified ? html`<span class="badge badge--verified" title="Verified on Jupiter">Verified</span>` : ''}${row.program === 'TOKEN_2022' ? html`<span class="badge" title="Token-2022 program">T22</span>` : ''}
+            <span class="token-link__name">${row.name}</span>
+            ${aging ? html`<span class="aging" title="Evaluated ${ago(row.lastSeenAt)}"><span class="sr-only">, evaluated ${ago(row.lastSeenAt)}</span></span>` : ''}
+          </span>
+          <span class="token-link__reason reason ${toneClass(row.tone)}">${row.reason}</span>
         </span>
       </a>
     </td>
     <td class="col-score">${scoreRing(row.score, row.coverage)}</td>
-    <td class="col-reason"><span class="reason ${toneClass(row.tone)}">${row.reason}</span></td>
     <td class="col-num">${usd(row.liquidityUsd)}</td>
     <td class="col-num">${move(row.change1h)}</td>
     <td class="col-num col-age">${age(row.ageHours)}</td>
-    <td class="col-seen"><span class="seen seen--${row.freshness.toLowerCase()}">${timeAgo(row.lastSeenAt)}</span></td>
   </tr>`;
 }
 
@@ -170,10 +180,25 @@ function cardTemplate(row) {
         <span><span class="card__k">Liq</span> ${usd(row.liquidityUsd)}</span>
         <span><span class="card__k">1h</span> ${move(row.change1h)}</span>
         <span><span class="card__k">Age</span> ${age(row.ageHours)}</span>
-        <span class="seen seen--${row.freshness.toLowerCase()}">${timeAgo(row.lastSeenAt)}</span>
+        ${row.freshness === 'AGING' ? html`<span class="card__aging"><span class="aging" aria-hidden="true"></span>evaluated ${ago(row.lastSeenAt)}</span>` : ''}
       </span>
     </a>
   </li>`;
+}
+
+/**
+ * When the Board's evidence was gathered, stated once. The scan time comes from
+ * the live status; if a scan is running now, that is said too.
+ * @param {BoardResponse} data
+ */
+function freshnessLine(data) {
+  const status = liveState().status;
+  const last = status?.lastScanAt ?? null;
+  const aging = data.rows.some((row) => row.freshness === 'AGING');
+  return html`<p class="board-head__fresh">
+    ${status?.scanning ? html`<span class="board-head__scanning">Scan in progress</span> · ` : ''}${last ? html`Last scan ${ago(last)}` : 'No scan yet'}
+    ${aging ? html`<span class="board-head__legend"><span class="aging" aria-hidden="true"></span>evaluated over ${data.window.freshMinutes} min ago</span>` : ''}
+  </p>`;
 }
 
 /** @param {BoardResponse} data */
@@ -240,18 +265,16 @@ function boardTemplate(data) {
           <caption id="board-caption" class="sr-only">Live tokens, ${segment} view, ${data.total} rows. Use j and k to move between rows and Enter to open.</caption>
           <thead>
             <tr>
-              <th scope="col">Token</th>
+              <th scope="col">Token <span class="th-note">· why</span></th>
               <th scope="col" class="col-score" title="Score in the centre; the ring shows coverage — how much of the evidence was measured">Score</th>
-              <th scope="col">Why</th>
               <th scope="col" class="col-num">Liquidity</th>
               <th scope="col" class="col-num">1h</th>
               <th scope="col" class="col-num col-age">Age</th>
-              <th scope="col">Evaluated</th>
             </tr>
           </thead>
           ${groups(rows).map(
             ([verdict, items]) => html`<tbody class="group group--${verdict.toLowerCase()}">
-              <tr class="group-row"><th scope="rowgroup" colspan="7">
+              <tr class="group-row"><th scope="rowgroup" colspan="5">
                 ${verdictChip(verdict)}
                 <span class="group-row__count">${groupCount(data, verdict, items.length)}</span>
                 <span class="group-row__rule">${groupRule(verdict, data.rules)}</span>
@@ -281,6 +304,7 @@ function boardTemplate(data) {
               <span class="tone--bad">${count(data.counts.REJECTED ?? 0)} rejected</span>
               ${data.counts.WATCH ? html` · <span class="tone--warn">${count(data.counts.WATCH)} watch</span>` : ''}
             </p>
+            ${freshnessLine(data)}
           </div>`;
 
   const main = html`
@@ -321,24 +345,22 @@ function boardTemplate(data) {
  * and rail slots, and never the Observatory's, so its canvas and animation
  * survive every refresh.
  *
- * DOM order is head, side column (Observatory, then recent changes), table.
- * On a wide screen the grid puts the side column on the right, level with the
- * title; on a narrow one the Observatory sits between the title and the table
- * and the recent-changes rail is hidden, as before.
+ * The Observatory is the page's hero, on the left on wide screens and first
+ * on narrow ones; the Board is the compact panel beside or below it. Recent
+ * verdict changes sit in the Observatory's footer, beside its readout.
  */
 const shellTemplate = () => html`
   <div class="board-layout">
-    <header class="board-head" data-slot="head"></header>
-    <div class="board-side">
-      <div class="board-orb" data-slot="orb"></div>
-      <aside class="rail" aria-labelledby="rail-title" data-slot="rail"></aside>
-    </div>
-    <section class="board-main" aria-labelledby="board-title" data-slot="main">${skeleton(10)}</section>
+    <div class="board-hero" data-slot="orb"></div>
+    <section class="board-panel" aria-labelledby="board-title">
+      <header class="board-head" data-slot="head"></header>
+      <div class="board-main" data-slot="main">${skeleton(10)}</div>
+    </section>
   </div>`;
 
 /** @param {any[] | null} changes */
 const railSection = (changes) => html`
-  <h2 id="rail-title" class="section-title">Recent verdict changes</h2>
+  <h3 id="rail-title" class="section-title">Recent verdict changes</h3>
   ${railTemplate(changes)}
   <a class="rail__more" href="${appUrl('/changes')}" data-link>All changes →</a>`;
 
@@ -429,9 +451,11 @@ export function mountBoard(root, route) {
 
   render(root, shellTemplate());
   const slot = (/** @type {string} */ name) => /** @type {HTMLElement} */ (root.querySelector(`[data-slot="${name}"]`));
-  const slots = { head: slot('head'), main: slot('main'), rail: slot('rail') };
-  render(slots.rail, railSection(null));
   const orb = mountOrb(slot('orb'));
+  orb.aside.classList.add('rail');
+  orb.aside.setAttribute('aria-labelledby', 'rail-title');
+  const slots = { head: slot('head'), main: slot('main'), rail: orb.aside };
+  render(slots.rail, railSection(null));
 
   let debounce = 0;
   const onInput = (/** @type {Event} */ event) => {
@@ -499,6 +523,8 @@ export function mountBoard(root, route) {
 
   let refresh = 0;
   const offServer = onServerEvent((kind) => {
+    // The header's freshness line says when a scan is running.
+    if (kind === 'scan-start' && data) render(slots.head, boardTemplate(data).head);
     if (kind === 'scan' || kind === 'reconnected') {
       clearTimeout(refresh);
       refresh = window.setTimeout(() => {

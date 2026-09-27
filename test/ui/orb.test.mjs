@@ -60,22 +60,40 @@ describe('the Observatory', { skip: SKIP, timeout: 180_000 }, () => {
     assert.ok(JSON.stringify(api).length < 6_000);
   });
 
-  test('desktop: a sphere beside the Board, showing exactly the API tokens, with the Board still first', async () => {
+  test('desktop: the Observatory is the hero on the left, the Board a compact panel on the right', async () => {
     await openBoard();
     assert.equal(await browser.eval(`${ORB}.__orb.composition`), 'sphere');
     assert.equal(await browser.eval(`${ORB}.dataset.state`), 'idle');
     assert.equal(await browser.eval(`${ORB}.__orb.running`), true);
     const shown = await browser.eval(markerMints);
     assert.deepEqual(shown, api.tokens.slice(0, 7).map((t) => t.mint));
-    // The Orb sits in the side column; the table starts no lower than before.
     const layout = await browser.eval(`(() => {
-      const orb = document.querySelector('.orb').getBoundingClientRect();
-      const table = document.querySelector('.board-main').getBoundingClientRect();
-      return { orbLeft: orb.left, tableRight: table.right, tableTop: table.top };
+      const hero = document.querySelector('.board-hero').getBoundingClientRect();
+      const panel = document.querySelector('.board-panel').getBoundingClientRect();
+      const rows = document.querySelector('.board-row').getBoundingClientRect();
+      return { heroRight: hero.right, heroWidth: hero.width, panelLeft: panel.left, panelWidth: panel.width, firstRow: rows.top };
     })()`);
-    assert.ok(layout.orbLeft >= layout.tableRight, 'the Orb overlaps the Board');
-    assert.ok(layout.tableTop < 200, `the Board starts at ${layout.tableTop}px`);
+    assert.ok(layout.heroRight <= layout.panelLeft, 'the Observatory overlaps the Board');
+    const share = layout.heroWidth / (layout.heroWidth + layout.panelWidth);
+    assert.ok(share > 0.66 && share < 0.74, `the Observatory takes ${(share * 100).toFixed(0)}% of the width`);
+    assert.ok(layout.firstRow < 900, 'no Board row is above the fold');
     assert.equal(await browser.eval(`Math.max(document.documentElement.scrollWidth, innerWidth) - 1440`), 0);
+    assert.equal(await browser.eval(`(() => { const t = document.querySelector('.table-scroll'); return t.scrollWidth - t.clientWidth; })()`), 0, 'the table overflows its panel');
+  });
+
+  test('the compact Board: five columns, the reason kept, freshness stated once', async () => {
+    const headers = await browser.eval(`[...document.querySelectorAll('.board thead th')].map((th) => th.textContent.replace(/\\s+/g, ' ').trim())`);
+    assert.deepEqual(headers, ['Token · why', 'Score', 'Liquidity', '1h', 'Age']);
+    // Token Finder's verdict reason is still in every row.
+    assert.equal(await browser.eval(`[...document.querySelectorAll('.board-row')].every((r) => r.querySelector('.token-link__reason')?.textContent.trim().length > 0)`), true);
+    assert.match(await browser.eval(`document.querySelector('.board-head__fresh').textContent`), /Last scan/);
+  });
+
+  test('two tokens lead; the rest stay quieter', async () => {
+    const primaries = await browser.eval(`[...document.querySelectorAll('.orb-marker--primary')].map((m) => m.dataset.mint)`);
+    assert.deepEqual(primaries, api.tokens.slice(0, 2).map((t) => t.mint));
+    const caption = await browser.eval(`document.querySelector('.orb-marker--primary .orb-marker__caption').textContent`);
+    assert.match(caption, new RegExp(`^${api.tokens[0].score} · `));
   });
 
   test('hovering a token with a real pointer focuses it and previews real data', async () => {
@@ -232,20 +250,24 @@ describe('the Observatory', { skip: SKIP, timeout: 180_000 }, () => {
   test('resize: the composition follows the space, and the tokens follow the composition', async () => {
     await openBoard(1440, 900);
     assert.equal(await browser.eval(`${ORB}.__orb.composition`), 'sphere');
+    // Tablet: stacked, and still a full sphere.
     await browser.viewport(1000, 800);
+    await browser.waitFor(`${ORB}.__orb.composition === 'sphere' && document.querySelector('.board-hero').getBoundingClientRect().width > 900`);
+    // Phone width: the horizon band, with three tokens.
+    await browser.viewport(420, 800);
     await browser.waitFor(`${ORB}.__orb.composition === 'horizon'`);
-    await browser.waitFor(`document.querySelectorAll('.orb-marker:not([aria-hidden])').length === Math.min(5, ${api.tokens.length})`);
+    await browser.waitFor(`document.querySelectorAll('.orb-marker:not([aria-hidden])').length === Math.min(3, ${api.tokens.length})`);
     await browser.viewport(1440, 900);
     await browser.waitFor(`${ORB}.__orb.composition === 'sphere' && document.querySelectorAll('.orb-marker:not([aria-hidden])').length === Math.min(7, ${api.tokens.length})`);
   });
 
-  test('mobile: a horizon band with three tokens, no overflow, and a real tap opens a Dossier', async () => {
+  test('mobile: the Observatory leads as a horizon band with three tokens, no overflow, and a real tap opens a Dossier', async () => {
     await openBoard(390, 844, true);
     assert.equal(await browser.eval(`${ORB}.__orb.composition`), 'horizon');
     assert.deepEqual(await browser.eval(markerMints), api.tokens.slice(0, 3).map((t) => t.mint));
     assert.equal(await browser.eval(`Math.max(document.documentElement.scrollWidth, innerWidth) - 390`), 0);
     const band = await browser.eval(`document.querySelector('.orb__stage').getBoundingClientRect().height`);
-    assert.ok(band <= 140, `the band is ${band}px tall`);
+    assert.ok(band >= 180 && band <= 240, `the band is ${band}px tall`);
     // Every token marker sits inside the band.
     const outside = await browser.eval(`(() => {
       const stage = document.querySelector('.orb__stage').getBoundingClientRect();

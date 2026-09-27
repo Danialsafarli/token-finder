@@ -822,36 +822,141 @@ body[data-connection="offline"] .main {
 }
 
 /* ----------------------------------------------------------------- board -- */
+/*
+ * The Board page is one environment: the Observatory is the hero, open on the
+ * page itself - no frame - sticky and a viewport tall; the Board is a compact
+ * console beside it. The console takes ~30% (clamped to 380-460 px so its five
+ * columns stay readable); the Observatory takes everything else (~69% at
+ * 1440). Neither track is `auto`: an auto track grows to the longest
+ * unbreakable token name, which once widened the stage mid-click.
+ */
 .board-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  grid-template-rows: auto 1fr;
-  grid-template-areas:
-    "head side"
-    "main side";
-  column-gap: 32px;
+  grid-template-columns: minmax(0, 1fr) clamp(380px, 30.5%, 460px);
+  grid-template-areas: "hero panel";
+  column-gap: 40px;
   align-items: start;
 }
 
+/*
+ * The atmosphere the Observatory sits in. One fixed layer behind the page,
+ * present only on the Board: a low, cool field centred on the sphere, a trace
+ * of Solana violet high on the left, and a vignette for depth. All below 8%
+ * opacity - it supports the sphere and never competes with it.
+ */
+.board-layout::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 34% 46% at 35% 54%, rgba(138, 180, 255, 0.075), transparent 72%),
+    radial-gradient(ellipse 60% 70% at 35% 54%, rgba(96, 128, 214, 0.045), transparent 74%),
+    radial-gradient(ellipse 30% 34% at 14% 16%, rgba(153, 110, 255, 0.035), transparent 72%),
+    radial-gradient(ellipse 120% 95% at 35% 50%, transparent 58%, rgba(3, 4, 7, 0.55) 100%);
+}
+
+.board-hero {
+  grid-area: hero;
+  position: sticky;
+  top: calc(var(--topbar) + 20px);
+  height: calc(100vh - var(--topbar) - 44px);
+  min-height: 600px;
+  max-height: 960px;
+  min-width: 0;
+}
+
+.board-panel {
+  grid-area: panel;
+  min-width: 0;
+}
+
 .board-head {
-  grid-area: head;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .board-main {
-  grid-area: main;
   min-width: 0;
 }
 
-.board-side {
-  grid-area: side;
-  display: grid;
-  /* An auto track would grow to the longest unbreakable token name in a
-     preview, widening the stage and moving every marker. This one cannot. */
-  grid-template-columns: minmax(0, 1fr);
-  gap: 26px;
-  align-content: start;
-  min-width: 0;
+/* The panel is narrow: its toolbar stacks, search takes the width. */
+.board-panel .toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.board-panel .toolbar__controls {
+  flex: none;
+  justify-content: stretch;
+}
+.board-panel .search {
+  max-width: none;
+}
+.board-panel .notice {
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+
+/* The console's title is a label, not a second hero. */
+.board-panel .board-head h1 {
+  font-size: var(--fs-l);
+  letter-spacing: -0.01em;
+}
+.board-panel .board-head__sub {
+  font-size: var(--fs-s);
+}
+.board-panel .segment {
+  padding: 0 9px;
+}
+
+/* The desktop console is ~430 px: the symbol and Token Finder's reason earn
+   the space; the token's full name moves to the tooltip (and stays in the
+   Dossier, on tablets and on phones). The reason may take two lines rather
+   than be cut to a fragment. */
+@media (min-width: 1180px) {
+  .board-panel .token-link__line .token-link__name {
+    display: none;
+  }
+  .board-panel .board td {
+    padding: 8px 7px;
+  }
+  .board-panel .board td:first-child {
+    padding-left: 12px;
+  }
+  .board-panel .token-link {
+    gap: 9px;
+    align-items: flex-start;
+  }
+  .board-panel .token-link .avatar {
+    margin-top: 2px;
+  }
+  .board-panel .token-link__reason {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-height: 1.35;
+  }
+}
+
+/* The token column takes what is left and truncates; the numbers keep their
+   natural width. Without max-width: 0 a long reason sets the table's width. */
+.board-panel .board .col-token {
+  width: 100%;
+  max-width: 0;
+}
+.board-panel .board td:not(.col-token),
+.board-panel .board thead th:not(:first-child) {
+  width: 1%;
+  white-space: nowrap;
+}
+.board-panel .board td {
+  padding: 8px 10px;
+}
+.board-panel .board td:first-child {
+  padding-left: 14px;
 }
 
 .toolbar {
@@ -1103,13 +1208,78 @@ th.col-num {
   width: 64px;
 }
 
-.col-reason {
-  max-width: 340px;
+.th-note {
+  color: var(--text-4);
+  font-weight: 500;
 }
 
-.col-seen {
-  white-space: nowrap;
+.token-link__line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.token-link__line {
+  overflow: hidden;
+}
+
+.token-link__line .token-link__symbol {
+  flex: 0 1 auto;
+  min-width: 2ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.token-link__line .token-link__name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.token-link__line .badge,
+.token-link__line .aging {
+  flex: none;
+}
+
+/* The reason rides under the symbol: Token Finder's verdict, in one line. */
+.token-link__reason {
+  display: block;
   font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Evaluated longer ago than the fresh window: stated once in the header's
+   legend, marked here. */
+.aging {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  align-self: center;
+}
+
+.board-head__fresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 6px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.board-head__scanning {
+  color: var(--accent-strong);
+}
+
+.board-head__legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .token-link {
@@ -1255,17 +1425,47 @@ th.col-num {
  */
 .orb {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* Open on the page: the atmosphere behind it (.board-layout::before) is its
+     only setting. No frame, no surface. */
+  padding: 4px 0 0;
 }
 
 .orb__head {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
 }
 
-.orb__head .section-title {
+.orb__eyebrow {
+  margin: 0 0 6px;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.orb__name {
   margin: 0;
+  font: 600 34px / 1.05 var(--font-display);
+  letter-spacing: -0.022em;
+  color: var(--text);
+}
+
+.orb__sub {
+  max-width: 46ch;
+  margin: 8px 0 0;
+  font-size: var(--fs);
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+.orb__head .orb__status {
+  margin-top: 2px;
 }
 
 .orb__status {
@@ -1315,9 +1515,37 @@ th.col-num {
 
 .orb__stage {
   position: relative;
-  height: 304px;
-  /* The ring of tokens is wider than the rail; it borrows the column gap. */
-  margin: 0 -14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Unframed, the sphere may use the gutter and the column gap. */
+  margin: 0 -20px;
+}
+
+.orb__footer {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 32px;
+  padding-top: 16px;
+  /* A hairline that fades at both ends, rather than a box edge. */
+  background: linear-gradient(to right, transparent, var(--line) 18%, var(--line) 82%, transparent) top / 100% 1px no-repeat;
+}
+
+.orb__aside .section-title {
+  margin-bottom: 8px;
+}
+
+.orb__aside .rail-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+/* Two changes fit beside the readout; the Changes page has the rest. */
+.orb__aside .rail-list li:nth-child(n + 3) {
+  display: none;
+}
+
+.orb__aside .rail-item {
+  padding: 8px 10px;
 }
 
 .orb__canvas {
@@ -1399,6 +1627,32 @@ th.col-num {
   outline-offset: 4px;
 }
 
+.avatar--40 {
+  width: 40px;
+  height: 40px;
+}
+
+.orb-marker--primary {
+  color: var(--text-2);
+}
+
+.orb-marker--primary .orb-marker__symbol {
+  font-size: 11px;
+  color: var(--text);
+}
+
+.orb-marker__caption {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Quieter tokens, so the primaries lead. */
+.orb-marker:not(.orb-marker--primary) .avatar {
+  opacity: 0.86;
+}
+
 .orb-marker__symbol {
   max-width: 72px;
   padding: 2px 5px;
@@ -1447,8 +1701,8 @@ th.col-num {
 }
 
 .orb__readout {
-  /* Tall enough for a token preview, so focusing one never moves the rail. */
-  min-height: 100px;
+  /* Tall enough for a token preview, so focusing one never moves anything. */
+  min-height: 96px;
   min-width: 0;
   overflow: hidden;
   padding: 2px 2px 0;
@@ -2607,38 +2861,74 @@ th.col-num {
 }
 
 /* ------------------------------------------------------------- responsive -- */
-@media (max-width: 1240px) {
+@media (max-width: 1179px) {
+  /* Tablet: the Observatory leads, full width, then the Board. */
   .board-layout {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto;
     grid-template-areas:
-      "head"
-      "side"
-      "main";
+      "hero"
+      "panel";
+    row-gap: 24px;
   }
-  .board-side {
-    margin-bottom: 14px;
+  .board-hero {
+    position: static;
+    height: 680px;
+    min-height: 0;
   }
-  .rail {
+  .board-layout::before {
+    background:
+      radial-gradient(ellipse 50% 32% at 50% 36%, rgba(138, 180, 255, 0.075), transparent 72%),
+      radial-gradient(ellipse 80% 48% at 50% 36%, rgba(96, 128, 214, 0.045), transparent 74%),
+      radial-gradient(ellipse 40% 24% at 16% 12%, rgba(153, 110, 255, 0.035), transparent 72%),
+      radial-gradient(ellipse 120% 90% at 50% 40%, transparent 58%, rgba(3, 4, 7, 0.5) 100%);
+  }
+  .board-panel .toolbar {
+    flex-direction: row;
+    align-items: center;
+  }
+  .board-panel .toolbar__controls {
+    flex: 1 1 320px;
+    justify-content: flex-end;
+  }
+  .board-panel .search {
+    max-width: 340px;
+  }
+}
+
+@media (max-width: 760px) {
+  /* Phone: the horizon band - a different composition, not a smaller sphere. */
+  .board-hero {
+    height: auto;
+  }
+  .orb {
+    padding: 0;
+  }
+  .orb__name {
+    font-size: var(--fs-xl);
+  }
+  .orb__sub,
+  .orb__aside,
+  .orb-marker__caption {
     display: none;
   }
   .orb__stage {
-    height: 176px;
-    margin: 2px 0 0;
-    /* The planet's limb fades into the page rather than ending at a hard edge. */
-    -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent);
-    mask-image: linear-gradient(to bottom, #000 72%, transparent);
+    flex: none;
+    height: 212px;
+    margin: 2px -14px 0;
+    /* The planet's limb fades into the frame rather than ending at a hard edge. */
+    -webkit-mask-image: linear-gradient(to bottom, #000 74%, transparent);
+    mask-image: linear-gradient(to bottom, #000 74%, transparent);
+  }
+  .orb__footer {
+    grid-template-columns: minmax(0, 1fr);
+    padding-top: 10px;
   }
   .orb__readout {
     min-height: 0;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 2px 12px;
   }
-  .orb-preview {
-    width: 100%;
-  }
+}
+
+@media (max-width: 1240px) {
   .trust {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2734,9 +3024,13 @@ th.col-num {
     color: var(--text-2);
     font-variant-numeric: tabular-nums;
   }
-  .card__facts .seen {
+  .card__aging {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     margin-left: auto;
     font-size: var(--fs-xs);
+    color: var(--warn);
   }
   .card__k {
     color: var(--text-3);
@@ -2807,9 +3101,6 @@ th.col-num {
 }
 
 @media (max-width: 560px) {
-  .orb__stage {
-    height: 128px;
-  }
   .orb__meta,
   .orb-preview__why {
     display: none;

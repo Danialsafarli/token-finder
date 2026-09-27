@@ -72,7 +72,8 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
   });
 
   test('a real click on a row opens its Dossier', async () => {
-    await browser.click(`.board-row[data-mint="${MINTS.qualified}"] .col-reason`);
+    // A non-link cell: the whole row is the target for pointer users.
+    await browser.click(`.board-row[data-mint="${MINTS.qualified}"] .col-num`);
     await browser.waitFor(`location.pathname === '/t/${MINTS.qualified}'`);
     await browser.waitFor(`document.querySelector('.verdict-panel')`);
     const verdict = await browser.eval(`document.querySelector('.verdict-panel .verdict').textContent.trim()`);
