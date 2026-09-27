@@ -43,7 +43,7 @@ describe('the Observatory', { skip: SKIP, timeout: 180_000 }, () => {
 
   const openBoard = async (width = 1440, height = 900, mobile = false) => {
     await browser.viewport(width, height, mobile);
-    await browser.goto(`${server.origin}/`);
+    await browser.goto(`${server.origin}/discover`);
     await browser.waitFor(`${ORB} && document.querySelectorAll('.orb-marker').length > 0 && ${ORB}.__orb.frames > 2`);
   };
 
@@ -207,7 +207,7 @@ describe('the Observatory', { skip: SKIP, timeout: 180_000 }, () => {
       await browser.click('.nav__link[data-nav="system"]');
       await browser.waitFor(`location.pathname === '/system' && !document.querySelector('.orb')`);
       assert.equal(await browser.eval(`document.documentElement.dataset.orbInstances`), '0');
-      await browser.click('.nav__link[data-nav="board"]');
+      await browser.click('.nav__link[data-nav="discover"]');
       await browser.waitFor(`${ORB} && ${ORB}.__orb.running`);
       assert.equal(await browser.eval(`document.documentElement.dataset.orbInstances`), '1');
     }
@@ -225,7 +225,7 @@ describe('the Observatory', { skip: SKIP, timeout: 180_000 }, () => {
     await browser.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     try {
       await browser.viewport(1440, 900);
-      await browser.goto(`${server.origin}/`);
+      await browser.goto(`${server.origin}/discover`);
       await browser.waitFor(`${ORB} && document.querySelectorAll('.orb-marker').length > 0 && ${ORB}.__orb.frames > 0`);
       assert.equal(await browser.eval(`${ORB}.dataset.motion`), 'reduced');
       await sleep(300);
@@ -263,7 +263,8 @@ describe('the Observatory', { skip: SKIP, timeout: 180_000 }, () => {
 
   test('mobile: the Observatory leads as a horizon band with three tokens, no overflow, and a real tap opens a Dossier', async () => {
     await openBoard(390, 844, true);
-    assert.equal(await browser.eval(`${ORB}.__orb.composition`), 'horizon');
+    // Wait for the phone layout to settle rather than sampling the first frame.
+    await browser.waitFor(`${ORB}.__orb.composition === 'horizon' && document.querySelectorAll('.orb-marker:not([aria-hidden])').length === Math.min(3, ${api.tokens.length})`);
     assert.deepEqual(await browser.eval(markerMints), api.tokens.slice(0, 3).map((t) => t.mint));
     assert.equal(await browser.eval(`Math.max(document.documentElement.scrollWidth, innerWidth) - 390`), 0);
     const band = await browser.eval(`document.querySelector('.orb__stage').getBoundingClientRect().height`);
@@ -293,7 +294,7 @@ describe('the Observatory when the server goes away', { skip: SKIP, timeout: 60_
     const browser = await launch();
     try {
       await browser.viewport(1440, 900);
-      await browser.goto(`${server.origin}/`);
+      await browser.goto(`${server.origin}/discover`);
       await browser.waitFor(`${ORB} && ${ORB}.dataset.state === 'idle' && document.body.dataset.connection === 'live'`);
       server.stop();
       await browser.waitFor(`${ORB}.dataset.state === 'offline'`, 20_000);

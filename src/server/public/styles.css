@@ -2911,7 +2911,8 @@ th.col-num {
   .orb-marker__caption {
     display: none;
   }
-  .orb__stage {
+  /* Discover's hero only: the Landing composes its own phone layout. */
+  .board-hero .orb__stage {
     flex: none;
     height: 212px;
     margin: 2px -14px 0;
@@ -3185,5 +3186,567 @@ th.col-num {
   }
   .card[data-verdict="REJECTED"] .card__link {
     box-shadow: inset 3px 0 0 var(--bad);
+  }
+}
+
+/* ---------------------------------------------------------------- landing -- */
+/*
+ * The landing is one environment: the Observatory is a full-bleed layer behind
+ * the page, the headline sits above the sphere and the two paths below it. In
+ * an analysis the sphere moves left and the result arrives on the right; on a
+ * phone the Observatory is a block between the headline and the actions.
+ */
+.btn--primary {
+  min-height: 44px;
+  padding: 0 20px;
+  border-color: transparent;
+  background: var(--accent);
+  color: #0b0d12;
+  font-weight: 600;
+}
+.btn--primary:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--accent-strong);
+  color: #0b0d12;
+}
+.btn--quiet {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text-2);
+}
+
+.orb--bare {
+  height: 100%;
+  padding: 0;
+}
+.orb--bare .orb__head,
+.orb--bare .orb__footer {
+  display: none;
+}
+.orb--bare .orb__stage {
+  margin: 0;
+}
+
+.landing {
+  position: relative;
+  margin: -28px calc(-1 * var(--gutter)) -64px;
+  padding: 0 var(--gutter);
+  min-height: calc(100vh - var(--topbar));
+  /* Nothing decorative may widen the page: the headline's scrim and the
+     sphere's bleed are clipped at the landing's edges. */
+  overflow: clip;
+}
+
+/* The same restrained atmosphere as Discover, centred on the sphere. */
+.landing::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 30% 42% at 50% 56%, rgba(138, 180, 255, 0.08), transparent 72%),
+    radial-gradient(ellipse 58% 70% at 50% 56%, rgba(96, 128, 214, 0.045), transparent 74%),
+    radial-gradient(ellipse 30% 34% at 18% 14%, rgba(153, 110, 255, 0.035), transparent 72%),
+    radial-gradient(ellipse 120% 95% at 50% 52%, transparent 56%, rgba(3, 4, 7, 0.55) 100%);
+}
+
+.landing__content {
+  display: grid;
+  /* One explicit column: the result shares it with the (hidden) intro rather
+     than being auto-placed into a second, narrow one. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  min-height: calc(100vh - var(--topbar));
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(28px, 6vh, 64px) 0 clamp(24px, 5vh, 44px);
+}
+
+.landing__orb {
+  position: absolute;
+  inset: 0 0 auto;
+  height: calc(100vh - var(--topbar));
+  z-index: 0;
+}
+
+.landing__intro,
+.landing__deck {
+  position: relative;
+  z-index: 1;
+}
+
+.landing__intro {
+  grid-row: 1;
+  grid-column: 1;
+  max-width: 800px;
+  margin: 0 auto;
+  text-align: center;
+  transition:
+    opacity 0.45s ease,
+    transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1),
+    visibility 0s linear 0s;
+}
+
+.landing__eyebrow {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.landing__title {
+  margin: 14px 0 0;
+  font: 600 clamp(38px, 4.4vw, 58px) / 1.04 var(--font-display);
+  letter-spacing: -0.032em;
+  color: var(--text);
+}
+
+.landing__title-line {
+  display: block;
+  color: var(--text-2);
+}
+
+.landing__lede {
+  max-width: 60ch;
+  margin: 18px auto 0;
+  font-size: var(--fs-m);
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.landing__deck {
+  grid-row: 3;
+  grid-column: 1;
+  width: 100%;
+}
+
+/* A soft dark field behind the headline, so the network behind it never
+   competes with the words. */
+.landing__intro::before {
+  content: "";
+  position: absolute;
+  inset: -40px -120px -30px;
+  z-index: -1;
+  background: radial-gradient(ellipse 50% 50% at 50% 50%, rgba(11, 13, 18, 0.82), rgba(11, 13, 18, 0.5) 55%, transparent 78%);
+  pointer-events: none;
+}
+
+/* The two paths: one primary, one secondary, side by side. */
+.paths {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr);
+  gap: 14px;
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+.path,
+.progress,
+.result {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  /* Nearly opaque: legible over the network, and no backdrop blur to redo on
+     every frame of the animation behind it. */
+  background: rgba(12, 15, 21, 0.88);
+}
+
+.path {
+  display: block;
+  padding: 18px 20px 16px;
+  color: var(--text);
+}
+
+.path__kicker {
+  display: block;
+  margin: 0;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.path__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+  font: 600 var(--fs-l) / 1.25 var(--font-display);
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.mint-field {
+  display: flex;
+  gap: 8px;
+}
+
+.mint-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--bg-sunk);
+  color: var(--text);
+  font: 500 var(--fs) var(--mono);
+}
+
+.mint-field input::placeholder {
+  font-family: var(--font);
+  color: var(--text-4);
+}
+
+.mint-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mint-field.is-invalid input {
+  border-color: var(--bad-line);
+}
+
+.path__help,
+.path__error {
+  display: block;
+  margin: 10px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.path__error {
+  color: var(--bad);
+}
+
+.path--discover {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+
+.path--discover:hover,
+.path--discover:focus-visible {
+  border-color: var(--accent);
+  background: rgba(18, 24, 36, 0.92);
+  color: var(--text);
+}
+
+.path--discover .path__help strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.path__arrow {
+  transition: transform 0.25s ease;
+}
+
+.path--discover:hover .path__arrow,
+.path--discover:focus-visible .path__arrow {
+  transform: translateX(4px);
+}
+
+/* Scanning: the stages the pipeline has reached, nothing else. */
+.landing:not([data-phase="idle"]) .landing__intro {
+  opacity: 0;
+  transform: translateY(-14px);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.4s ease,
+    transform 0.5s ease,
+    visibility 0s linear 0.5s;
+}
+
+.progress {
+  max-width: 540px;
+  margin: 0 auto;
+  padding: 18px 22px;
+}
+
+.progress__title {
+  margin: 4px 0 0;
+  font: 600 var(--fs-l) / 1.3 var(--mono);
+}
+
+.stages {
+  display: grid;
+  gap: 9px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stage {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  animation: stage-in 0.35s ease both;
+}
+
+@keyframes stage-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.stage__mark {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--text-4);
+}
+
+.stage--active .stage__mark {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+  animation: orb-beacon 1.3s ease-in-out infinite;
+}
+
+.stage__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.stage__label {
+  font-size: var(--fs);
+  color: var(--text-3);
+}
+
+.stage--active .stage__label {
+  color: var(--text);
+}
+
+.stage__detail {
+  font-size: var(--fs-xs);
+  color: var(--text-4);
+}
+
+.progress__note {
+  margin: 14px 0 6px;
+  font-size: var(--fs-xs);
+  color: var(--text-4);
+}
+
+.progress__cancel {
+  font-size: var(--fs-xs);
+}
+
+/* Result: the sphere moves left; the verdict arrives on the right. */
+.landing[data-phase="result"] .landing__deck,
+.landing[data-phase="error"] .landing__deck {
+  grid-row: 1 / -1;
+  align-self: center;
+  justify-self: end;
+  width: min(480px, 42%);
+  animation: result-in 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) 0.3s both;
+}
+
+@keyframes result-in {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+}
+
+.result {
+  padding: 22px 24px;
+}
+
+.result__id {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 14px 0 16px;
+}
+
+.result__name {
+  min-width: 0;
+}
+
+.result__name h2 {
+  margin: 0;
+  font: 600 var(--fs-xl) / 1.1 var(--font-display);
+  letter-spacing: -0.015em;
+  outline: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result__name p {
+  margin: 3px 0 0;
+  font-size: var(--fs-s);
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result__verdict {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.result__verdict p {
+  margin: 0;
+  font-size: var(--fs);
+}
+
+.result__trust {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 18px 0 16px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--line-soft);
+}
+
+.result__trust div {
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+.result__trust dt {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.result__trust dd {
+  margin: 2px 0 0;
+  font: 600 22px / 1.2 var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.result__block {
+  margin-top: 12px;
+}
+
+.result__block h3 {
+  margin: 0 0 6px;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.result__block ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-s);
+}
+
+.result__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.result__note {
+  margin: 12px 0 0;
+}
+
+.result--error .result__error-title {
+  margin: 8px 0 6px;
+  font: 600 var(--fs-xl) / 1.15 var(--font-display);
+  outline: none;
+}
+
+.result--error p {
+  color: var(--text-2);
+}
+
+@media (max-width: 1060px) {
+  .landing[data-phase="result"] .landing__deck,
+  .landing[data-phase="error"] .landing__deck {
+    width: min(420px, 46%);
+  }
+}
+
+/* Phone: headline, then the Observatory as a block, then the actions. */
+@media (max-width: 760px) {
+  .landing {
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+  .landing__intro::before {
+    inset: -24px -8px;
+  }
+  /* Both paths must be on the first screen of a phone. */
+  .landing__content {
+    display: block;
+    min-height: 0;
+    padding: 18px 0 28px;
+  }
+  .landing__eyebrow {
+    display: none;
+  }
+  .landing__title {
+    margin-top: 0;
+    font-size: 32px;
+  }
+  .landing__lede {
+    margin-top: 10px;
+    font-size: var(--fs-s);
+    line-height: 1.5;
+  }
+  .landing__orb {
+    position: relative;
+    inset: auto;
+    height: 230px;
+    margin: 0 calc(-1 * var(--gutter));
+  }
+  .paths {
+    gap: 10px;
+  }
+  .path {
+    padding: 14px 16px 12px;
+  }
+  .path__title {
+    margin: 2px 0 10px;
+    font-size: var(--fs-m);
+  }
+  .landing:not([data-phase="idle"]) .landing__intro {
+    display: none;
+  }
+  .paths {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mint-field .btn {
+    padding: 0 16px;
+  }
+  .landing[data-phase="result"] .landing__deck,
+  .landing[data-phase="error"] .landing__deck {
+    width: auto;
+    animation-name: result-in-up;
+  }
+}
+
+@keyframes result-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
   }
 }

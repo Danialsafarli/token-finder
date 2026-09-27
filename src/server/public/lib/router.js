@@ -17,7 +17,11 @@ const MINT = '([1-9A-HJ-NP-Za-km-z]{16,64})';
 
 /** @type {{ name: string, pattern: RegExp, keys: string[] }[]} */
 const ROUTES = [
-  { name: 'board', pattern: /^\/$/, keys: [] },
+  // The landing and an on-demand analysis are one view in different states, so
+  // moving between them animates in place rather than remounting.
+  { name: 'landing', pattern: /^\/$/, keys: [] },
+  { name: 'landing', pattern: new RegExp(`^/analyze/${MINT}/?$`), keys: ['mint'] },
+  { name: 'board', pattern: /^\/discover\/?$/, keys: [] },
   { name: 'dossier', pattern: new RegExp(`^/t/${MINT}(?:/([a-z]+))?/?$`), keys: ['mint', 'tab'] },
   { name: 'changes', pattern: /^\/changes\/?$/, keys: [] },
   { name: 'system', pattern: /^\/system\/?$/, keys: [] },

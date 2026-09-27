@@ -70,7 +70,7 @@ function segmentHref(segment, query) {
   if (query.sort && query.sort !== 'verdict') params.set('sort', query.sort);
   if (query.q) params.set('q', query.q);
   const search = params.toString();
-  return appUrl(search ? `/?${search}` : '/');
+  return appUrl(search ? `/discover?${search}` : '/discover');
 }
 
 const VERDICT_LABEL = /** @type {Record<string, string>} */ ({
@@ -256,7 +256,7 @@ function boardTemplate(data) {
       );
     } else {
       const label = SEGMENTS.find((s) => s.id === segment)?.label ?? segment;
-      body = emptyState(`No live tokens are ${label.toLowerCase()} right now.`, `${count(data.universe.live)} live tokens in other verdicts.`, html`<a class="btn" href="${appUrl('/')}" data-link>Show all live</a>`);
+      body = emptyState(`No live tokens are ${label.toLowerCase()} right now.`, `${count(data.universe.live)} live tokens in other verdicts.`, html`<a class="btn" href="${appUrl('/discover')}" data-link>Show all live</a>`);
     }
   } else {
     body = html`

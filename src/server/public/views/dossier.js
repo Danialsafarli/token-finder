@@ -124,7 +124,7 @@ function header(d) {
   const trust = d.trust;
   const unknowns = trust.unknowns ?? [];
   return html`
-    <nav class="crumbs" aria-label="Breadcrumb"><a href="${appUrl('/')}" data-link>← Live board</a></nav>
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="${appUrl('/discover')}" data-link>← Live discovery</a></nav>
     ${placementBanner(d)}
     <header class="dossier-head">
       <div class="identity">
@@ -567,7 +567,7 @@ export function mountDossier(root, route) {
       if (disposed) return;
       if (data) return;
       if (error instanceof ApiError && error.status === 404) {
-        render(root, emptyState('Token Finder is not tracking this token.', 'It may never have been discovered, or its history has been retired.', html`<a class="btn" href="${appUrl('/')}" data-link>Back to the live board</a>`));
+        render(root, emptyState('Token Finder is not tracking this token.', 'It may never have been discovered, or its history has been retired.', html`<a class="btn" href="${appUrl(`/analyze/${encodeURIComponent(mint)}`)}" data-link>Analyze this token</a> <a class="btn btn--quiet" href="${appUrl('/discover')}" data-link>Live discovery</a>`));
         document.title = 'Not tracked — Token Finder';
         return;
       }

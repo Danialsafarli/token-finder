@@ -37,7 +37,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
 
   test('first load: the Board is live and nothing covers it', async () => {
     await browser.viewport(1440, 900);
-    await browser.goto(`${server.origin}/`);
+    await browser.goto(`${server.origin}/discover`);
     await browser.waitFor(`document.querySelectorAll('.board-row').length > 0`);
     // The centre of the page is page content, not an overlay.
     const centre = await browser.eval(`(() => { const el = document.elementFromPoint(innerWidth / 2, innerHeight / 2); return !!el && !!el.closest('main'); })()`);
@@ -117,7 +117,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
   });
 
   test('search: real click into the box, real typing, results filter', async () => {
-    await browser.goto(`${server.origin}/`);
+    await browser.goto(`${server.origin}/discover`);
     await browser.waitFor(`document.querySelectorAll('.board-row').length > 0`);
     await browser.click('#board-search');
     assert.equal(await browser.eval(`document.activeElement?.id`), 'board-search', 'search did not take focus from a real click');
@@ -136,7 +136,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
   });
 
   test('segments: a real click on Rejected shows only rejected tokens', async () => {
-    await browser.goto(`${server.origin}/`);
+    await browser.goto(`${server.origin}/discover`);
     await browser.waitFor(`document.querySelectorAll('.board-row').length > 0`);
     await browser.click('[data-segment="rejected"]');
     await browser.waitFor(`location.search.includes('segment=rejected') && [...document.querySelectorAll('.board-row')].every((r) => r.dataset.verdict === 'REJECTED')`);
@@ -147,7 +147,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
   });
 
   test('keyboard: j moves between rows and Enter opens one', async () => {
-    await browser.goto(`${server.origin}/`);
+    await browser.goto(`${server.origin}/discover`);
     await browser.waitFor(`document.querySelectorAll('.board-row').length > 1`);
     await browser.key('j', 'KeyJ', 74);
     await browser.key('j', 'KeyJ', 74);
@@ -184,7 +184,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
   });
 
   test('XSS: every hostile provider string renders inert, everywhere', async () => {
-    for (const path of ['/', `/t/${MINTS.xss}`, `/t/${MINTS.xss}/evidence`, `/t/${MINTS.xss}/contract`, '/changes?view=alerts']) {
+    for (const path of ['/', '/discover', `/t/${MINTS.xss}`, `/t/${MINTS.xss}/evidence`, `/t/${MINTS.xss}/contract`, '/changes?view=alerts']) {
       await browser.goto(`${server.origin}${path}`);
       await browser.waitFor(`document.querySelector('main') && document.querySelector('main').children.length > 0 && !document.querySelector('.skeleton')`);
       assert.deepEqual(await browser.eval(EXECUTED), [], `script executed on ${path}`);
@@ -205,7 +205,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
   test('long provider strings do not break the layout', async () => {
     for (const [width, height, mobile] of [[1440, 900, false], [390, 844, true]]) {
       await browser.viewport(width, height, mobile);
-      for (const path of ['/', `/t/${MINTS.long}`]) {
+      for (const path of ['/', '/discover', `/t/${MINTS.long}`]) {
         await browser.goto(`${server.origin}${path}`);
         await browser.waitFor(`document.querySelector('main').children.length > 0 && !document.querySelector('.skeleton')`);
         // Measured against the device width, not innerWidth: on a phone an
@@ -219,7 +219,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
 
   test('mobile: cards, no overlay, and a real touch opens a token', async () => {
     await browser.viewport(390, 844, true);
-    await browser.goto(`${server.origin}/`);
+    await browser.goto(`${server.origin}/discover`);
     await browser.waitFor(`document.querySelectorAll('.card').length > 0`);
     assert.equal(await browser.eval(`getComputedStyle(document.querySelector('.table-scroll')).display`), 'none', 'the desktop table is shown on mobile');
     const centre = await browser.eval(`(() => { const el = document.elementFromPoint(innerWidth / 2, innerHeight / 2); return !!el && !!el.closest('main'); })()`);
@@ -231,7 +231,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
   });
 
   test('mobile: primary controls are comfortable touch targets', async () => {
-    await browser.goto(`${server.origin}/`);
+    await browser.goto(`${server.origin}/discover`);
     await browser.waitFor(`document.querySelectorAll('.card').length > 0`);
     const small = await browser.eval(`[...document.querySelectorAll('.nav__link, .segment, #board-search, #board-sort, .card__link, #scan-now')]
       .map((el) => ({ el: el.className || el.id, h: el.getBoundingClientRect().height }))
@@ -303,7 +303,7 @@ describe('backend unavailable', { skip: SKIP, timeout: 60_000 }, () => {
     const browser = await launch();
     try {
       await browser.viewport(1440, 900);
-      await browser.goto(`${server.origin}/`);
+      await browser.goto(`${server.origin}/discover`);
       await browser.waitFor(`document.body.dataset.connection === 'live' && document.querySelectorAll('.board-row').length > 0`);
       server.stop();
       await browser.waitFor(`document.body.dataset.connection === 'offline'`, 20_000);

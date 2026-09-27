@@ -10,6 +10,7 @@ import { liveState, onLive, onServerEvent, startLive } from './lib/live.js';
 import { ago, clock } from './lib/format.js';
 import { emptyState } from './ui/components.js';
 import { mountBoard } from './views/board.js';
+import { mountLanding } from './views/landing.js';
 import { mountDossier } from './views/dossier.js';
 import { mountChanges } from './views/changes.js';
 import { mountSystem } from './views/system.js';
@@ -29,8 +30,10 @@ let firstRoute = true;
 /** @param {import('./lib/router.js').Route} route @returns {ViewHandle} */
 function mount(route) {
   switch (route.name) {
+    case 'landing':
+      return mountLanding(main, route);
     case 'board':
-      document.title = 'Live board — Token Finder';
+      document.title = 'Live discovery — Token Finder';
       return mountBoard(main, route);
     case 'dossier':
       return mountDossier(main, route);
@@ -40,14 +43,14 @@ function mount(route) {
       return mountSystem(main);
     default:
       document.title = 'Not found — Token Finder';
-      render(main, emptyState('There is nothing at this address.', 'It may be a mistyped link.', html`<a class="btn" href="${appUrl('/')}" data-link>Go to the live board</a>`));
+      render(main, emptyState('There is nothing at this address.', 'It may be a mistyped link.', html`<a class="btn" href="${appUrl('/')}" data-link>Go to Token Finder</a>`));
       return {};
   }
 }
 
 onRoute((route) => {
   for (const link of document.querySelectorAll('[data-nav]')) {
-    const section = route.name === 'dossier' ? 'board' : route.name;
+    const section = route.name === 'board' ? 'discover' : route.name;
     if (link instanceof HTMLElement && link.dataset.nav === section) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
