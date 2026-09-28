@@ -241,13 +241,29 @@ export function assessIntegrity(token: TokenSnapshot, bundle: IntelligenceBundle
     // provider's own holder figure, else nothing.
     const pct = v ? (v.roleAware ? v.walletTop10Pct : v.providerTopPct) : null;
     const basis = v?.roleAware ? 'wallet-only top-10' : 'provider-reported top holders';
+    const holderFindings = rc.filter((x) => x.about === 'holders');
+    // Live, the on-chain wallet figure and the provider's disagreed by 7-10x
+    // on real tokens. A figure disputed that sharply is kept (the higher,
+    // conservative reading) and stated as disputed, but it is actionable only
+    // when a second provider's finding corroborates it.
+    const other = v?.roleAware ? v.providerTopPct : null;
+    const disputed = pct !== null && other !== null && Math.max(pct, other) >= 3 * Math.max(1, Math.min(pct, other)) && Math.abs(pct - other) >= 30;
+    const corroborated = holderFindings.length > 0;
     if (pct !== null) {
-      if (pct > 30) contributions.push({ code: 'CONCENTRATION', family: 'concentration', risk: Math.min(0.8, ((pct - 30) / 50) * 0.7), confidence: h.confidence, text: `${basis} hold ${Math.round(pct)}%`, evidence: h.evidence.slice(0, 2) });
-      else clean.push(`${basis} hold ${Math.round(pct)}%`);
+      if (pct > 30) {
+        contributions.push({
+          code: 'CONCENTRATION',
+          family: 'concentration',
+          risk: Math.min(0.8, ((pct - 30) / 50) * 0.7),
+          confidence: disputed && !corroborated ? Math.min(h.confidence, ACTIONABLE_CONFIDENCE - 0.05) : h.confidence,
+          text: `${basis} hold ${Math.round(pct)}%${disputed ? ` (disputed: the provider reports ${Math.round(other as number)}%${corroborated ? ', RugCheck corroborates the higher figure' : ''})` : ''}`,
+          evidence: h.evidence.slice(0, 3),
+        });
+      } else clean.push(`${basis} hold ${Math.round(pct)}%`);
     } else {
       unknown.push(v && v.rawTop10Pct !== null ? 'wallet concentration (large-account owners unresolved; raw figure includes pools and curves)' : 'holder concentration');
     }
-    for (const f of rc.filter((x) => x.about === 'holders')) contributions.push({ code: 'HOLDER_FINDING', family: 'concentration', risk: f.level === 'high' ? 0.3 : 0.15, confidence: 0.9, text: f.text, evidence: [f.code] });
+    for (const f of holderFindings) contributions.push({ code: 'HOLDER_FINDING', family: 'concentration', risk: f.level === 'high' ? 0.3 : 0.15, confidence: 0.9, text: f.text, evidence: [f.code] });
     for (const e of eventsOf('CREATOR_DUMP')) {
       contributions.push({ code: 'CREATOR_DUMP', family: 'insider-selling', risk: e.status === 'STRONGLY_SUSPECTED' ? 0.5 : 0.25, confidence: e.confidence, text: `Creator-linked selling: ${e.reasons[0] ?? ''}`, evidence: [e.signature] });
     }

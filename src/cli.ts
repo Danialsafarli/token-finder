@@ -3,7 +3,7 @@ import { log } from './util/logger.ts';
 import { fmtAge, fmtPct, fmtUsd } from './util/num.ts';
 import { discover } from './core/discover.ts';
 import { analyze } from './core/analyze.ts';
-import { runScan, startMonitor } from './core/monitor.ts';
+import { redecideAnalysed, runScan, startMonitor } from './core/monitor.ts';
 import { formatBytes, store } from './core/store.ts';
 import { countUniverse, isSurvivor, liveTokens, rankKey, VERDICT_TIER } from './core/ranking.ts';
 import { makeDecider } from './decision/inputs.ts';
@@ -328,6 +328,8 @@ async function cmdIntelRun(): Promise<void> {
   console.log(`  tokens     ${r.tokens.length} analysed · left out: ${s.notSurvivor} not survivors, ${s.notLive} not live, ${s.recentlyAnalyzed} analysed recently, ${s.overBudget} over budget`);
   for (const t of r.tokens) printTokenReport(t);
   console.log(`  requests   ${r.budget.requests} of ${r.budget.limit} · ${r.failures.length} failed`);
+  const re = redecideAnalysed(r.tokens.filter((t) => t.error === null).map((t) => t.mint));
+  console.log(`  decisions  ${re.checked} re-decided · ${re.changed.map((c) => `${c.mint.slice(0, 6)} ${c.from} -> ${c.to}`).join(', ') || 'no verdict changed'}`);
   store.save();
 }
 
@@ -361,6 +363,8 @@ async function cmdIntel(mint: string, run: boolean): Promise<void> {
     const report = await analyzeToken({ mint, tier }, { ...deps, chain, intel }, budget, failures);
     log.ok(`analysed in ${((Date.now() - started) / 1000).toFixed(1)}s · ${failures.length} request(s) failed`);
     printTokenReport(report);
+    const re = redecideAnalysed([mint]);
+    if (re.changed.length) log.info(`verdict ${re.changed[0]!.from} -> ${re.changed[0]!.to} on the new intelligence`);
     store.save();
   }
   const latest = intel.latestTokenIntelligence(mint);

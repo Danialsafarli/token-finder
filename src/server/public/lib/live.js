@@ -93,7 +93,7 @@ export function onLive(listener) {
 }
 
 /**
- * Server events: 'scan-start', 'scan', 'scan-failed', 'alert', 'reconnected'.
+ * Server events: 'scan-start', 'scan', 'scan-failed', 'decision', 'alert', 'reconnected'.
  * @param {(kind: string, payload: any) => void} listener
  */
 export function onServerEvent(listener) {
@@ -153,7 +153,8 @@ function connectStream() {
     dispatch('scan-start', JSON.parse(/** @type {MessageEvent} */ (message).data));
   });
 
-  for (const kind of ['scan', 'scan-failed']) {
+  // 'decision': verdicts re-decided after deep intelligence, between scans.
+  for (const kind of ['scan', 'scan-failed', 'decision']) {
     stream.addEventListener(kind, (message) => {
       contact();
       dispatch(kind, JSON.parse(/** @type {MessageEvent} */ (message).data));

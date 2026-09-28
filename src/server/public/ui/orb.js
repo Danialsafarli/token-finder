@@ -1959,7 +1959,7 @@ export function mountOrb(host, options = {}) {
   const offEvents = onServerEvent((kind, payload) => {
     if (!follow) {
       // A surface that does not reflect scans still shows current tokens.
-      if (kind === 'scan' || kind === 'reconnected') void load();
+      if (kind === 'scan' || kind === 'decision' || kind === 'reconnected') void load();
       return;
     }
     if (kind === 'scan-start' || kind === 'scan' || kind === 'scan-failed') scanEvents += 1;

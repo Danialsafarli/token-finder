@@ -8,6 +8,7 @@ import type { ProviderFailure } from '../util/failure.ts';
 import { store } from './store.ts';
 import { rankKey, VERDICT_TIER } from './ranking.ts';
 import { makeDecider } from '../decision/inputs.ts';
+import { redecide, type RedecideResult } from '../decision/redecide.ts';
 import type { MonitorEvent, RiskLevel, TokenSnapshot, TokenState } from '../types.ts';
 
 const TIER = VERDICT_TIER as Record<string, number>;
@@ -349,6 +350,31 @@ export async function runScan(): Promise<ScanResult> {
 }
 
 export const isScanning = (): boolean => scanning;
+
+/**
+ * Re-decides the tokens a deep-intelligence cycle just analysed, from their
+ * stored snapshots and the new intelligence - so a rug confirmed between
+ * scans rejects the token now, even if it never reaches another scan.
+ * Changed verdicts are announced like any other transition.
+ */
+export function redecideAnalysed(mints: string[]): RedecideResult {
+  const result = redecide(mints, {
+    current: (mint) => store.token(mint),
+    sources: store.decisionSources(),
+    config: { minCoverageQualify: config.minCoverageQualify, minCoverageWatch: config.minCoverageWatch },
+    now: Date.now,
+    liveWindowMs: config.liveWindowMin * 60_000,
+    persist: (next, decidedAt) => store.recordRedecision(next, decidedAt),
+    onChange: (next, previous) => {
+      diff(next, previous);
+    },
+  });
+  if (result.changed.length > 0) {
+    store.save();
+    bus.emit('decision', { at: Date.now(), changed: result.changed.length, checked: result.checked });
+  }
+  return result;
+}
 
 /**
  * Runs scans forever on the configured interval. Uses a chained timeout rather

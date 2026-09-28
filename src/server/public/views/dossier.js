@@ -885,7 +885,7 @@ export function mountDossier(root, route) {
   root.addEventListener('click', onClick);
 
   const offServer = onServerEvent((kind) => {
-    if (kind === 'scan' || kind === 'reconnected') {
+    if (kind === 'scan' || kind === 'decision' || kind === 'reconnected') {
       history = null;
       void load();
     }

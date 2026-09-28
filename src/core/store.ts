@@ -219,6 +219,17 @@ export const store = {
     return { stored: result.snapshotId !== null, transition: result.snapshotId !== null && result.decision.isTransition };
   },
 
+  /**
+   * Stores a verdict decided again without a new market observation
+   * (decision/redecide.ts). The current snapshot is replaced; history gains a
+   * row only if the verdict changed, dated `decidedAt`.
+   */
+  recordRedecision(snapshot: TokenSnapshot, decidedAt: number): void {
+    runtime.tokens.set(snapshot.mint, snapshot);
+    const result = runtime.repo?.saveTokenSnapshot(snapshot, { redecidedAt: decidedAt });
+    if (result && result.failure !== null) noteFailure(result.failure);
+  },
+
   addEvent(event: Omit<MonitorEvent, 'id' | 'at'> & { at?: number }): MonitorEvent {
     const full: MonitorEvent = { ...event, id: randomUUID(), at: event.at ?? Date.now() };
     runtime.events.unshift(full);

@@ -596,7 +596,7 @@ export function mountBoard(root, route) {
   const offServer = onServerEvent((kind) => {
     // The header's freshness line says when a scan is running.
     if (kind === 'scan-start' && data) render(slots.head, boardTemplate(data).head);
-    if (kind === 'scan' || kind === 'reconnected') {
+    if (kind === 'scan' || kind === 'decision' || kind === 'reconnected') {
       clearTimeout(refresh);
       refresh = window.setTimeout(() => {
         void load();

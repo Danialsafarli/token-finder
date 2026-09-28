@@ -22,7 +22,7 @@ import { gzip } from 'node:zlib';
 import { config, hasBirdeye, hasHelius } from '../config.ts';
 import { log } from '../util/logger.ts';
 import { store } from '../core/store.ts';
-import { bus, isScanning, lastScanResult, runScan, startMonitor, type ScanResult } from '../core/monitor.ts';
+import { bus, isScanning, lastScanResult, redecideAnalysed, runScan, startMonitor, type ScanResult } from '../core/monitor.ts';
 import { capabilities, globallyUnavailableMetrics, type Capability } from '../core/capabilities.ts';
 import { countUniverse, FRESH_WITHIN_MS, liveTokens } from '../core/ranking.ts';
 import { vetoLabel, metricLabel } from './present.ts';
@@ -496,12 +496,14 @@ function stream(res: ServerResponse): void {
   const onStage = (payload: unknown): void => send('scan-stage', payload);
   const onScan = (result: ScanResult): void => send('scan', scanSummary(result));
   const onFailed = (payload: unknown): void => send('scan-failed', payload);
+  const onDecision = (payload: unknown): void => send('decision', payload);
   const onEvent = (event: MonitorEvent): void => send('alert', eventView(event));
 
   bus.on('scan-start', onStart);
   bus.on('scan-stage', onStage);
   bus.on('scan', onScan);
   bus.on('scan-failed', onFailed);
+  bus.on('decision', onDecision);
   bus.on('event', onEvent);
 
   const keepAlive = setInterval(() => res.write(': ping\n\n'), 20_000);
@@ -511,6 +513,7 @@ function stream(res: ServerResponse): void {
     bus.off('scan-stage', onStage);
     bus.off('scan', onScan);
     bus.off('scan-failed', onFailed);
+    bus.off('decision', onDecision);
     bus.off('event', onEvent);
   });
 }
@@ -726,7 +729,10 @@ export function serve(options: { monitor?: boolean } = {}): Server {
     // had a chance to gather pool activity; it never blocks either.
     log.step(`deep intelligence every ${config.intelIntervalSec}s (${config.intelTokensPerCycle} tokens, ${config.intelRequestsPerCycle} requests per cycle)`);
     startIntel(liveIntelDeps(), config.intelIntervalSec, (cycle) => {
-      log.debug(`intel cycle ${cycle.health.state}: ${cycle.tokens.length} tokens, ${cycle.budget.requests} requests in ${(cycle.durationMs / 1000).toFixed(1)}s`);
+      // The verdicts of the tokens just analysed follow their new evidence
+      // now, not at their next scan - which a drained token may never get.
+      const re = redecideAnalysed(cycle.tokens.filter((t) => t.error === null).map((t) => t.mint));
+      log.debug(`intel cycle ${cycle.health.state}: ${cycle.tokens.length} tokens, ${cycle.budget.requests} requests in ${(cycle.durationMs / 1000).toFixed(1)}s; re-decided ${re.checked}, ${re.changed.length} changed`);
     });
   }
 

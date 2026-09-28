@@ -379,3 +379,31 @@ describe('multi-pool coverage', () => {
     void CREATOR;
   });
 });
+
+describe('regression: disputed concentration (live, 2026-09-28)', () => {
+  // Live: two graduated tokens had one system-owned wallet holding ~80% of
+  // supply on-chain (role-aware wallet top-10 92.5% and 93.6%) while Jupiter
+  // reported top holders at 13.2% and 9.7%. A figure disputed that sharply
+  // must not be actionable on its own, and the dispute must be stated.
+  const disputed = (corroborated: boolean) => {
+    const t = token({
+      providerTopPct: 13,
+      holderRoles: { rawTop10Share: 1, walletTop10Share: 0.925, byRole: { POOL: 0.075, WALLET: 0.925 }, resolved: 20, total: 20 },
+    });
+    if (corroborated) t.score.flags = [{ code: 'rugcheck:single_holder_ownership', level: 'high', message: 'RugCheck: Single holder ownership - one wallet holds most of the supply' }];
+    return run(t, bundle(t)).decision.integrity.domains.find((d) => d.key === 'holderIntegrity')!;
+  };
+
+  test('uncorroborated, it informs (ELEVATED at most) and says it is disputed', () => {
+    const holders = disputed(false);
+    assert.ok(holders.band === 'ELEVATED' || holders.band === 'LOW', holders.band);
+    const c = holders.contributions.find((x) => x.code === 'CONCENTRATION')!;
+    assert.match(c.text, /13%/);
+    assert.match(c.text, /disputed/);
+  });
+
+  test('corroborated by a second provider, it is actionable', () => {
+    const holders = disputed(true);
+    assert.ok(holders.band === 'HIGH' || holders.band === 'SEVERE', holders.band);
+  });
+});

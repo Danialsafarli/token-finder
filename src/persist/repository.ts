@@ -443,22 +443,35 @@ export class Repository {
    */
   saveTokenSnapshot(
     snapshot: TokenSnapshot,
-    options: { scanId?: number | null; evidence?: TokenEvidence | null } = {},
+    options: {
+      scanId?: number | null;
+      evidence?: TokenEvidence | null;
+      /**
+       * Set when the verdict was decided again without a new market
+       * observation (decision/redecide.ts). The current row is updated; a
+       * history row is appended only for a verdict change, dated at this time,
+       * and no market, holder or pool row is written - none was observed.
+       */
+      redecidedAt?: number;
+    } = {},
   ): SaveResult {
     const scanId = options.scanId ?? null;
     const previous = this.previousSnapshot(snapshot.mint);
-    const decision = decideSnapshot(snapshot, previous, this.#policy);
+    const observedAt = options.redecidedAt ?? snapshot.at;
+    const redecision = options.redecidedAt !== undefined;
+    const judged = decideSnapshot(redecision ? { ...snapshot, at: observedAt } : snapshot, previous, this.#policy);
+    const decision: SnapshotDecision = redecision && !judged.isTransition ? { store: false, reason: 'duplicate', isTransition: false } : judged;
     const recordedAt = Date.now();
 
     try {
       const snapshotId = transact(this.#db, () => {
         this.#upsertTokenRow(snapshot, recordedAt);
         if (!decision.store) return null;
-        const id = this.#appendHistory(snapshot, scanId, recordedAt, decision);
+        const id = this.#appendHistory(snapshot, scanId, recordedAt, decision, observedAt, !redecision);
         const to = snapshot.evaluation?.eligibility ?? null;
         const from = previous?.eligibility ?? null;
         if (decision.isTransition && to !== null && to !== from && snapshot.decision) {
-          this.#recordTransition(snapshot, from, recordedAt);
+          this.#recordTransition(snapshot, from, recordedAt, observedAt);
         }
         return id;
       });
@@ -519,9 +532,10 @@ export class Repository {
     scanId: number | null,
     recordedAt: number,
     decision: SnapshotDecision,
+    observedAt: number = snapshot.at,
+    withMarket = true,
   ): number {
     const evaluation = snapshot.evaluation ?? null;
-    const observedAt = snapshot.at;
 
     const d = snapshot.decision ?? null;
     const info = this.#db
@@ -558,6 +572,9 @@ export class Repository {
         d?.coverage.decision ?? null,
       );
     const snapshotId = Number(info.lastInsertRowid);
+    // A re-decision observed no market; writing its old readings again under
+    // a new time would fabricate an observation.
+    if (!withMarket) return snapshotId;
 
     const change = snapshot.priceChange;
     this.#db
@@ -668,7 +685,7 @@ export class Repository {
    * One verdict transition, with what decided it. Written in the snapshot's
    * transaction, so a transition row never exists without its snapshot.
    */
-  #recordTransition(snapshot: TokenSnapshot, from: string | null, recordedAt: number): void {
+  #recordTransition(snapshot: TokenSnapshot, from: string | null, recordedAt: number, at: number = snapshot.at): void {
     const d = snapshot.decision!;
     this.#db
       .prepare(
@@ -678,7 +695,7 @@ export class Repository {
       )
       .run(
         snapshot.mint,
-        snapshot.at,
+        at,
         from,
         d.verdict,
         d.policyVersion,

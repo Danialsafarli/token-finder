@@ -150,7 +150,7 @@ export function mountChanges(root, route) {
   };
   root.addEventListener('click', onClick);
   const off = onServerEvent((kind) => {
-    if (kind === 'scan' || kind === 'alert' || kind === 'reconnected') void load();
+    if (kind === 'scan' || kind === 'decision' || kind === 'alert' || kind === 'reconnected') void load();
   });
   const tick = window.setInterval(paint, 30_000);
 
