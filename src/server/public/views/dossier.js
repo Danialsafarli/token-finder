@@ -231,7 +231,7 @@ function decisionStrip(d) {
     <div class="decision-card decision-card--${x.momentum.tone}">
       <p class="decision-card__label">Momentum</p>
       <p class="decision-card__value decision-card__value--word">${x.momentum.label}</p>
-      <p class="decision-card__state small muted">${x.momentum.observations} observations over ${x.momentum.spanMinutes >= 60 ? `${(x.momentum.spanMinutes / 60).toFixed(1)} h` : `${x.momentum.spanMinutes} min`}</p>
+      <p class="decision-card__state small muted">${x.momentum.observations} observation${x.momentum.observations === 1 ? '' : 's'} over ${x.momentum.spanMinutes >= 60 ? `${(x.momentum.spanMinutes / 60).toFixed(1)} h` : `${x.momentum.spanMinutes} min`}</p>
       ${meter(x.momentum.confidence, 'accent')}
       <p class="decision-card__caption">confidence ${pct0(x.momentum.confidence)} · from Token Finder's own observations</p>
     </div>
@@ -308,7 +308,7 @@ function activityPanel(d) {
         ${statusNote ? html`<p class="small tone--warn">${statusNote}.</p>` : ''}
         <ul class="composition">
           ${a.bases.map((b) => html`<li class="composition__row">
-            <span class="composition__label">${BASIS_LABEL[b.basis]}<span class="small muted"> · ${b.total} ${b.basis === 'volume' ? 'units' : b.basis}</span></span>
+            <span class="composition__label">${BASIS_LABEL[b.basis]}<span class="small muted"> · ${b.basis === 'volume' ? 'one quote currency' : `${b.total} ${b.basis}`}</span></span>
             ${compositionBar(b.shares, BASIS_LABEL[b.basis] ?? b.basis)}
             <span class="composition__note small muted">${b.shares ? `${pct0(b.classified)} classified` : 'counts only — too little classified'}</span>
           </li>`)}

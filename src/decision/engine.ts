@@ -162,7 +162,7 @@ export function decide(input: DecisionInput): Decision {
   } else if (integrity.band === 'HIGH' || integrity.band === 'SEVERE') {
     verdict = 'HIGH_RISK';
     const driver = integrity.domains.find((d) => d.key === integrity.driver);
-    basis = `integrity ${integrity.band.toLowerCase()}${driver ? `: ${driver.label.toLowerCase()} ${driver.band.toLowerCase()}` : ''}`;
+    basis = driver ? `serious integrity risk: ${driver.label.toLowerCase()} is ${driver.band === 'SEVERE' ? 'severe' : 'high'} risk` : 'serious integrity risk across several domains';
   } else if (market < config.minCoverageQualify) {
     verdict = 'WATCH';
     basis = `market evidence coverage ${pct(market)} is below ${pct(config.minCoverageQualify)}`;

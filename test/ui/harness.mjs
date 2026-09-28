@@ -25,6 +25,8 @@ export const MINTS = {
   legacy: 'LeGaCy111111111111111111111111111111111111',
   xss: 'XsSpRoBe1111111111111111111111111111111111',
   long: 'LoNgStRiNg11111111111111111111111111111111',
+  /** Deep intelligence stored for it: sniper-heavy (High risk), a suspected event, a superseded one. */
+  deep: 'DeePiNtEL111111111111111111111111111111111',
   /** Not in the store; the fixture's providers answer for it as a healthy token. */
   analyze: 'AnaLyzeMe11111111111111111111111111111111111',
   /** Not in the store; no provider has a market for it. */

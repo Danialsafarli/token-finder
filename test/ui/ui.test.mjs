@@ -192,6 +192,65 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
     assert.match(intel, /Read by the decision engine/);
   });
 
+  test('Board: a high-risk token stays out of the candidates and has its own segment', async () => {
+    await browser.viewport(1440, 900);
+    await browser.goto(`${server.origin}/discover`);
+    await browser.waitFor(`document.querySelectorAll('.board-row').length > 0`);
+    assert.equal((await boardMints()).includes(MINTS.deep), false, 'a high-risk token is not a candidate');
+    await browser.click('.segment[data-segment="high-risk"]');
+    await browser.waitFor(`location.search.includes('segment=high-risk') && !!document.querySelector('.board-row[data-mint="${MINTS.deep}"]')`);
+    assert.deepEqual(await browser.eval(`[...new Set([...document.querySelectorAll('.board-row')].map((r) => r.dataset.verdict))]`), ['HIGH_RISK']);
+    const reason = await browser.eval(`document.querySelector('.board-row[data-mint="${MINTS.deep}"] .token-link__reason').textContent`);
+    assert.match(reason, /sniper/i, 'the row says why');
+    const state = await browser.eval(`document.querySelector('.board-row[data-mint="${MINTS.deep}"] .col-state').textContent.replace(/\\s+/g, ' ')`);
+    assert.match(state, /High risk|Elevated|Severe/);
+    assert.match(state, /Thin history/, 'momentum without enough observations says so');
+  });
+
+  test('Dossier: the verdict explains itself, and Activity Integrity states its basis and coverage', async () => {
+    await browser.goto(`${server.origin}/t/${MINTS.deep}`);
+    await browser.waitFor(`!!document.querySelector('#activity-title')`);
+    const strip = await browser.eval(`document.querySelector('.decision-strip').textContent.replace(/\\s+/g, ' ')`);
+    for (const label of ['Safety & integrity', 'Opportunity', 'Momentum', 'Rank']) assert.ok(strip.includes(label), `${label} missing from ${strip}`);
+    const why = await browser.eval(`document.querySelector('section[aria-labelledby="why-title"]').textContent.replace(/\\s+/g, ' ')`);
+    assert.match(why, /High risk/);
+    assert.match(why, /snipers/);
+    assert.match(why, /decision-policy@1/);
+
+    const activity = 'section[aria-labelledby="activity-title"]';
+    assert.equal(await browser.eval(`document.querySelectorAll('${activity} .composition__row').length`), 3, 'wallets, trades and volume');
+    const bases = await browser.eval(`[...document.querySelectorAll('${activity} .composition__label')].map((e) => e.textContent)`);
+    assert.ok(bases[0].startsWith('By wallets') && bases[1].startsWith('By trades') && bases[2].startsWith('By volume'), bases.join('|'));
+    const bar = await browser.eval(`document.querySelectorAll('${activity} svg.stack')[1].getAttribute('aria-label')`);
+    assert.match(bar, /Sniper 70%/);
+    assert.match(bar, /Unknown 10%/, 'unknown is always drawn');
+    const facts = await browser.eval(`document.querySelector('${activity} .kv').textContent.replace(/\\s+/g, ' ')`);
+    assert.match(facts, /Wash \/ manipulation/);
+    assert.match(facts, /1 cluster/);
+    assert.match(facts, /1 of 1 pool/);
+    await browser.click(`${activity} .evidence-more > summary`);
+    await browser.waitFor(`document.querySelector('${activity} .evidence-more').open`);
+    assert.match(await browser.eval(`document.querySelector('${activity} .evidence-more').textContent`), /not of all trading/);
+  });
+
+  test('Dossier: Rug Intelligence separates current findings from superseded ones', async () => {
+    const rug = 'section[aria-labelledby="rug-title"]';
+    const text = await browser.eval(`document.querySelector('${rug}').textContent.replace(/\\s+/g, ' ')`);
+    assert.match(text, /Suspected events/, 'the current-rule suspicion is shown');
+    assert.match(text, /Creator-linked selling/);
+    assert.match(text, /Creator/);
+    assert.match(text, /Serial network/);
+    assert.match(text, /audit only/);
+    // The superseded finding is not presented as a current one.
+    assert.equal(await browser.eval(`[...document.querySelectorAll('${rug} > .events .event-item')].some((e) => /Holders frozen/.test(e.textContent))`), false);
+    await browser.click(`${rug} .evidence-more > summary`);
+    await browser.waitFor(`document.querySelector('${rug} .evidence-more').open`);
+    const audit = await browser.eval(`document.querySelector('${rug} .evidence-more').textContent.replace(/\\s+/g, ' ')`);
+    assert.match(audit, /Holders frozen/);
+    assert.match(audit, /unversioned/);
+    assert.match(audit, /superseded by/);
+  });
+
   test('stale and never-evaluated Dossiers say so', async () => {
     await browser.goto(`${server.origin}/t/${MINTS.stale}`);
     await browser.waitFor(`document.querySelector('.notice--history')`);

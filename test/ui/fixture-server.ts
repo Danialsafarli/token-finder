@@ -12,6 +12,9 @@ import { bus, type ScanResult } from '../../src/core/monitor.ts';
 import { fixtureByName } from '../fixtures.ts';
 import { snapshot, token2022Onchain } from '../persist-helpers.ts';
 import type { LedgerEntry, TokenSnapshot } from '../../src/types.ts';
+import { intelRow } from '../decision-helpers.ts';
+import { makeDecider } from '../../src/decision/inputs.ts';
+import { RULE_VERSIONS } from '../../src/decision/versions.ts';
 
 const now = Date.now();
 const MIN = 60_000;
@@ -176,6 +179,28 @@ for (const [minutesAgo, score, price] of [[80, 60, 0.001], [50, 68, 0.0014], [20
   snap.ledger = ledger();
   snap.onchain = null;
   put(snap);
+}
+
+// --- deep intelligence feeding the decision engine ---------------------------
+// Stored exactly as the intelligence runner stores it, then decided by the real
+// decision stage: sniper-heavy trading (High risk), one current-rule suspected
+// event, and one finding from before rule versioning that the current rule
+// superseded - shown for audit, never counted.
+{
+  const mint = 'DeePiNtEL111111111111111111111111111111111';
+  const snap = snapshot({ mint, at: now - 4 * MIN, score: 68 });
+  snap.symbol = 'DEEP';
+  snap.name = 'Deep Intel Token';
+  snap.ledger = ledger();
+  snap.onchain = null;
+  const intel = store.intel()!;
+  intel.saveTokenIntelligence({ ...intelRow({ analyzedAt: now - 6 * MIN, shares: { sniper: 0.7, likely_organic: 0.2, unknown: 0.1 }, clusters: [{ level: 'STRONG_CANDIDATE', size: 3, confidence: 0.7 }] }), mint });
+  const event = (id: string, type: 'FREEZE_ABUSE' | 'CREATOR_DUMP', status: 'CONFIRMED' | 'SUSPICIOUS') => ({
+    id, mint, type, status, actor: 'Creator11111111111111111111111111111111111', creatorLinked: true, signature: `${id}-signature-1111111111111111`, slot: 1, blockTimeMs: now - 2 * 60 * MIN, amount: null, reasons: [`${type.toLowerCase()} (fixture)`], evidence: [], confidence: status === 'CONFIRMED' ? 0.95 : 0.5,
+  });
+  intel.saveSecurityEvents([event('legacy-freeze', 'FREEZE_ABUSE', 'CONFIRMED')], now - 3 * 60 * MIN);
+  intel.saveSecurityEvents([event('creator-dump', 'CREATOR_DUMP', 'SUSPICIOUS')], now - 60 * MIN, { mint, ruleVersion: RULE_VERSIONS.security, sweep: true });
+  put(makeDecider(store.decisionSources(), { minCoverageQualify: 0.6, minCoverageWatch: 0.35 })(snap, null));
 }
 
 store.finishScan(now - 2 * MIN, { analyzed: 7, fresh: 7 });

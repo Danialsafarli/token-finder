@@ -33,6 +33,8 @@ import type { SignatureInfo } from '../src/sources/solana-rpc.ts';
 import type { ProviderFailure } from '../src/util/failure.ts';
 import type { TokenSnapshot } from '../src/types.ts';
 import { cleanupTempDirs, harness, snapshot, tempDir } from './persist-helpers.ts';
+import { currentRuleVersions, RULE_VERSIONS } from '../src/decision/versions.ts';
+import { makeDecider } from '../src/decision/inputs.ts';
 import { fund, idle, mintOf, ntx, pda, swap, T0, toRaw, wallet } from './intel-helpers.ts';
 
 after(cleanupTempDirs);
@@ -494,5 +496,81 @@ describe('secret leakage', () => {
       assert.equal(bytes.includes(Buffer.from(secret)), false, `the key is absent from ${file}`);
       assert.equal(bytes.includes(Buffer.from('helius-rpc.com/?api-key')), false, `so is the keyed URL, in ${file}`);
     }
+  });
+});
+
+describe('the intelligence cycle under the decision engine', () => {
+  test('every snapshot and event is stamped with the rule versions that produced it', async () => {
+    const { h, world, intel, deps } = setup();
+    await runIntelCycle(deps(fakePort(world)));
+    const snap = intel.latestTokenIntelligence(MINT);
+    assert.deepEqual(snap?.ruleVersions, currentRuleVersions());
+    const events = intel.storedEventsOf([MINT]);
+    assert.ok(events.length > 0);
+    assert.ok(events.every((e) => e.ruleVersion === RULE_VERSIONS.security && e.supersededAt === null));
+    h.close();
+  });
+
+  test('an obsolete-rule finding the current rule does not make is superseded, archived and kept', async () => {
+    const { h, world, intel, deps } = setup();
+    // A freeze-abuse finding recorded before versioning, which the current
+    // rules - reading the same facts - do not make.
+    intel.saveSecurityEvents([{ id: 'legacy-freeze', mint: MINT, type: 'FREEZE_ABUSE', status: 'CONFIRMED', actor: DEV, creatorLinked: true, signature: 'legacy-freeze-sig', slot: 1, blockTimeMs: null, amount: null, reasons: ['old rule'], evidence: [], confidence: 0.95 }], Date.now() - 3_600_000);
+    const port = fakePort(world);
+    const r = await runIntelCycle(deps(port));
+    assert.equal(r.tokens[0]?.superseded, 1);
+    assert.ok(port.calls.includes('transaction:legacy-freeze-sig'), 'its own proof was re-read before it was superseded');
+    const legacy = intel.storedEventsOf([MINT]).find((e) => e.id === 'legacy-freeze');
+    assert.ok(legacy && legacy.supersededAt !== null, 'kept, marked superseded');
+    assert.equal(intel.activeEventsOf([MINT], RULE_VERSIONS.security).some((e) => e.id === 'legacy-freeze'), false);
+    assert.equal(intel.eventRevisionsOf(MINT)[0]?.change, 'SUPERSEDED');
+    h.close();
+  });
+
+  test('trades on every known pool are read from the mint history, with the market coverage stated', async () => {
+    const { h, world, chain, intel, deps, token } = setup();
+    const POOL2 = pda('runner-pool-2');
+    token.pools = [
+      { address: POOL, dexId: 'raydium', quoteSymbol: 'SOL', liquidityUsd: 50_000, volume24h: 80_000, txnsH1: 10, txns24h: 200 },
+      { address: POOL2, dexId: 'meteora', quoteSymbol: 'SOL', liquidityUsd: 20_000, volume24h: 20_000, txnsH1: 4, txns24h: 50 },
+    ];
+    // A real trade on the second pool: its vault pays out the token, it takes the SOL.
+    const buyer = wallet('runner-pool2-buyer');
+    const at = world.launchAt + 27 * 60_000;
+    const second = ntx({
+      signature: 'pool2-buy',
+      slot: Math.floor((at - T0) / 400),
+      blockTimeMs: at,
+      feePayer: buyer,
+      signers: [buyer],
+      lamportDeltas: new Map([[buyer, -200_005_000n], [POOL2, 200_000_000n]]),
+      tokenBalances: [
+        { account: pda('pool2-buyer-ata'), owner: buyer, mint: MINT, decimals: 6, pre: 0n, post: 50_000n, delta: 50_000n },
+        { account: pda('pool2-vault'), owner: POOL2, mint: MINT, decimals: 6, pre: 5_000_000n, post: 4_950_000n, delta: -50_000n },
+      ],
+      decimalsByMint: new Map([[MINT, 6], [WSOL_MINT, 9]]),
+    });
+    world.desc.set(MINT, [second, ...(world.desc.get(MINT) ?? [])]);
+    const r = await runIntelCycle(deps(fakePort(world)));
+    assert.equal(r.tokens[0]?.pools.known, 2);
+    const onSecond = chain.activityOf(MINT, 100).filter((a) => a.pool === POOL2);
+    assert.equal(onSecond.length, 1, 'the second pool\'s transaction was recorded against it');
+    assert.equal(onSecond[0]?.kind, 'SWAP');
+    assert.equal(onSecond[0]?.trader, buyer);
+    const market = (intel.latestTokenIntelligence(MINT)?.activity as { market: { knownPools: number; observedPools: number; representativeness: number } }).market;
+    assert.equal(market.knownPools, 2);
+    assert.equal(market.observedPools, 2);
+    assert.ok(market.representativeness >= 0 && market.representativeness <= 1);
+    h.close();
+  });
+
+  test('the decision stage rejects the drained token on the cycle\'s own current-rule evidence', async () => {
+    const { h, world, intel, deps, token } = setup();
+    await runIntelCycle(deps(fakePort(world)));
+    const decide = makeDecider({ intel, marketHistory: () => [], holderHistory: () => [] }, { minCoverageQualify: 0.6, minCoverageWatch: 0.35 });
+    const decided = decide(token, 'QUALIFIED');
+    assert.equal(decided.evaluation?.eligibility, 'REJECTED');
+    assert.ok(decided.decision?.hardFails.some((f) => f.code === 'CONFIRMED_CURRENT_RUG'));
+    h.close();
   });
 });
