@@ -263,8 +263,6 @@ function placementFor(phase) {
 export function mountLanding(root, route) {
   render(root, shellTemplate());
   const section = /** @type {HTMLElement} */ (root.querySelector('.landing'));
-  // The scan field behind the Observatory: decoration only, never input.
-  const scanner = mountScanner(section);
   const deck = /** @type {HTMLElement} */ (root.querySelector('[data-slot="deck"]'));
   const orb = mountOrb(/** @type {HTMLElement} */ (root.querySelector('[data-slot="orb"]')), {
     bare: true,
@@ -274,6 +272,9 @@ export function mountLanding(root, route) {
     reveal: false,
     placement: placementFor('idle'),
   });
+  // The atmospheric scan field behind the Observatory: decoration only, never
+  // input. It eases away around the sphere wherever the sphere is on screen.
+  const scanner = mountScanner(section, { focus: () => orb.sphereOnScreen() });
 
   /** @type {Phase} */
   let phase = 'idle';

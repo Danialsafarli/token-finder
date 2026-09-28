@@ -4193,42 +4193,44 @@ th.col-num {
 }
 
 /*
- * The Scanner field (ui/scanner.js) behind the Observatory. It paints under
- * everything in the Landing, takes no input, and eases out on every side so
- * it never reads as a box: a wide ellipse centred on the sphere, intersected
- * with a fade that keeps the headline clear and a dimmer disc directly behind
- * the sphere so the Observatory stays the focus. Screen blending lets its dark
- * parts disappear into the page's own atmosphere.
+ * The Scanner (ui/scanner.js): the Landing's atmospheric background.
+ *
+ * Fixed to the viewport and painted behind the page - in the same layer as
+ * the Landing's own atmosphere (`.landing::before`), above it in tree order -
+ * so it has no box of its own to show: its bounds are the screen's. It is
+ * not clipped by the Landing, whose content column is capped in width, and it
+ * cannot widen the page. The Observatory and everything else paint above it.
+ *
+ * Fades are large and soft, and every one eases to nothing: a top fade keeps
+ * the headline clear, and a wide ellipse lets the field fall away into the
+ * page's dark atmosphere toward the screen's edges. The dim behind the sphere
+ * is done in the shader, at the sphere's real position.
  */
 .landing__scanner {
-  position: absolute;
+  position: fixed;
   inset: 0;
   width: 100%;
   height: 100%;
-  z-index: 0;
+  z-index: -1;
   pointer-events: none;
-  opacity: 0.75;
   mix-blend-mode: screen;
   -webkit-mask-image:
-    radial-gradient(circle at 50% 58%, rgba(0, 0, 0, 0.42) 0%, rgba(0, 0, 0, 0.42) 16%, rgba(0, 0, 0, 0.8) 26%, #000 36%),
-    radial-gradient(ellipse 70% 58% at 50% 56%, #000 0%, rgba(0, 0, 0, 0.72) 38%, rgba(0, 0, 0, 0.3) 62%, rgba(0, 0, 0, 0.08) 80%, transparent 96%),
-    linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.35) 22%, #000 40%, #000 82%, transparent 100%);
+    linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.12) 18%, rgba(0, 0, 0, 0.55) 34%, rgba(0, 0, 0, 0.9) 48%, #000 60%),
+    radial-gradient(ellipse 85% 80% at 50% 62%, #000 0%, #000 42%, rgba(0, 0, 0, 0.7) 62%, rgba(0, 0, 0, 0.3) 80%, rgba(0, 0, 0, 0.08) 94%, transparent 100%);
   -webkit-mask-composite: source-in;
   mask-image:
-    radial-gradient(circle at 50% 58%, rgba(0, 0, 0, 0.42) 0%, rgba(0, 0, 0, 0.42) 16%, rgba(0, 0, 0, 0.8) 26%, #000 36%),
-    radial-gradient(ellipse 70% 58% at 50% 56%, #000 0%, rgba(0, 0, 0, 0.72) 38%, rgba(0, 0, 0, 0.3) 62%, rgba(0, 0, 0, 0.08) 80%, transparent 96%),
-    linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.35) 22%, #000 40%, #000 82%, transparent 100%);
+    linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.12) 18%, rgba(0, 0, 0, 0.55) 34%, rgba(0, 0, 0, 0.9) 48%, #000 60%),
+    radial-gradient(ellipse 85% 80% at 50% 62%, #000 0%, #000 42%, rgba(0, 0, 0, 0.7) 62%, rgba(0, 0, 0, 0.3) 80%, rgba(0, 0, 0, 0.08) 94%, transparent 100%);
   mask-composite: intersect;
 }
 
 @media (max-width: 760px) {
   .landing__scanner {
-    opacity: 0.7;
     -webkit-mask-image:
-      radial-gradient(ellipse 95% 50% at 50% 55%, #000 0%, rgba(0, 0, 0, 0.6) 45%, rgba(0, 0, 0, 0.15) 75%, transparent 95%),
-      linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.3) 25%, #000 42%, #000 85%, transparent 100%);
+      linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.12) 22%, rgba(0, 0, 0, 0.6) 40%, #000 56%),
+      radial-gradient(ellipse 120% 75% at 50% 60%, #000 0%, #000 40%, rgba(0, 0, 0, 0.6) 65%, rgba(0, 0, 0, 0.15) 88%, transparent 100%);
     mask-image:
-      radial-gradient(ellipse 95% 50% at 50% 55%, #000 0%, rgba(0, 0, 0, 0.6) 45%, rgba(0, 0, 0, 0.15) 75%, transparent 95%),
-      linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.3) 25%, #000 42%, #000 85%, transparent 100%);
+      linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.12) 22%, rgba(0, 0, 0, 0.6) 40%, #000 56%),
+      radial-gradient(ellipse 120% 75% at 50% 60%, #000 0%, #000 40%, rgba(0, 0, 0, 0.6) 65%, rgba(0, 0, 0, 0.15) 88%, transparent 100%);
   }
 }
