@@ -1,0 +1,4 @@
+# Patches are applied with git am: keep their bytes exactly as generated.
+*.patch -text
+# Shell-interpreted by Docker on Linux.
+Dockerfile text eol=lf
