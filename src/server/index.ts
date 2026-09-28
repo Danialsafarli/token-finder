@@ -731,7 +731,7 @@ export function serve(options: { monitor?: boolean } = {}): Server {
     startIntel(liveIntelDeps(), config.intelIntervalSec, (cycle) => {
       // The verdicts of the tokens just analysed follow their new evidence
       // now, not at their next scan - which a drained token may never get.
-      const re = redecideAnalysed(cycle.tokens.filter((t) => t.error === null).map((t) => t.mint));
+      const re = redecideAnalysed(cycle.tokens.filter((t) => t.error === null).map((t) => t.mint), cycle.tokens.filter((t) => t.error === null && t.securityEvents > 0).map((t) => t.mint));
       log.debug(`intel cycle ${cycle.health.state}: ${cycle.tokens.length} tokens, ${cycle.budget.requests} requests in ${(cycle.durationMs / 1000).toFixed(1)}s; re-decided ${re.checked}, ${re.changed.length} changed`);
     });
   }

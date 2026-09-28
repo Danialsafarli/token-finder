@@ -8,7 +8,7 @@ import type { ProviderFailure } from '../util/failure.ts';
 import { store } from './store.ts';
 import { rankKey, VERDICT_TIER } from './ranking.ts';
 import { makeDecider } from '../decision/inputs.ts';
-import { redecide, type RedecideResult } from '../decision/redecide.ts';
+import { linkedMints, redecide, type RedecideResult } from '../decision/redecide.ts';
 import type { MonitorEvent, RiskLevel, TokenSnapshot, TokenState } from '../types.ts';
 
 const TIER = VERDICT_TIER as Record<string, number>;
@@ -357,7 +357,13 @@ export const isScanning = (): boolean => scanning;
  * scans rejects the token now, even if it never reaches another scan.
  * Changed verdicts are announced like any other transition.
  */
-export function redecideAnalysed(mints: string[]): RedecideResult {
+/**
+ * @param withEvents analysed tokens on which the cycle found security events:
+ *   their creators' and actors' other live launches are re-decided too.
+ */
+export function redecideAnalysed(mints: string[], withEvents: string[] = []): RedecideResult {
+  const intel = store.intel();
+  const linked = intel && withEvents.length > 0 ? linkedMints(intel, withEvents) : [];
   const result = redecide(mints, {
     current: (mint) => store.token(mint),
     sources: store.decisionSources(),
@@ -368,7 +374,7 @@ export function redecideAnalysed(mints: string[]): RedecideResult {
     onChange: (next, previous) => {
       diff(next, previous);
     },
-  });
+  }, linked);
   if (result.changed.length > 0) {
     store.save();
     bus.emit('decision', { at: Date.now(), changed: result.changed.length, checked: result.checked });

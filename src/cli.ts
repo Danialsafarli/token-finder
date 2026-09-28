@@ -328,7 +328,7 @@ async function cmdIntelRun(): Promise<void> {
   console.log(`  tokens     ${r.tokens.length} analysed · left out: ${s.notSurvivor} not survivors, ${s.notLive} not live, ${s.recentlyAnalyzed} analysed recently, ${s.overBudget} over budget`);
   for (const t of r.tokens) printTokenReport(t);
   console.log(`  requests   ${r.budget.requests} of ${r.budget.limit} · ${r.failures.length} failed`);
-  const re = redecideAnalysed(r.tokens.filter((t) => t.error === null).map((t) => t.mint));
+  const re = redecideAnalysed(r.tokens.filter((t) => t.error === null).map((t) => t.mint), r.tokens.filter((t) => t.error === null && t.securityEvents > 0).map((t) => t.mint));
   console.log(`  decisions  ${re.checked} re-decided · ${re.changed.map((c) => `${c.mint.slice(0, 6)} ${c.from} -> ${c.to}`).join(', ') || 'no verdict changed'}`);
   store.save();
 }

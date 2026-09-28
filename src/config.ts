@@ -221,6 +221,8 @@ export const config = {
   intelIntervalSec: Math.max(60, num('INTEL_INTERVAL_SEC', 300)),
   /** Surviving tokens analysed per cycle. */
   intelTokensPerCycle: Math.max(0, num('INTEL_TOKENS_PER_CYCLE', 2)),
+  /** At most this many when measured cost shows the request and time budgets fit more. */
+  intelMaxTokensPerCycle: Math.max(0, num('INTEL_MAX_TOKENS_PER_CYCLE', 4)),
   /** Wallets analysed per token: earliest buyers, largest buyers and the creator. */
   intelWalletsPerToken: Math.max(1, num('INTEL_WALLETS_PER_TOKEN', 12)),
   /** Newest transactions read per wallet (one request; at most 100). */

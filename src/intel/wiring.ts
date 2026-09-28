@@ -33,6 +33,7 @@ export function liveIntelDeps(): IntelDeps {
       profileTtlMs: config.intelProfileTtlHours * 3_600_000,
       tokenRefreshMs: config.intelTokenRefreshMin * 60_000,
       liveWindowMs: config.liveWindowMin * 60_000,
+      maxTokensPerCycle: config.intelMaxTokensPerCycle,
     },
   };
 }

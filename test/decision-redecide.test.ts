@@ -18,7 +18,7 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { IntelRepository } from '../src/persist/intel-repository.ts';
-import { redecide, screenOf } from '../src/decision/redecide.ts';
+import { linkedMints, redecide, screenOf } from '../src/decision/redecide.ts';
 import { RULE_VERSIONS } from '../src/decision/versions.ts';
 import { cleanupTempDirs, harness } from './persist-helpers.ts';
 import { bundle, CONFIG, HOUR, intelRow, MIN, MINT, NOW, run, token } from './decision-helpers.ts';
@@ -92,6 +92,47 @@ describe('re-deciding after deep intelligence', () => {
     assert.ok(first.checked === 1 && second.checked === 1);
     assert.equal(changes.length, first.changed.length);
     assert.equal(h.repo.verdictTransitions({ mint: MINT }).length, 1 + first.changed.length);
+    h.close();
+  });
+
+  test('a sibling launch not analysed this cycle is re-decided when its creator is confirmed rugging', () => {
+    const { h, intel, tokens, deps, changes } = world();
+    const SIB = 'SiblingMint111111111111111111111111111111111';
+    const OLD = 'EarlierRug111111111111111111111111111111111';
+    const CREATOR = 'Creator11111111111111111111111111111111111';
+    const attribute = (mint: string) =>
+      intel.saveAttribution({ mint, status: 'ATTRIBUTED', creator: CREATOR, confidence: 0.85, basis: 'test', feePayer: CREATOR, deployers: [CREATOR], mintAuthority: null, mintAuthorityRole: null, freezeAuthority: null, liquidityCreator: null, initialFunder: null, signature: `${mint}-creation`, evidence: [] }, NOW - HOUR);
+    const drain = (mint: string, at: number) =>
+      intel.saveSecurityEvents(
+        [{ id: `drain-${mint}`, mint, type: 'LIQUIDITY_DRAIN', status: 'CONFIRMED', actor: CREATOR, creatorLinked: true, signature: `${mint}-drain`, slot: 1, blockTimeMs: at, amount: null, reasons: ['pool reserve removed'], evidence: [], confidence: 0.95 }],
+        at,
+        { mint, ruleVersion: RULE_VERSIONS.security, sweep: true },
+      );
+    for (const m of [MINT, SIB, OLD]) attribute(m);
+    // The sibling: live, analysed earlier, Qualified - and no longer attractive enough to be analysed again.
+    const sib = token();
+    sib.mint = SIB;
+    sib.at = NOW - 20 * MIN;
+    const sibling = run(sib, bundle(sib)).snapshot;
+    assert.notEqual(sibling.evaluation!.eligibility, 'REJECTED');
+    h.repo.saveTokenSnapshot(sibling);
+    tokens.set(SIB, sibling);
+    intel.saveTokenIntelligence({ mint: SIB, ...intelRow(), analyzedAt: NOW - 2 * HOUR });
+    drain(OLD, NOW - 3 * HOUR); // one confirmed rug: serious, not yet a hard fail
+
+    // This cycle analyses MINT and confirms a second rug by the same creator.
+    intel.saveTokenIntelligence({ mint: MINT, ...intelRow(), analyzedAt: NOW - MIN });
+    drain(MINT, NOW - 5 * MIN);
+
+    const unlinked = redecide([MINT], deps);
+    assert.equal(tokens.get(SIB)!.evaluation!.eligibility, sibling.evaluation!.eligibility, 'without linkage the sibling keeps its stale verdict');
+    assert.equal(unlinked.linked, 0);
+
+    const result = redecide([MINT], deps, linkedMints(intel, [MINT]));
+    assert.equal(result.linked, 1, 'the sibling was reached through the creator, not analysed');
+    assert.equal(tokens.get(SIB)!.evaluation!.eligibility, 'REJECTED');
+    assert.equal(tokens.get(SIB)!.decision!.hardFails[0]!.code, 'STRONG_SERIAL_RUGGER');
+    assert.ok(changes.some((c) => c.to === 'REJECTED'));
     h.close();
   });
 

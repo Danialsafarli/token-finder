@@ -86,6 +86,8 @@ export interface IntelSettings {
   profileTtlMs: number;
   tokenRefreshMs: number;
   liveWindowMs: number;
+  /** Upper bound when measured cost shows the budgets fit more tokens than `tokensPerCycle`. */
+  maxTokensPerCycle?: number;
 }
 
 export interface IntelDeps {
@@ -155,11 +157,64 @@ export class IntelBudget {
 export interface IntelWork {
   mint: string;
   tier: SurvivorTier;
+  /** Why this token was chosen now, for the cycle report. */
+  reasons?: string[];
 }
 
 export interface IntelPlan {
   work: IntelWork[];
   skipped: { notSurvivor: number; notLive: number; recentlyAnalyzed: number; overBudget: number };
+}
+
+/** Base priority per verdict tier: candidates first, then HIGH_RISK, which deep evidence can confirm or clear. */
+const TIER_PRIORITY: Record<SurvivorTier, number> = { HIGH_POTENTIAL: 40, QUALIFIED: 30, WATCH: 15, HIGH_RISK: 12 };
+
+/**
+ * Why a token deserves deep analysis now, as points and stated reasons.
+ * Every term reads what is already stored on the snapshot: no request is
+ * spent deciding where to spend requests.
+ */
+export function intelPriority(token: TokenSnapshot, tier: SurvivorTier, last: number | null, now: number): { score: number; reasons: string[] } {
+  const reasons: string[] = [];
+  let score = TIER_PRIORITY[tier];
+  if (last === null) {
+    score += 30;
+    reasons.push('never analysed');
+  } else {
+    const hours = (now - last) / 3_600_000;
+    score += Math.min(25, hours * 8);
+    if (hours >= 1) reasons.push(`intelligence ${hours.toFixed(1)} h old`);
+  }
+  const d = token.decision;
+  if (d) {
+    // Near a decision: the only things between it and High potential are what deep analysis measures.
+    const blockers = d.reasons.filter((r) => r.kind === 'blocker').map((r) => r.text);
+    if (tier === 'QUALIFIED' && (d.opportunity?.score ?? 0) >= 55 && blockers.length > 0 && blockers.every((b) => /intelligence|integrity/.test(b))) {
+      score += 15;
+      reasons.push('near High potential, blocked only by unanalysed evidence');
+    }
+    // Unresolved: evidence that could still become actionable either way.
+    if (d.integrity?.band === 'ELEVATED') {
+      score += 12;
+      reasons.push('elevated integrity risk unresolved');
+    }
+    if (d.stability?.pending) {
+      score += 10;
+      reasons.push('verdict awaiting confirmation');
+    }
+    // Changing market conditions.
+    const state = d.momentum?.state;
+    if (state === 'UNSTABLE' || state === 'DECLINING') {
+      score += 8;
+      reasons.push(`market ${state.toLowerCase()}`);
+    }
+  }
+  // Low value: expensive requests are not spent first on the thinnest pools.
+  if ((token.liquidityUsd ?? 0) < 10_000) {
+    score -= 10;
+    reasons.push('thin liquidity (lower priority)');
+  }
+  return { score: Math.round(score * 10) / 10, reasons };
 }
 
 export function planIntel(
@@ -169,7 +224,7 @@ export function planIntel(
   now: number,
 ): IntelPlan {
   const skipped = { notSurvivor: 0, notLive: 0, recentlyAnalyzed: 0, overBudget: 0 };
-  const candidates: (IntelWork & { last: number; liquidity: number })[] = [];
+  const candidates: (IntelWork & { score: number; liquidity: number })[] = [];
   for (const token of tokens) {
     const eligibility = token.evaluation?.eligibility;
     if (!isSurvivor(eligibility)) {
@@ -185,16 +240,44 @@ export function planIntel(
       skipped.recentlyAnalyzed += 1;
       continue;
     }
-    candidates.push({ mint: token.mint, tier: eligibility, last: last ?? -1, liquidity: token.liquidityUsd ?? 0 });
+    const { score, reasons } = intelPriority(token, eligibility, last, now);
+    candidates.push({ mint: token.mint, tier: eligibility, reasons, score, liquidity: token.liquidityUsd ?? 0 });
   }
-  candidates.sort((a, b) => {
-    if (a.tier !== b.tier) return SURVIVOR_ORDER[a.tier] - SURVIVOR_ORDER[b.tier];
-    if (a.last !== b.last) return a.last - b.last;
-    return b.liquidity - a.liquidity;
-  });
-  const work = candidates.slice(0, settings.tokensPerCycle).map(({ mint, tier }) => ({ mint, tier }));
+  candidates.sort((a, b) => b.score - a.score || SURVIVOR_ORDER[a.tier] - SURVIVOR_ORDER[b.tier] || b.liquidity - a.liquidity);
+  const work = candidates.slice(0, settings.tokensPerCycle).map(({ mint, tier, reasons }) => ({ mint, tier, reasons }));
   skipped.overBudget = candidates.length - work.length;
   return { work, skipped };
+}
+
+/**
+ * How many tokens this cycle can afford, from what analyses have measurably
+ * cost. Never below the configured count, never above the configured maximum,
+ * and never more than the request and time budgets fit with a 25% margin. An
+ * analysis a budget cut short does not count: its cost is a lower bound.
+ */
+export function affordableTokens(settings: Pick<IntelSettings, 'tokensPerCycle' | 'requestsPerCycle' | 'cycleMaxMs'> & { maxTokensPerCycle?: number }, measured: { requests: number; ms: number } | null): number {
+  const base = settings.tokensPerCycle;
+  const max = Math.max(base, settings.maxTokensPerCycle ?? base);
+  if (measured === null || base === 0 || measured.requests <= 0 || measured.ms <= 0) return base;
+  const byRequests = Math.floor(settings.requestsPerCycle / (measured.requests * 1.25));
+  const byTime = Math.floor(settings.cycleMaxMs / (measured.ms * 1.25));
+  return Math.max(base, Math.min(max, byRequests, byTime));
+}
+
+/** Recent complete analyses' cost: the scheduler's measured input. */
+const recentCosts: { requests: number; ms: number }[] = [];
+const COST_WINDOW = 12;
+
+export function measuredCost(): { requests: number; ms: number; samples: number } | null {
+  if (recentCosts.length === 0) return null;
+  const mean = (k: 'requests' | 'ms'): number => recentCosts.reduce((s, c) => s + c[k], 0) / recentCosts.length;
+  return { requests: Math.round(mean('requests') * 10) / 10, ms: Math.round(mean('ms')), samples: recentCosts.length };
+}
+
+function noteCost(requests: number, ms: number, truncated: boolean): void {
+  if (truncated || requests <= 0) return;
+  recentCosts.push({ requests, ms });
+  if (recentCosts.length > COST_WINDOW) recentCosts.shift();
 }
 
 // --- reports ---------------------------------------------------------------------------
@@ -237,6 +320,8 @@ export interface TokenReport {
   requests: number;
   truncation: string[];
   error: string | null;
+  /** Why the scheduler chose this token now. */
+  reasons?: string[];
 }
 
 export interface IntelCycleReport {
@@ -247,6 +332,8 @@ export interface IntelCycleReport {
   skipped: IntelPlan['skipped'];
   tokens: TokenReport[];
   budget: { requests: number; limit: number; cycleMaxMs: number };
+  /** How many tokens this cycle took, and the measured cost that decided it. */
+  schedule?: { tokens: number; configured: number; max: number; measured: { requests: number; ms: number; samples: number } | null };
   failures: ProviderFailure[];
   health: { state: IntelHealthState; reason: string };
 }
@@ -958,7 +1045,10 @@ export async function runIntelCycle(deps: IntelDeps): Promise<IntelCycleReport> 
     return finish();
   }
   const { chain, intel } = deps;
-  const plan = planIntel(deps.tokens(), (m) => intel.lastAnalyzedAt(m), deps.settings, at);
+  const measured = measuredCost();
+  const limit = affordableTokens(deps.settings, measured);
+  report.schedule = { tokens: limit, configured: deps.settings.tokensPerCycle, max: Math.max(deps.settings.tokensPerCycle, deps.settings.maxTokensPerCycle ?? deps.settings.tokensPerCycle), measured };
+  const plan = planIntel(deps.tokens(), (m) => intel.lastAnalyzedAt(m), { ...deps.settings, tokensPerCycle: limit }, at);
   report.skipped = plan.skipped;
   const deadline = at + deps.settings.cycleMaxMs;
   let spent = 0;
@@ -967,8 +1057,12 @@ export async function runIntelCycle(deps: IntelDeps): Promise<IntelCycleReport> 
     const remaining = deps.settings.requestsPerCycle - spent;
     const share = Math.max(0, Math.floor(remaining / (plan.work.length - i)));
     const budget = new IntelBudget(share, deadline, now);
+    const tokenStarted = now();
     try {
-      report.tokens.push(await analyzeToken(work, { ...deps, chain, intel }, budget, failures));
+      const done = await analyzeToken(work, { ...deps, chain, intel }, budget, failures);
+      done.reasons = work.reasons ?? [];
+      report.tokens.push(done);
+      noteCost(done.requests, now() - tokenStarted, done.truncation.some((x) => x.startsWith('TIME_BUDGET') || x.startsWith('REQUEST_BUDGET')));
     } catch (error) {
       // A defect in one token's analysis must not end the cycle or the loop.
       const message = error instanceof Error ? error.message : String(error);
