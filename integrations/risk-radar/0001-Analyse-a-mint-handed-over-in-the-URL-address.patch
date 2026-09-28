@@ -1,0 +1,58 @@
+From 02beccba51b482f4856b8e0b8be3bf6c4232b562 Mon Sep 17 00:00:00 2001
+From: Arian37 <sfr.arian@gmail.com>
+Date: Mon, 28 Sep 2026 23:42:36 +0200
+Subject: [PATCH] Analyse a mint handed over in the URL (?address=)
+
+Token Finder's Deep Risk Analysis action opens Risk Radar with the mint in
+the URL. On arrival the address is validated exactly as the form validates it
+and analysed once; anything else in the URL is ignored.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/app/page.tsx | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index 21ad29e..26a65ee 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { useCallback, useState } from "react";
++import { useCallback, useEffect, useRef, useState } from "react";
+ 
+ import AmbientBackground from "@/components/AmbientBackground";
+ import LandingHero from "@/components/LandingHero";
+@@ -13,6 +13,7 @@ import ProductTour from "@/components/onboarding/ProductTour";
+ import { PRODUCT_TOUR } from "@/components/onboarding/tourSteps";
+ import { useProductTour } from "@/components/onboarding/useProductTour";
+ import type { RiskReport } from "@/lib/risk-engine/types";
++import { validateMintAddress } from "@/lib/solana/address";
+ 
+ type Status = "idle" | "loading" | "error" | "result";
+ 
+@@ -51,6 +52,20 @@ export default function Home() {
+     }
+   }, []);
+ 
++  /*
++   * A mint handed over in the URL (?address=...) - from Token Finder's "Deep
++   * Risk Analysis" action, or any shared link - is analysed once on arrival,
++   * after the same validation the form applies. Nothing else is read from the
++   * URL, and an invalid address is simply ignored.
++   */
++  const handedOver = useRef(false);
++  useEffect(() => {
++    if (handedOver.current) return;
++    handedOver.current = true;
++    const address = new URLSearchParams(window.location.search).get("address")?.trim() ?? "";
++    if (address && validateMintAddress(address).valid) void analyze(address);
++  }, [analyze]);
++
+   const reset = useCallback(() => {
+     setReport(null);
+     setError("");
+-- 
+2.54.0.windows.1
+
