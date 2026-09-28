@@ -13,6 +13,7 @@ import type { TokenSnapshot } from './types.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { writeFileSync } from 'node:fs';
 import { formatCalibration, runCalibration } from './calibration/replay.ts';
+import { CalibrationReader } from './persist/calibration-reader.ts';
 
 const HELP = `
 token-finder - discover, analyze, rank and monitor new Solana tokens
@@ -428,7 +429,7 @@ function cmdCalibrate(args: string[]): void {
   const path = at('--db') ?? DB_PATH;
   const db = new DatabaseSync(path, { readOnly: true });
   try {
-    const report = runCalibration(db);
+    const report = runCalibration(new CalibrationReader(db));
     console.log(formatCalibration(report));
     const out = at('--json');
     if (out) {

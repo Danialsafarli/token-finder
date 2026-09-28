@@ -20,7 +20,7 @@
  *    potential, momentum readiness.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
+import type { CalibrationSource } from '../persist/calibration-reader.ts';
 import { labelOutcome, replayStability, type ConfirmedEvent, type Observation, type OutcomeLabel } from './outcomes.ts';
 import { VERDICT_TIER } from '../core/ranking.ts';
 import { STABILITY } from '../decision/stability.ts';
@@ -73,35 +73,33 @@ function parseCodes(raw: unknown): string[] {
   }
 }
 
-export function runCalibration(db: DatabaseSync): CalibrationReport {
+export function runCalibration(db: CalibrationSource): CalibrationReport {
   const notes: string[] = [];
 
   // --- decision points: each token's first verdict, and every change -------------------
-  const rows = db
-    .prepare(`SELECT mint, observed_at, eligibility, veto_codes, COALESCE(policy_version, 'phase-1') AS policy FROM token_snapshots WHERE eligibility IS NOT NULL ORDER BY mint, observed_at`)
-    .all() as { mint: string; observed_at: number; eligibility: Eligibility; veto_codes: string | null; policy: string }[];
+  const rows = db.verdicts();
   const sequences = new Map<string, { verdict: string; t: number }[]>();
   const points: DecisionPoint[] = [];
   let last: { mint: string; verdict: string } | null = null;
   for (const r of rows) {
     const seq = sequences.get(r.mint) ?? [];
-    seq.push({ verdict: r.eligibility, t: r.observed_at });
+    seq.push({ verdict: r.eligibility, t: r.observedAt });
     sequences.set(r.mint, seq);
     if (last === null || last.mint !== r.mint || last.verdict !== r.eligibility) {
-      points.push({ mint: r.mint, at: r.observed_at, verdict: r.eligibility, vetoes: parseCodes(r.veto_codes), policy: r.policy });
+      points.push({ mint: r.mint, at: r.observedAt, verdict: r.eligibility, vetoes: parseCodes(r.vetoCodes), policy: r.policy });
     }
     last = { mint: r.mint, verdict: r.eligibility };
   }
 
   // --- observations and confirmed events ------------------------------------------------
   const obsByMint = new Map<string, Observation[]>();
-  for (const o of db.prepare('SELECT mint, observed_at AS t, liquidity_usd AS liquidity, pool_address AS pool FROM market_snapshots ORDER BY mint, observed_at').all() as { mint: string; t: number; liquidity: number | null; pool: string | null }[]) {
+  for (const o of db.marketObservations()) {
     const list = obsByMint.get(o.mint) ?? [];
     list.push({ t: o.t, liquidity: o.liquidity, pool: o.pool });
     obsByMint.set(o.mint, list);
   }
   const eventsByMint = new Map<string, ConfirmedEvent[]>();
-  for (const e of db.prepare(`SELECT mint, type, COALESCE(block_time, detected_at) AS at FROM security_events WHERE status = 'CONFIRMED' AND superseded_at IS NULL`).all() as { mint: string; type: string; at: number }[]) {
+  for (const e of db.confirmedEvents()) {
     const list = eventsByMint.get(e.mint) ?? [];
     list.push({ type: e.type, at: e.at });
     eventsByMint.set(e.mint, list);
@@ -188,7 +186,7 @@ export function runCalibration(db: DatabaseSync): CalibrationReport {
     highPotential: { tokens: 0, blockedBy: {} },
     momentum: { byState: {}, insufficientShare: 0 },
   };
-  for (const { payload } of db.prepare('SELECT payload FROM tokens').all() as { payload: string }[]) {
+  for (const payload of db.tokenPayloads()) {
     let t: TokenSnapshot;
     try {
       t = JSON.parse(payload) as TokenSnapshot;
@@ -242,9 +240,9 @@ export function runCalibration(db: DatabaseSync): CalibrationReport {
     'Phase 1 rows (policy "phase-1") were produced by the Phase 1 gate and score; they are kept apart from decision-policy rows.',
   );
 
-  const span = db.prepare('SELECT MIN(observed_at) AS a, MAX(observed_at) AS b, COUNT(*) AS n, COUNT(DISTINCT mint) AS m FROM token_snapshots').get() as { a: number | null; b: number | null; n: number; m: number };
+  const span = db.span();
   return {
-    database: { snapshots: span.n, tokens: span.m, from: span.a, to: span.b, decisionPoints: points.length },
+    database: { snapshots: span.snapshots, tokens: span.tokens, from: span.from, to: span.to, decisionPoints: points.length },
     outcomes,
     rejects: { byVeto, review: review.slice(0, 25) },
     escapes,
