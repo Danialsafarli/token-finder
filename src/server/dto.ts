@@ -19,6 +19,7 @@
 
 import { CANDIDATE_VERDICTS, countUniverse, currentAgeHours, placementOf, rankKey, VERDICT_TIER, type Universe, type UniverseCounts } from '../core/ranking.ts';
 import { safeHttpUrl } from './security.ts';
+import { riskRadarLink, type RiskRadarLink } from './risk-radar.ts';
 import { COVERAGE_WEIGHTS } from '../core/lifecycle.ts';
 import {
   BAND_LABEL,
@@ -485,6 +486,8 @@ export interface Dossier {
     sources: string[];
     links: { label: string; url: string }[];
   };
+  /** Deep Risk Analysis in Solana Risk Radar, a separate product (server/risk-radar.ts). Null when not configured. */
+  riskRadar: RiskRadarLink | null;
   placement: { universe: Universe; freshness: 'FRESH' | 'AGING' | null; lastSeenAt: number; ageMs: number };
   verdict: {
     eligibility: Eligibility | null;
@@ -911,6 +914,7 @@ export function dossier(
   context: DtoContext,
   bundle: IntelligenceBundle | null = null,
   revisions: RugIntelligenceView['revisions'] = [],
+  riskRadarBase: string | null = null,
 ): Dossier {
   const placement = placementOf(token, context.now, context.windowMs);
   const evaluation = token.evaluation ?? null;
@@ -963,6 +967,7 @@ export function dossier(
       sources: token.sources.map(sourceLabel),
       links: links(token),
     },
+    riskRadar: riskRadarLink(token.mint, riskRadarBase),
     placement: {
       universe: placement.universe,
       freshness: placement.freshness,

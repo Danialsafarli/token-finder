@@ -674,7 +674,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const intel = store.intel();
       const bundle = intel ? gatherIntelligence(store.decisionSources(), token, now) : null;
       const revisions = intel?.eventRevisionsOf(mint) ?? [];
-      return sendJson(res, 200, dossier(token, token.ledger ? [] : store.latestEvidence(mint), context, bundle, revisions));
+      return sendJson(res, 200, dossier(token, token.ledger ? [] : store.latestEvidence(mint), context, bundle, revisions, config.riskRadarUrl));
     }
 
     // Diagnostic JSON for one token's deep intelligence. Read-only; not a
