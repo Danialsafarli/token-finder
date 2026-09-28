@@ -274,7 +274,8 @@ Deep intelligence spends at most `INTEL_REQUESTS_PER_CYCLE` per cycle. See
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | What exists today, stage by stage, plus the proposed target architecture, trading modes, decision engine, persistence and performance model. |
 | [DATA_BACKBONE.md](DATA_BACKBONE.md) | **The data backbone as implemented**: provider capability matrix, on-chain launch discovery, transaction reading, the canonical event model, the processing budget, gaps, measurements and limits. |
-| [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) | **Actor analysis as implemented, diagnostics only**: buyer classes, funding, the wallet graph, clusters, wash, activity quality, attribution, security events, creator history, serial networks, budgets, Helius strategy, live measurements and limits. |
+| [DECISION_ENGINE.md](DECISION_ENGINE.md) | **Verdicts as implemented (Phase 3)**: the intelligence contract, rule versioning and re-evaluation, Hard Gate v2, soft risk and integrity, opportunity, Momentum v2, multi-pool coverage, the six-verdict ladder, ranking, persistence and live findings. |
+| [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) | **Actor analysis as implemented**, read by the decision engine: buyer classes, funding, the wallet graph, clusters, wash, activity quality, attribution, security events, creator history, serial networks, budgets, Helius strategy, live measurements and limits. |
 | [PERSISTENCE.md](PERSISTENCE.md) | **The storage layer as implemented**: SQLite schema, migrations, legacy JSON import, snapshot deduplication, retention, failure behaviour and how to extend it for transaction ingestion. |
 | [DATA_SOURCES.md](DATA_SOURCES.md) | Measured live validation of all five providers, the fields we actually receive, and the proposed provider strategy. |
 | [SCORING.md](SCORING.md) | Full scoring audit: every component, weight and penalty, with measured weaknesses. |
@@ -320,16 +321,23 @@ absorbs one and stays near the top.
 
 | Status | Meaning |
 |---|---|
-| `QUALIFIED` | clean gate, enough evidence to stand behind |
-| `WATCH` | clean gate, but coverage below the qualify bar |
+| `HIGH_POTENTIAL` | safety held, well covered by market evidence and deep intelligence, strong opportunity, real (observed) momentum |
+| `QUALIFIED` | no hard fail, no actionable integrity risk, enough market evidence to stand behind |
+| `WATCH` | no hard fail, but market-evidence coverage below the qualify bar |
 | `INSUFFICIENT_DATA` | too little observed to say anything useful |
-| `REJECTED` | one or more hard vetoes; not shown in the ranking by default |
+| `HIGH_RISK` | no hard fail, but serious soft risk on confident evidence (snipers, coordination, concentration, a creator's history...) |
+| `REJECTED` | one or more hard fails; never ranked |
+
+The Board's default view is the candidate ranking - High potential, Qualified, Watch -
+ordered by rank (opportunity less measured integrity risk and what could not be
+checked). Safety and opportunity are separate numbers and never combined; momentum
+cannot override a hard fail. Full detail: **[DECISION_ENGINE.md](DECISION_ENGINE.md)**.
 
 Every veto records its code, a readable reason, the provider, the observed value, a
 timestamp, and whether it can clear on fresh evidence. **A veto never fires on unknown
 evidence** — absence of evidence is not evidence of danger.
 
-Full detail: **[PIPELINE.md](PIPELINE.md)**.
+Fast-screen detail: **[PIPELINE.md](PIPELINE.md)**.
 
 ## Caveats
 

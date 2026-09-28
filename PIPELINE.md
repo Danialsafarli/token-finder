@@ -376,6 +376,14 @@ one call to one provider — the same reasoning that keeps `venueLiquidityUsd` o
 
 ## 6. Ranking eligibility and the lifecycle
 
+> **Since Phase 3 this is the fast screen, not the final verdict.** The ladder
+> below still runs first and its vetoes still reject; the decision engine then
+> adds deep intelligence, soft risk, opportunity and momentum, and sets one of
+> six verdicts (HIGH_POTENTIAL, QUALIFIED, WATCH, INSUFFICIENT_DATA,
+> HIGH_RISK, REJECTED). The exact ladder is in
+> [DECISION_ENGINE.md](DECISION_ENGINE.md) §7; the screen's own result is kept
+> on each decision for audit.
+
 A numeric score is not a licence to appear in the ranking.
 
 | Eligibility | Condition |

@@ -415,7 +415,30 @@ was created ahead of its writer. Two retention choices are deliberate: a
 CONFIRMED security event is never pruned, because a creator's history rests on
 it and it cannot be re-derived once its transactions age out; and a stored
 event's status can rise on re-detection but never fall, because a later,
-more truncated read can miss the fact.
+more truncated read can miss the fact - **under the same rule**. Since
+migration 4 a newer rule's reading wins (see below).
+
+### Decision engine — implemented as migration 4
+
+**Done, in [DECISION_ENGINE.md](DECISION_ENGINE.md) §10.** Additive only:
+
+- `security_events` gains `rule_version`, `superseded_at`, `superseded_by`.
+  Existing rows get NULL: unversioned, which the decision layer treats as
+  superseded - kept and shown, never counted.
+- `security_event_revisions` holds every earlier reading of an event before it
+  was reinterpreted or superseded. Pruned with tokens (`RETENTION_TOKEN_DAYS`).
+- `token_intelligence.rule_versions` records the rule set of each snapshot.
+- `token_snapshots` gains `policy_version`, `rank_score`, `integrity_score`,
+  `integrity_band`, `opportunity_score`, `momentum_state`,
+  `decision_coverage`, so policies can be compared without parsing payloads.
+- `verdict_transitions`: one row per material verdict change with from, to,
+  basis, reasons, components, hard fails, policy and models. Like snapshot
+  transitions it is never pruned by age; it cascades only with its token.
+
+A verdict re-decided after an intelligence cycle, with no new market
+observation, replaces the current row and appends history **only** when the
+verdict changed - dated when it was decided, with no market, holder or pool
+row, because none was observed.
 
 ### Technical Intelligence
 

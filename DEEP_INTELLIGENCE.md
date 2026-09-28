@@ -7,9 +7,11 @@ reviewing what it claims.
 This phase works out **who is behind a token's activity**: what kind of
 wallets bought it, how they were funded, which of them are related, whether
 the trading looks manufactured, who launched the token, and what that creator
-did before. It is a **diagnostics layer**. Nothing in this document feeds a
-score, a ranking, a veto or the Board. No threshold here is calibrated
-against outcomes; calibration is Phase 4. Every figure below is an
+did before. Written in Phase 2 as a diagnostics layer; **since Phase 3 the
+decision engine reads it** - through the normalised, rule-versioned contract
+described in [DECISION_ENGINE.md](DECISION_ENGINE.md), which decides what here
+may reject, what is soft risk, and what is only shown. No threshold here is
+calibrated against outcomes; calibration is Phase 4. Every figure below is an
 engineering measurement, not an accuracy claim.
 
 Sources, by the tiers in [CLAUDE.md](CLAUDE.md): RPC semantics from the
@@ -346,7 +348,10 @@ event types.
 
 ---
 
-## 14. Surfaces (diagnostics only)
+## 14. Surfaces
+
+Since Phase 3 the product surfaces are the Dossier's **Activity Integrity** and
+**Rug Intelligence** sections (DECISION_ENGINE.md §12). The Phase 2 diagnostics remain:
 
 - System page, **Deep intelligence (diagnostics)**: health, last cycle,
   classifications, funding, graph and cluster counts, attribution, creator
@@ -394,10 +399,7 @@ Engineering checks only; none of this measures accuracy.
 
 ## 16. Known limitations
 
-- **One pool per token.** Trades are read on the tracked pair only. A token
-  that trades on several pools shows a thin sample, so wash and activity are
-  usually `INSUFFICIENT_DATA` until collection deepens. On one live token,
-  7 of its newest 100 transactions touched the tracked pair.
+- **Pool coverage is partial.** *(Phase 3: every provider-reported pool is now read from the mint's own history and up to two are collected; each reading states how much of the market it represents, and that caps its coverage. See DECISION_ENGINE.md §6.)* A busy token is still sampled, not read in full.
 - **Windows are small.** Newest 100 transactions per wallet and per mint;
   older facts (an early mint, an old freeze) can be missed, and the
   truncation says so.
@@ -405,9 +407,11 @@ Engineering checks only; none of this measures accuracy.
   `DIRECT`.
 - **The hub probe is recency-based.** A dormant exchange wallet could read
   as quiet; the fan-out rule (≥ 25 funded wallets seen) is the backstop.
-- **A rule change does not retract stored events.** Events never downgrade,
-  so an event recorded under an older rule stays until retention. A rules
-  version on each event is the fix.
+- ~~**A rule change does not retract stored events.**~~ **Fixed in Phase 3.**
+  Each event carries the rule version that found it; a re-analysis under a
+  newer rule reinterprets or supersedes it (archiving the earlier reading),
+  and only current-rule, unsuperseded events are decision evidence. See
+  DECISION_ENGINE.md §2.
 - **Clusters are rebuilt around the wallets just analysed**, from edges up to
   one neighbour away; a cluster held together further out can split.
 - **Nothing is calibrated.** Every threshold is a starting point for Phase 4.

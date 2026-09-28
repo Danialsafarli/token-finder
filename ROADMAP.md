@@ -178,6 +178,16 @@ profitability claim without that evidence.**
 Helius websocket/gRPC for pool-init events; polled feeds become reconciliation, not the
 primary path. Durable discovery queue. Tiered refresh so cost scales with interest.
 
+## Decision engine (product Phase 3) — **DONE on `feature/decision-engine`, in review**
+
+Deep intelligence now decides: a normalised, rule-versioned intelligence
+contract; Hard Gate v2; seven-domain soft risk and integrity; opportunity kept
+separate from safety; Momentum v2 from observed history; multi-pool activity
+with measured market coverage; six verdicts (HIGH_POTENTIAL ... REJECTED) with
+persisted, reasoned transitions; re-decision after each intelligence cycle.
+No trading. Calibration of every threshold against outcomes is product
+Phase 4. See [DECISION_ENGINE.md](DECISION_ENGINE.md).
+
 ## Phase 7 — Watchlist and decision engine
 
 State machine from `ARCHITECTURE.md` Part 4. Every transition writes a reason to the audit

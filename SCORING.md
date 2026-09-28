@@ -382,3 +382,18 @@ classified, all scored. No suppression occurred, because live RugCheck data is
 always fresh — it is cached for 20 minutes against a 6-hour freshness window.
 **The stale path cannot be exercised live**, which is precisely why it is pinned
 by deterministic tests rather than by observation.
+
+## 9. Phase 3: the score is no longer the ranking key
+
+`score.total` (now named **score@1**, the *market score*) is still computed,
+stored and shown exactly as §1-§8 describe. It is no longer what orders the
+Board. The decision engine ([DECISION_ENGINE.md](DECISION_ENGINE.md)) ranks
+within each verdict by
+
+    rank = opportunity - 40 x integrity risk - 10 x (1 - integrity coverage)
+
+where opportunity (§5 there) and integrity (§4 there) are separate models
+with their own versions, and a hard fail removes a token from ranking
+altogether. Safety was one component of score@1; it is now its own question,
+answered before opportunity is considered, so a dangerous token cannot score
+its way up. None of the new weights is calibrated either - that is Phase 4.

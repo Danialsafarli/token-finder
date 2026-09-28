@@ -68,11 +68,12 @@ src/cli.ts ── serve ──> src/server/index.ts ──> node:http ──> sr
 | On-chain safety | **NOT IMPLEMENTED in practice** | `helius.ts` returns `null` without a key, so the evidence is UNAVAILABLE. Its parser (`parseMint`) is now verified on live mainnet accounts through the public RPC (`scripts/verify-live.ts`); the Helius request itself has not run (no key) |
 | On-chain discovery | **IMPLEMENTED** | pump.fun launches read from the chain and merged into discovery as `chain:pumpfun`, with first-sighting provenance per source. See [DATA_BACKBONE.md](DATA_BACKBONE.md) |
 | Transaction ingestion | **IMPLEMENTED** | Survivors' pool transactions read into pool activity, transfer edges, wallets and chain events, within a budget, with gaps recorded. Read by deep intelligence |
-| Deep intelligence | **IMPLEMENTED — diagnostics only** | `src/intel/`: buyer classes, funding, a typed wallet graph, conservative clusters, wash analysis, activity quality, attribution, security events, creator history and serial networks, in a staged cycle with hard budgets and recorded truncation. **Feeds no score, ranking or veto.** See [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) |
-| Buyer / holder analysis | **PARTIAL** | `holderCount` and `topHoldersPercentage` read from Jupiter; large holders labelled by role, with a wallet-only share stored beside the raw one. Deep intelligence produces buyer classes and clusters, **not yet used by scoring or the gate** |
-| Momentum | **PARTIAL** | DexScreener `priceChange` 1h/6h blended. **Fabricates 0% when no pair exists** (35% of tokens) |
+| Deep intelligence | **IMPLEMENTED** | `src/intel/`: buyer classes, funding, a typed wallet graph, conservative clusters, wash analysis, activity quality across every known pool with measured market coverage, attribution, rule-versioned security events, creator history and serial networks, in a staged cycle with hard budgets and recorded truncation. Read by the decision engine through a normalised contract. See [DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md) |
+| Decision engine | **IMPLEMENTED** | `src/decision/`: the intelligence contract, rule versioning and re-evaluation, Hard Gate v2, seven-domain soft risk and integrity, opportunity, Momentum v2, the six-verdict ladder and rank. Runs at every scan from stored rows only, and again for each token an intelligence cycle analyses. See [DECISION_ENGINE.md](DECISION_ENGINE.md) |
+| Buyer / holder analysis | **IMPLEMENTED** | `holderCount` and `topHoldersPercentage` from Jupiter; large holders labelled by role, the wallet-only share beside the raw one and used for soft risk only when every owner resolved. Buyer classes and clusters feed integrity and independent-participant counts |
+| Momentum | **IMPLEMENTED (v2)** | From Token Finder's own stored observations: 30 min / 2 h / 6 h windows, persistence, spikes, liquidity divergence; INSUFFICIENT_HISTORY rather than a guess. Provider frames shown beside it, never mixed in |
 | Scoring | **IMPLEMENTED** | 7 weighted components + multiplicative penalties — see `SCORING.md` |
-| Ranking | **IMPLEMENTED** | In-memory sort by one of 6 keys, filtered, capped at 500 |
+| Ranking | **IMPLEMENTED** | Verdict tier first, then rank = opportunity − integrity risk − unverified. The Phase 1 score is kept as the market score |
 | Monitoring | **IMPLEMENTED** | Chained `setTimeout` (never stacks); diffs each snapshot and emits 6 event kinds |
 | Dashboard | **IMPLEMENTED** | Static HTML/CSS/JS, SSE live updates, filters, sort, detail drawer with score breakdown + sparklines |
 
@@ -152,7 +153,7 @@ The Board refetches on `scan`; every page listens for connection changes.
 and currently unset; both corresponding sources are inert. Chain collection uses the public
 Solana endpoint when neither `SOLANA_RPC_URL` nor a Helius key is set.
 
-**Test coverage** — `npm test` runs 417 `node:test` tests (engine, persistence, DTOs, security
+**Test coverage** — `npm test` runs 585 `node:test` tests (engine, persistence, DTOs, security
 boundary, render boundary). `npm run test:ui` runs 44 more in a real headless Chromium,
 driven over the DevTools protocol with real pointer, touch and key events and no npm
 dependency. `npm run lint` enforces the render and persistence boundaries. Discovery
