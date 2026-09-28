@@ -139,13 +139,16 @@ function template(s) {
   const cov = s.coverage;
   const db = s.persistence.database;
   const off = s.capabilities.filter((c) => c.state === 'OFF' && c.metrics.length > 0);
+  const degraded = s.capabilities.filter((c) => c.state === 'DEGRADED' && c.metrics.length > 0);
 
   return html`<section class="system-page" aria-labelledby="system-title">
     <header class="page-head">
       <h1 id="system-title">System</h1>
       <p class="page-head__sub">${off.length
         ? html`<span class="tone--warn">${off.length} safety check${off.length === 1 ? ' is' : 's are'} off in this configuration.</span> Verdicts are reached without ${off.map((c) => c.label.toLowerCase()).join(', ')}.`
-        : 'Every safety check is available in this configuration.'}</p>
+        : degraded.length
+          ? html`<span class="tone--warn">${degraded.length} safety check${degraded.length === 1 ? ' is' : 's are'} degraded right now.</span> Verdicts use what could be read, and each one states what it could not.`
+          : 'Every safety check is available in this configuration.'}</p>
     </header>
 
     <section aria-labelledby="cap-title">

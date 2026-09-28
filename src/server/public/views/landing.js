@@ -79,6 +79,27 @@ const shellTemplate = () => html`
       </header>
       <div class="landing__orb" data-slot="orb"></div>
       <div class="landing__deck" data-slot="deck"></div>
+      <section class="landing__how" aria-labelledby="how-title">
+        <h2 class="landing__how-title" id="how-title">How a verdict is reached</h2>
+        <ol class="how">
+          <li class="how__item">
+            <p class="how__name">Real data, with its source</p>
+            <p class="how__body">Market, contract and holder data from DexScreener, Jupiter, RugCheck and the chain itself. Every figure carries its source and age; what was not measured shows as unknown, never as zero.</p>
+          </li>
+          <li class="how__item">
+            <p class="how__name">Safety first, opportunity apart</p>
+            <p class="how__body">A hard fail - a live mint authority, a confirmed rug, catastrophic concentration - rejects outright. Integrity and opportunity are scored separately, and momentum can never lift a verdict.</p>
+          </li>
+          <li class="how__item">
+            <p class="how__name">Who is behind the activity</p>
+            <p class="how__body">Deep intelligence reads the wallets: first buyers, bots and snipers, funding links and coordinated clusters, wash trading, and the creator's other launches - up to a confirmed drain.</p>
+          </li>
+          <li class="how__item">
+            <p class="how__name">Every verdict explains itself</p>
+            <p class="how__body">Reasons, what blocks a better verdict, and how much was covered. Every change is recorded; danger applies at once, and a better verdict must be confirmed.</p>
+          </li>
+        </ol>
+      </section>
     </div>
   </section>`;
 
