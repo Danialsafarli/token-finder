@@ -26,6 +26,7 @@ import { ago, count, duration, share, shortAddress } from '../lib/format.js';
 import { navigate } from '../lib/router.js';
 import { liveState, onLive, onServerEvent } from '../lib/live.js';
 import { handOff, mountOrb } from '../ui/orb.js';
+import { mountScanner } from '../ui/scanner.js';
 import { dossierUrl, tokenIcon, toneClass, verdictChip } from '../ui/components.js';
 
 /** A Solana mint: base58, 32 to 44 characters. */
@@ -262,6 +263,8 @@ function placementFor(phase) {
 export function mountLanding(root, route) {
   render(root, shellTemplate());
   const section = /** @type {HTMLElement} */ (root.querySelector('.landing'));
+  // The scan field behind the Observatory: decoration only, never input.
+  const scanner = mountScanner(section);
   const deck = /** @type {HTMLElement} */ (root.querySelector('[data-slot="deck"]'));
   const orb = mountOrb(/** @type {HTMLElement} */ (root.querySelector('[data-slot="orb"]')), {
     bare: true,
@@ -624,6 +627,7 @@ export function mountLanding(root, route) {
       for (const id of timers) clearTimeout(id);
       // A handed-off Observatory now belongs to Live discovery.
       if (!handedOff) orb.dispose();
+      scanner.dispose();
       offLive();
       offEvents();
       narrow.removeEventListener('change', onNarrow);
