@@ -2,7 +2,7 @@
 # must never scale beyond one machine. See DEPLOYMENT.md.
 #
 #   fly launch --no-deploy --copy-config --name <app>
-#   fly volumes create token_finder_data --size 3 --region <region>
+#   fly volumes create token_finder_data --size 10 --region <region>
 #   fly secrets set HELIUS_API_KEY=... PUBLIC_ORIGIN=https://<app>.fly.dev
 #   fly deploy
 

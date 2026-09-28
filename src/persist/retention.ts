@@ -42,6 +42,12 @@ export interface RetentionPolicy {
   launchDays?: number;
   /** Days of chain history kept. Defaults to `historyDays`. */
   chainDays?: number;
+  /**
+   * Days of per-metric evidence kept for ordinary snapshots. Evidence behind
+   * a verdict transition is kept as long as the transition. Defaults to
+   * `historyDays`.
+   */
+  evidenceDays?: number;
 }
 
 export const DEFAULT_RETENTION: RetentionPolicy = {
@@ -51,10 +57,13 @@ export const DEFAULT_RETENTION: RetentionPolicy = {
   maxEvents: 500,
   launchDays: 30,
   chainDays: 30,
+  evidenceDays: 14,
 };
 
 export interface RetentionResult {
   tokenSnapshots: number;
+  /** Per-metric evidence rows removed from ordinary (non-transition) snapshots. */
+  evidenceSnapshots: number;
   marketSnapshots: number;
   holderSnapshots: number;
   poolSnapshots: number;
@@ -90,6 +99,7 @@ export function applyRetention(
 
   const result: RetentionResult = {
     tokenSnapshots: 0,
+    evidenceSnapshots: 0,
     marketSnapshots: 0,
     holderSnapshots: 0,
     poolSnapshots: 0,
@@ -102,6 +112,7 @@ export function applyRetention(
   };
   const launchCutoff = now - (policy.launchDays ?? 30) * DAY_MS;
   const chainCutoff = now - (policy.chainDays ?? policy.historyDays) * DAY_MS;
+  const evidenceCutoff = now - (policy.evidenceDays ?? policy.historyDays) * DAY_MS;
 
   try {
     transact(db, () => {
@@ -117,6 +128,18 @@ export function applyRetention(
       result.tokenSnapshots = db
         .prepare('DELETE FROM token_snapshots WHERE observed_at < ? AND is_transition = 0')
         .run(historyCutoff).changes as number;
+
+      // Per-metric evidence is the largest table by far (measured: ~10 rows a
+      // snapshot, ~33 MB a day with its index). Ordinary snapshots keep theirs
+      // for evidenceDays; a transition keeps its evidence as long as it lives,
+      // so "why did this verdict change" stays answerable. The snapshot row
+      // itself, and the evidence the live Dossier shows (on the token), stay.
+      result.evidenceSnapshots = db
+        .prepare(
+          `DELETE FROM evidence_snapshots WHERE observed_at < ?
+             AND NOT EXISTS (SELECT 1 FROM token_snapshots s WHERE s.id = evidence_snapshots.snapshot_id AND s.is_transition = 1)`,
+        )
+        .run(evidenceCutoff).changes as number;
 
       // The market/holder/pool streams carry no transition concept of their
       // own, so they follow the same age rule.

@@ -85,6 +85,7 @@ const SNAPSHOT_POLICY: SnapshotPolicy = {
 
 const RETENTION: RetentionPolicy = {
   historyDays: config.retentionHistoryDays,
+  evidenceDays: config.retentionEvidenceDays,
   tokenDays: config.retentionTokenDays,
   diagnosticsDays: config.retentionDiagnosticsDays,
   maxEvents: config.maxEvents,

@@ -167,6 +167,8 @@ export const config = {
   retentionTokenDays: Math.max(1, num('RETENTION_TOKEN_DAYS', 180)),
   /** Days of provider-failure diagnostics kept. */
   retentionDiagnosticsDays: Math.max(1, num('RETENTION_DIAGNOSTICS_DAYS', 14)),
+  /** Days of per-metric evidence kept for ordinary snapshots; transitions keep theirs. */
+  retentionEvidenceDays: Math.max(1, num('RETENTION_EVIDENCE_DAYS', 14)),
 
   /** How often the monitor re-scans, in seconds. */
   scanIntervalSec: Math.max(30, num('SCAN_INTERVAL_SEC', 120)),
