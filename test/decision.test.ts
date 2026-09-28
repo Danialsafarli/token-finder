@@ -407,3 +407,32 @@ describe('regression: disputed concentration (live, 2026-09-28)', () => {
     assert.ok(holders.band === 'HIGH' || holders.band === 'SEVERE', holders.band);
   });
 });
+
+describe('regression: strong readings from a tiny market slice (live, 2026-09-28)', () => {
+  // Live: wash risk HIGH at confidence 0.84, and 79% of trades by snipers,
+  // each read from trades representing about 3% of the market. A confident
+  // reading of a sliver is still a sliver: it may inform, not condemn.
+  test('wash HIGH from 3% of the market is not actionable', () => {
+    const t = token();
+    const { decision } = run(t, bundle(t, { representativeness: 0.033, wash: { risk: 'HIGH', confidence: 0.84, coverage: 1, families: ['ROUND_TRIPS', 'RELATIONSHIP'], roundTrip: 0.3 } }));
+    const coordination = decision.integrity.domains.find((d) => d.key === 'walletCoordination')!;
+    assert.ok(coordination.band === 'ELEVATED' || coordination.band === 'LOW', coordination.band);
+    assert.notEqual(decision.verdict, 'HIGH_RISK');
+    assert.notEqual(decision.verdict, 'REJECTED');
+  });
+
+  test('79% snipers from 3% of the market is not actionable', () => {
+    const t = token();
+    const { decision } = run(t, bundle(t, { representativeness: 0.033, shares: { sniper: 0.79, automated: 0.04, unknown: 0.17 } }));
+    const activity = decision.integrity.domains.find((d) => d.key === 'activityIntegrity')!;
+    assert.equal(activity.band, 'ELEVATED');
+    assert.notEqual(decision.verdict, 'HIGH_RISK');
+  });
+
+  test('two sliver readings together do not add up to a high risk', () => {
+    const t = token();
+    const { decision } = run(t, bundle(t, { representativeness: 0.033, shares: { sniper: 0.79, automated: 0.04, unknown: 0.17 }, wash: { risk: 'HIGH', confidence: 0.84, coverage: 1, families: ['ROUND_TRIPS', 'RELATIONSHIP'], roundTrip: 0.3 } }));
+    assert.notEqual(decision.verdict, 'HIGH_RISK');
+    assert.ok(decision.reasons.some((r) => r.kind === 'risk' && /snipers/.test(r.text)), 'still reported as a risk');
+  });
+});

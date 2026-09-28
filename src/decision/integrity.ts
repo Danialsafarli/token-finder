@@ -75,6 +75,13 @@ const LABELS: Record<IntegrityDomainKey, string> = {
 
 /** Below this confidence a domain can be ELEVATED at most. */
 export const ACTIONABLE_CONFIDENCE = 0.5;
+/**
+ * Below this coverage a domain can be ELEVATED at most. For activity and
+ * coordination, coverage already includes how much of the market the sample
+ * represents, so a confident reading of a sliver cannot condemn - found live,
+ * where HIGH wash at confidence 0.84 came from about 3% of the market.
+ */
+export const ACTIONABLE_COVERAGE = 0.4;
 /** Each non-strongest family in a domain adds this share of its risk. */
 const SECONDARY_FAMILY_SHARE = 0.25;
 
@@ -114,8 +121,11 @@ function build(
     risk = first ? clamp01(first.risk + rest.reduce((sum, c) => sum + c.risk * SECONDARY_FAMILY_SHARE, 0)) : 0;
   }
   const confidence = families[0]?.confidence ?? baseConfidence;
+  // Actionability rests on the evidence that fired: a well-covered domain
+  // does not lend its coverage to a reading taken from a sliver.
+  const evidenceCoverage = Math.min(coverage, families[0]?.coverage ?? coverage);
   let band = bandOf(risk);
-  if ((band === 'HIGH' || band === 'SEVERE') && confidence < ACTIONABLE_CONFIDENCE) band = 'ELEVATED';
+  if ((band === 'HIGH' || band === 'SEVERE') && (confidence < ACTIONABLE_CONFIDENCE || evidenceCoverage < ACTIONABLE_COVERAGE)) band = 'ELEVATED';
   return {
     key,
     label: LABELS[key],
@@ -307,14 +317,14 @@ export function assessIntegrity(token: TokenSnapshot, bundle: IntelligenceBundle
       const view = usableIntel(a) && a.value ? (a.value.byTrades.shares ? a.value.byTrades : a.value.byWallets) : null;
       const share = view?.shares?.coordinated ?? c.value.coordinatedWalletShare;
       if (share !== null && share !== undefined && share > 0.1) {
-        contributions.push({ code: 'COORDINATION', family: 'coordination', risk: Math.min(0.7, (share - 0.1) * 1.2), confidence: c.confidence, text: `${pctText(share)} of ${view === a.value?.byTrades ? 'trades' : 'wallets'} by wallets clustered with another trader of this token`, evidence: c.evidence.slice(0, 2) });
+        contributions.push({ code: 'COORDINATION', family: 'coordination', risk: Math.min(0.7, (share - 0.1) * 1.2), confidence: c.confidence, coverage: view ? Math.min(c.coverage, a.coverage) : c.coverage, text: `${pctText(share)} of ${view === a.value?.byTrades ? 'trades' : 'wallets'} by wallets clustered with another trader of this token`, evidence: c.evidence.slice(0, 2) });
       } else if (share !== null && share !== undefined) clean.push(`${pctText(share)} coordinated`);
       if (c.value.clusters === 0) clean.push('no strong wallet cluster among analysed traders');
     } else unknown.push('wallet relationships');
     if (usableIntel(w) && w.value) {
       covs.push(w.coverage);
-      if (w.value.risk === 'HIGH') contributions.push({ code: 'WASH_HIGH', family: 'manipulation', risk: w.confidence >= ACTIONABLE_CONFIDENCE ? 0.65 : 0.4, confidence: w.confidence, text: `Wash/manipulation risk HIGH: ${w.value.families.join(', ').toLowerCase()}`, evidence: w.evidence.slice(0, 3) });
-      else if (w.value.risk === 'ELEVATED') contributions.push({ code: 'WASH_ELEVATED', family: 'manipulation', risk: 0.35, confidence: w.confidence, text: `Wash/manipulation risk elevated: ${w.value.families.join(', ').toLowerCase()}`, evidence: w.evidence.slice(0, 3) });
+      if (w.value.risk === 'HIGH') contributions.push({ code: 'WASH_HIGH', family: 'manipulation', risk: w.confidence >= ACTIONABLE_CONFIDENCE ? 0.65 : 0.4, confidence: w.confidence, coverage: w.coverage, text: `Wash/manipulation risk HIGH: ${w.value.families.join(', ').toLowerCase()}`, evidence: w.evidence.slice(0, 3) });
+      else if (w.value.risk === 'ELEVATED') contributions.push({ code: 'WASH_ELEVATED', family: 'manipulation', risk: 0.35, confidence: w.confidence, coverage: w.coverage, text: `Wash/manipulation risk elevated: ${w.value.families.join(', ').toLowerCase()}`, evidence: w.evidence.slice(0, 3) });
       else if (w.value.risk === 'LOW') clean.push('wash/manipulation risk low');
     } else unknown.push(w.status === 'INSUFFICIENT_DATA' ? 'wash analysis (too few trades)' : 'wash analysis');
     const coverage = covs.length ? covs.reduce((x, y) => x + y, 0) / 2 : 0;
@@ -377,7 +387,9 @@ export function assessIntegrity(token: TokenSnapshot, bundle: IntelligenceBundle
 
   const ranked = [...domains].sort((a, b) => BAND_RANK[b.band] - BAND_RANK[a.band] || (b.risk ?? 0) - (a.risk ?? 0));
   const top = ranked[0]!;
-  const elevated = domains.filter((d) => d.band === 'ELEVATED').length;
+  // Two elevated domains make a high risk only when both rest on evidence
+  // that would have been actionable on its own terms.
+  const elevated = domains.filter((d) => d.band === 'ELEVATED' && Math.min(d.coverage, d.contributions[0]?.coverage ?? d.coverage) >= ACTIONABLE_COVERAGE && d.confidence >= ACTIONABLE_CONFIDENCE).length;
   let band: RiskBand;
   if (coverage < 0.25) band = 'UNKNOWN';
   else if (top.band === 'SEVERE') band = 'SEVERE';

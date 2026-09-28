@@ -230,6 +230,8 @@ export interface RiskContribution {
   family: string;
   risk: number;
   confidence: number;
+  /** Coverage of the evidence behind this contribution, when narrower than its domain's. */
+  coverage?: number;
   text: string;
   evidence: string[];
 }
