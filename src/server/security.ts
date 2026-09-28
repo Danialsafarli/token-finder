@@ -47,8 +47,12 @@ function splitHost(header: string): { name: string; port: number | null } | null
  * interface on purpose, the set of legitimate hostnames is theirs to know, not
  * ours to guess, so the check steps aside rather than break their setup.
  */
-export function hostAllowed(hostHeader: string | undefined, port: number, bindHost: string): boolean {
-  if (!isLoopbackBind(bindHost)) return true;
+export function hostAllowed(hostHeader: string | undefined, port: number, bindHost: string, publicOrigin: string | null = null): boolean {
+  if (!isLoopbackBind(bindHost)) {
+    // Exposed: the operator named the one origin visitors use (PUBLIC_ORIGIN).
+    if (publicOrigin === null) return true;
+    return typeof hostHeader === 'string' && hostHeader.trim().toLowerCase() === new URL(publicOrigin).host;
+  }
   if (!hostHeader) return false;
   const parsed = splitHost(hostHeader);
   if (!parsed) return false;
@@ -69,7 +73,7 @@ export interface OriginDecision {
  * non-browser client, which has no business triggering scans through the
  * dashboard's endpoint.
  */
-export function sameOrigin(req: IncomingMessage): OriginDecision {
+export function sameOrigin(req: IncomingMessage, publicOrigin: string | null = null): OriginDecision {
   const origin = req.headers.origin;
   const host = req.headers.host;
   if (!origin) return { ok: false, reason: 'missing Origin header' };
@@ -81,7 +85,10 @@ export function sameOrigin(req: IncomingMessage): OriginDecision {
   } catch {
     return { ok: false, reason: 'malformed Origin header' };
   }
-  if (parsed.protocol !== 'http:' || parsed.host !== host.toLowerCase()) {
+  if (publicOrigin !== null) {
+    // Public, usually behind HTTPS: the Origin must be exactly the public one.
+    if (parsed.origin !== new URL(publicOrigin).origin) return { ok: false, reason: 'cross-origin request' };
+  } else if (parsed.protocol !== 'http:' || parsed.host !== host.toLowerCase()) {
     return { ok: false, reason: 'cross-origin request' };
   }
 

@@ -1,0 +1,21 @@
+# Any Docker host (a VPS, a home server). Put an HTTPS reverse proxy (Caddy,
+# nginx) in front and set PUBLIC_ORIGIN to the address visitors use.
+#
+#   HELIUS_API_KEY=... PUBLIC_ORIGIN=https://tokens.example.com \
+#     docker compose -f deploy/docker-compose.yml up -d
+services:
+  token-finder:
+    build: ..
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      HELIUS_API_KEY: ${HELIUS_API_KEY:?set HELIUS_API_KEY}
+      BIRDEYE_API_KEY: ${BIRDEYE_API_KEY:-}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    volumes:
+      - token-finder-data:/data
+    stop_grace_period: 20s
+volumes:
+  token-finder-data:

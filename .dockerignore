@@ -1,0 +1,15 @@
+# Only package.json and src/ are copied; this keeps the build context small
+# and guarantees no secret or database can reach the image.
+.env
+.env.*
+data/
+data-*/
+node_modules/
+test/
+docs/
+graphify-out/
+.git/
+.agents/
+.claude/
+*.sqlite*
+*.log

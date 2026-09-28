@@ -37,6 +37,7 @@ import {
   type DtoContext,
 } from './dto.ts';
 import { hostAllowed, isLoopbackBind, sameOrigin, SECURITY_HEADERS } from './security.ts';
+import { AccessGate, type Allowance } from './access.ts';
 import type { MonitorEvent } from '../types.ts';
 import { analyzeRequested, MINT_ADDRESS, stageView } from '../core/request.ts';
 import { ingestionStatus, startIngestion } from '../ingest/runner.ts';
@@ -70,6 +71,42 @@ function send(res: ServerResponse, status: number, headers: Record<string, strin
 
 /** JSON below this size is sent as is; compressing it costs more than it saves. */
 const COMPRESS_MIN_BYTES = 1024;
+
+/**
+ * Public access limits (server/access.ts). All off on a loopback bind.
+ */
+const gate = new AccessGate({
+  public: !isLoopbackBind(config.host),
+  trustProxy: config.trustProxy,
+  adminToken: config.adminToken,
+  analyzePerClientPerHour: config.analyzePerClientPerHour,
+  analyzePerHour: config.analyzePerHour,
+  scanPerClientPerHour: config.scanPerClientPerHour,
+  scanMinIntervalSec: config.scanMinIntervalSec,
+  apiReadsPerClientPerMinute: config.apiReadsPerClientPerMinute,
+  maxStreams: config.maxStreams,
+});
+
+function tooMany(res: ServerResponse, refusal: Allowance): void {
+  res.setHeader('retry-after', String(refusal.retryAfterSec ?? 60));
+  sendJson(res, 429, { error: refusal.reason ?? 'too many requests', retryAfterSec: refusal.retryAfterSec ?? 60 });
+}
+
+const startedAt = Date.now();
+
+/**
+ * Readiness: the database is open and healthy, and the monitor has completed a
+ * scan recently (or the process has only just started). A host routes traffic
+ * and restarts on this; liveness (/healthz) only says the process answers.
+ */
+function readiness(now = Date.now()): { ready: boolean; reason: string; lastScanAt: number | null } {
+  const lastScanAt = store.lastScanAt;
+  if (!store.persistenceHealthy()) return { ready: false, reason: 'the database is not open or not writable', lastScanAt };
+  const grace = 3 * config.scanIntervalSec * 1000 + 5 * 60_000;
+  if (lastScanAt !== null && now - lastScanAt <= grace) return { ready: true, reason: 'scanning', lastScanAt };
+  if (now - startedAt <= grace) return { ready: true, reason: 'starting: first scan pending', lastScanAt };
+  return { ready: false, reason: 'no scan has completed recently', lastScanAt };
+}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body);
@@ -439,7 +476,7 @@ async function readJson(req: IncomingMessage, limit: number): Promise<unknown> {
  * pipeline does not have one.
  */
 async function analyzeRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const origin = sameOrigin(req);
+  const origin = sameOrigin(req, config.publicOrigin);
   if (!origin.ok) return sendJson(res, 403, { error: `refused: ${origin.reason}` });
   if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) {
     return sendJson(res, 415, { error: 'expected application/json' });
@@ -449,6 +486,8 @@ async function analyzeRoute(req: IncomingMessage, res: ServerResponse): Promise<
   if (!MINT_ADDRESS.test(mint)) return sendJson(res, 400, { error: 'not a Solana mint address' });
   if (requested.has(mint)) return sendJson(res, 409, { error: 'this token is already being analysed' });
   if (requested.size >= MAX_REQUESTED) return sendJson(res, 429, { error: 'too many analyses running; try again shortly' });
+  const allowed = gate.analyze(req, Date.now());
+  if (!allowed.ok) return tooMany(res, allowed);
 
   requested.add(mint);
   res.writeHead(200, {
@@ -477,7 +516,7 @@ async function analyzeRoute(req: IncomingMessage, res: ServerResponse): Promise<
   }
 }
 
-function stream(res: ServerResponse): void {
+function stream(res: ServerResponse, release: () => void): void {
   res.writeHead(200, {
     ...SECURITY_HEADERS,
     'content-type': 'text/event-stream',
@@ -508,6 +547,7 @@ function stream(res: ServerResponse): void {
 
   const keepAlive = setInterval(() => res.write(': ping\n\n'), 20_000);
   res.on('close', () => {
+    release();
     clearInterval(keepAlive);
     bus.off('scan-start', onStart);
     bus.off('scan-stage', onStage);
@@ -523,9 +563,16 @@ function stream(res: ServerResponse): void {
 // ---------------------------------------------------------------------------
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // Health endpoints answer the hosting platform, whatever Host it sends.
+  const early = (req.url ?? '/').split('?')[0];
+  if (early === '/healthz') return sendJson(res, 200, { ok: true, uptimeSec: Math.round(process.uptime()) });
+  if (early === '/readyz') {
+    const ready = readiness();
+    return sendJson(res, ready.ready ? 200 : 503, ready);
+  }
   // DNS-rebinding defence first: nothing, not even static files, is served to
   // a Host that is not this loopback origin.
-  if (!hostAllowed(req.headers.host, config.port, config.host)) {
+  if (!hostAllowed(req.headers.host, config.port, config.host, config.publicOrigin)) {
     send(res, 403, { 'content-type': 'text/plain; charset=utf-8' }, 'Forbidden host');
     return;
   }
@@ -539,6 +586,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (method !== 'GET' && method !== 'HEAD' && !(method === 'POST' && postable)) {
       sendJson(res, 405, { error: 'method not allowed' });
       return;
+    }
+    if (method === 'GET' || method === 'HEAD') {
+      const read = gate.read(req, Date.now());
+      if (!read.ok) return tooMany(res, read);
     }
 
     if (path === '/api/status') return sendJson(res, 200, statusBody());
@@ -650,15 +701,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
 
     if (path === '/api/scan' && method === 'POST') {
-      const origin = sameOrigin(req);
+      const origin = sameOrigin(req, config.publicOrigin);
       if (!origin.ok) return sendJson(res, 403, { error: `refused: ${origin.reason}` });
       if (isScanning()) return sendJson(res, 409, { error: 'scan already running' });
+      const allowed = gate.scan(req, Date.now());
+      if (!allowed.ok) return tooMany(res, allowed);
       runScan().catch((error: unknown) => log.error('manual scan failed:', error instanceof Error ? error.message : error));
       return sendJson(res, 202, { started: true });
     }
 
     if (path === '/api/stream') {
-      stream(res);
+      const release = gate.openStream(req);
+      if (!release) return sendJson(res, 503, { error: 'too many live connections; the Board still works without one' });
+      stream(res, release);
       return;
     }
 

@@ -94,6 +94,31 @@ export const config = {
    * unauthenticated scan endpoint. Set HOST=0.0.0.0 to expose it deliberately.
    */
   host: str('HOST') ?? '127.0.0.1',
+
+  // --- public hosting (DEPLOYMENT.md). None of it applies on a loopback bind. ---
+  /**
+   * The exact origin visitors use, e.g. https://token-finder.fly.dev. When set,
+   * the Host header must name it and state-changing requests must come from
+   * it. Required when HOST is not loopback behind HTTPS.
+   */
+  publicOrigin: str('PUBLIC_ORIGIN'),
+  /** Behind a reverse proxy: the client is the first X-Forwarded-For address. */
+  trustProxy: bool('TRUST_PROXY', false),
+  /** Operator bypass for the limits below, sent as a Bearer token. Secret. */
+  adminToken: str('ADMIN_TOKEN'),
+  analyzePerClientPerHour: Math.max(0, num('ANALYZE_PER_CLIENT_PER_HOUR', 12)),
+  analyzePerHour: Math.max(0, num('ANALYZE_PER_HOUR', 120)),
+  scanPerClientPerHour: Math.max(0, num('SCAN_PER_CLIENT_PER_HOUR', 3)),
+  /** Minimum seconds between two manual scans, from anyone. */
+  scanMinIntervalSec: Math.max(0, num('SCAN_MIN_INTERVAL_SEC', 300)),
+  apiReadsPerClientPerMinute: Math.max(1, num('API_READS_PER_MINUTE', 300)),
+  maxStreams: Math.max(1, num('MAX_STREAMS', 200)),
+
+  /**
+   * Solana Risk Radar, the separate deep risk analyser a Dossier hands a mint
+   * to. Token Finder links to it; it never embeds or re-scores it.
+   */
+  riskRadarUrl: str('RISK_RADAR_URL') ?? 'https://solana-risk-radar.vercel.app',
   /**
    * How long after its last evaluation a token stays on the live Board, in
    * minutes. The default is the engine's own market-evidence aging window
