@@ -343,6 +343,10 @@ export const store = {
       intel: runtime.intel,
       marketHistory: (mint, since) => runtime.repo?.marketHistory(mint, { since, limit: 400 }) ?? [],
       holderHistory: (mint, since) => runtime.repo?.holderHistory(mint, { since, limit: 400 }) ?? [],
+      previousDecision: (mint) => {
+        const decision = runtime.tokens.get(mint)?.decision;
+        return decision ? { verdict: decision.verdict, decidedAt: decision.decidedAt, hardFails: decision.hardFails, stability: decision.stability ?? null } : null;
+      },
     };
   },
 

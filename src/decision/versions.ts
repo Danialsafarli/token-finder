@@ -31,7 +31,11 @@
  * counted.
  */
 
-export const DECISION_POLICY_VERSION = 'decision-policy@1';
+/**
+ * @2 (Phase 4): the ladder is unchanged; a better verdict now needs a
+ * confirming reading before it applies (`decision/stability.ts`).
+ */
+export const DECISION_POLICY_VERSION = 'decision-policy@2';
 
 export const MODEL_VERSIONS = {
   gate: 'hard-gate@2',
@@ -39,6 +43,8 @@ export const MODEL_VERSIONS = {
   opportunity: 'opportunity@1',
   momentum: 'momentum@2',
   rank: 'rank@1',
+  /** Toward danger immediately, toward safety on confirmation (`decision/stability.ts`). */
+  stability: 'stability@1',
   /** The Phase 1 composite score, still computed and stored beside the new models. */
   legacyScore: 'score@1',
 } as const;

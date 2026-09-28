@@ -6,6 +6,7 @@
  */
 
 import type { Eligibility, EvidenceFreshness, HardFailFamily, Veto } from '../types.ts';
+import type { StabilityRecord } from './stability.ts';
 
 // ---------------------------------------------------------------------------
 // The intelligence contract (Phase 2 -> Decision Engine)
@@ -366,4 +367,10 @@ export interface Decision {
   reasons: Reason[];
   /** The ladder step that decided the verdict, for "why". */
   basis: string;
+  /**
+   * What this reading alone said, and whether a better verdict is being held
+   * for confirmation (decision/stability.ts). Absent on decisions stored
+   * before decision-policy@2.
+   */
+  stability?: StabilityRecord;
 }

@@ -64,7 +64,7 @@ describe('verdict transitions and policy versions', () => {
     assert.equal(initial!.to, 'WATCH');
     assert.equal(latest!.from, 'WATCH');
     assert.equal(latest!.to, better.evaluation!.eligibility);
-    assert.equal(latest!.policyVersion, 'decision-policy@1');
+    assert.equal(latest!.policyVersion, 'decision-policy@2');
     assert.ok(latest!.reasons.length > 0);
     assert.ok(latest!.basis.length > 0);
     assert.equal(typeof (latest!.components as { rank: number }).rank, 'number');
@@ -73,7 +73,7 @@ describe('verdict transitions and policy versions', () => {
     // The Changes surface reads the same record.
     const change = h.repo.verdictChanges({ mint: MINT })[0]!;
     assert.equal(change.from, 'WATCH');
-    assert.equal(change.policyVersion, 'decision-policy@1');
+    assert.equal(change.policyVersion, 'decision-policy@2');
     assert.equal(change.basis, latest!.basis);
 
     // An unchanged verdict writes no transition.
@@ -90,7 +90,7 @@ describe('verdict transitions and policy versions', () => {
     const { snapshot } = run(t, bundle(t));
     h.repo.saveTokenSnapshot(snapshot);
     const row = h.db.prepare('SELECT policy_version, rank_score, integrity_score, integrity_band, opportunity_score, momentum_state, decision_coverage FROM token_snapshots WHERE mint = ?').get(MINT) as Record<string, unknown>;
-    assert.equal(row.policy_version, 'decision-policy@1');
+    assert.equal(row.policy_version, 'decision-policy@2');
     assert.equal(row.rank_score, snapshot.decision!.rankScore);
     assert.equal(row.integrity_band, snapshot.decision!.integrity.band);
     assert.equal(row.momentum_state, snapshot.decision!.momentum.state);
@@ -117,7 +117,7 @@ describe('verdict transitions and policy versions', () => {
     const intel = new IntelRepository(reopened.db!);
     assert.equal(reopened.applied.length, 0, 'no migration re-ran');
     const stored = repo.allTokens()[0]!;
-    assert.equal(stored.decision?.policyVersion, 'decision-policy@1');
+    assert.equal(stored.decision?.policyVersion, 'decision-policy@2');
     assert.equal(repo.verdictTransitions({ mint: MINT }).length, 1);
     const events = intel.storedEventsOf([MINT]);
     assert.equal(events.length, 1);

@@ -45,6 +45,7 @@ import { assessMomentum, type MarketObservation } from './momentum.ts';
 import { hardGateV2 } from './gate.ts';
 import { usableIntel } from './contract.ts';
 import { DECISION_POLICY_VERSION, MODEL_VERSIONS } from './versions.ts';
+import { STABILITY, stabilize, type PreviousVerdict } from './stability.ts';
 import type { Eligibility, TokenSnapshot, TokenState } from '../types.ts';
 import type { Decision, IntegrityAssessment, IntelligenceBundle, MomentumAssessment, OpportunityAssessment, Reason } from './types.ts';
 
@@ -74,7 +75,18 @@ export interface DecisionInput {
   history: MarketObservation[];
   now: number;
   config: DecisionConfig;
+  /** The token's current stored verdict, for stability (decision/stability.ts). None: decided from this reading alone. */
+  previous?: PreviousVerdict | null;
 }
+
+const LABEL: Record<Eligibility, string> = {
+  HIGH_POTENTIAL: 'High potential',
+  QUALIFIED: 'Qualified',
+  WATCH: 'Watch',
+  INSUFFICIENT_DATA: 'Insufficient data',
+  HIGH_RISK: 'High risk',
+  REJECTED: 'Rejected',
+};
 
 const r1 = (x: number): number => Math.round(x * 10) / 10;
 const r3 = (x: number): number => Math.round(x * 1000) / 1000;
@@ -186,6 +198,29 @@ export function decide(input: DecisionInput): Decision {
     }
   }
 
+  // --- stability: toward danger now, toward safety on confirmation ------------
+  let hardFails = gate.hardFails;
+  let families = gate.families;
+  const previous = input.previous ?? null;
+  // A previous REJECTED with nothing to show for it (stored before hard fails
+  // were recorded) is not held: REJECTED always carries a hard fail.
+  const holdable = previous !== null && (previous.verdict !== 'REJECTED' || previous.hardFails.length > 0) ? previous : null;
+  const stable = stabilize(verdict, s.at, holdable, now);
+  const raw = verdict;
+  if (stable.record.held && holdable) {
+    verdict = stable.verdict;
+    if (verdict === 'REJECTED') {
+      hardFails = holdable.hardFails;
+      families = [...new Set(holdable.hardFails.map((v) => v.family).filter((f): f is NonNullable<typeof f> => f !== undefined))];
+    }
+    const seen = stable.record.pending?.confirmations ?? 1;
+    basis = `held at ${LABEL[verdict]}: ${seen} of ${STABILITY.confirmations} readings support ${LABEL[raw]}; a better verdict applies once confirmed`;
+    blockers.push(`stability: ${LABEL[raw]} needs ${STABILITY.confirmations - seen} more confirming reading${STABILITY.confirmations - seen === 1 ? '' : 's'}`);
+  } else if (stable.verdict !== raw) {
+    verdict = stable.verdict;
+    basis = `${LABEL[verdict]}: the most conservative of ${STABILITY.confirmations} confirming readings`;
+  }
+
   // --- rank -------------------------------------------------------------------
   let rankScore: number | null = null;
   let rank: Decision['rank'] = null;
@@ -202,8 +237,8 @@ export function decide(input: DecisionInput): Decision {
     decidedAt: now,
     verdict,
     screen: { eligibility: screenEligibility, vetoes: legacyVetoes.map((v) => v.code) },
-    hardFails: gate.hardFails,
-    hardFailFamilies: gate.families,
+    hardFails,
+    hardFailFamilies: families,
     integrity,
     opportunity,
     momentum,
@@ -225,9 +260,11 @@ export function decide(input: DecisionInput): Decision {
     rank,
     reasons: [],
     basis,
+    stability: stable.record,
   };
-  const withVetoes: TokenSnapshot = { ...s, evaluation: evaluation ? { ...evaluation, vetoes: gate.hardFails } : evaluation };
-  decided.reasons = reasonsFor(withVetoes, integrity, opportunity, momentum, bundle, verdict === 'QUALIFIED' || verdict === 'WATCH' ? blockers : [], coverage);
+  const withVetoes: TokenSnapshot = { ...s, evaluation: evaluation ? { ...evaluation, vetoes: hardFails } : evaluation };
+  const shownBlockers = verdict === 'QUALIFIED' || verdict === 'WATCH' ? blockers : blockers.filter((b) => b.startsWith('stability:'));
+  decided.reasons = reasonsFor(withVetoes, integrity, opportunity, momentum, bundle, shownBlockers, coverage);
   return decided;
 }
 

@@ -12,6 +12,7 @@ import { normalizeIntelligence, type RawIntelligence, type StoredEventInput } fr
 import { decide, applyDecision, type DecisionConfig } from './engine.ts';
 import type { MarketObservation } from './momentum.ts';
 import type { IntelligenceBundle } from './types.ts';
+import type { PreviousVerdict } from './stability.ts';
 import type { StoredSecurityEvent, TokenIntelligenceRow } from '../persist/intel-repository.ts';
 import type { HolderPoint, MarketPoint } from '../persist/repository.ts';
 import type { TokenSnapshot, TokenState } from '../types.ts';
@@ -25,6 +26,8 @@ export interface DecisionSources {
   } | null;
   marketHistory(mint: string, since: number): MarketPoint[];
   holderHistory(mint: string, since: number): HolderPoint[];
+  /** The token's current stored verdict, for stability. Absent: every reading stands on its own. */
+  previousDecision?(mint: string): PreviousVerdict | null;
 }
 
 /** Sources for a context with no database: nothing analysed, no history. */
@@ -112,7 +115,8 @@ export function makeDecider(sources: DecisionSources, config: DecisionConfig, cl
       const now = clock();
       const bundle = gatherIntelligence(sources, snapshot, now);
       const history = gatherHistory(sources, snapshot.mint, now);
-      const decision = decide({ snapshot, bundle, history, now, config });
+      const previous = sources.previousDecision?.(snapshot.mint) ?? null;
+      const decision = decide({ snapshot, bundle, history, now, config, previous });
       return applyDecision(snapshot, decision, previousState);
     } finally {
       stats.decisions += 1;

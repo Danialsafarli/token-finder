@@ -215,7 +215,7 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
     const why = await browser.eval(`document.querySelector('section[aria-labelledby="why-title"]').textContent.replace(/\\s+/g, ' ')`);
     assert.match(why, /High risk/);
     assert.match(why, /snipers/);
-    assert.match(why, /decision-policy@1/);
+    assert.match(why, /decision-policy@2/);
 
     const activity = 'section[aria-labelledby="activity-title"]';
     assert.equal(await browser.eval(`document.querySelectorAll('${activity} .composition__row').length`), 3, 'wallets, trades and volume');

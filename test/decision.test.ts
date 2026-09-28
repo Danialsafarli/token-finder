@@ -276,7 +276,7 @@ describe('decision engine: ranking and explanation', () => {
   test('a decision names its policy and model versions', () => {
     const t = token();
     const { decision } = run(t, bundle(t));
-    assert.equal(decision.policyVersion, 'decision-policy@1');
+    assert.equal(decision.policyVersion, 'decision-policy@2');
     assert.equal(decision.models.integrity, 'integrity@1');
     assert.equal(decision.models.momentum, 'momentum@2');
   });
