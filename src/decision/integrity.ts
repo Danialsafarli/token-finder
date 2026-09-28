@@ -233,7 +233,15 @@ export function assessIntegrity(token: TokenSnapshot, bundle: IntelligenceBundle
       if (e.status === 'CONFIRMED') continue; // a hard fail, not a soft risk
       contributions.push({ code: 'LIQUIDITY_DRAIN', family: 'drain', risk: e.status === 'STRONGLY_SUSPECTED' ? 0.6 : 0.25, confidence: e.confidence, text: `${e.status === 'STRONGLY_SUSPECTED' ? 'Strongly suspected' : 'Suspicious'} liquidity removal: ${e.reasons.join(', ')}`, evidence: [e.signature] });
     }
-    if (momentum?.liquidityChange !== null && momentum?.liquidityChange !== undefined && momentum.liquidityChange <= -0.4) {
+    // A collapse on the same pool is a rug's market signature, though not proof
+    // of one (a liquidity provider may simply have left) - so HIGH, never a hard
+    // fail. Calibration (integrity@2): of 13 same-pool falls of >= 80% from the
+    // window's peak in real history, none recovered to half within 6 h; 6
+    // stayed low and 7 were never observed again. The 40% reading stays as it was.
+    const drawdown = momentum?.liquidityDrawdown ?? null;
+    if (drawdown !== null && drawdown <= -0.8) {
+      contributions.push({ code: 'LIQUIDITY_COLLAPSE', family: 'drain', risk: 0.55, confidence: 0.8, text: `Liquidity collapsed ${pctText(-drawdown)} from its peak on the same pool`, evidence: ['market history'] });
+    } else if (momentum?.liquidityChange !== null && momentum?.liquidityChange !== undefined && momentum.liquidityChange <= -0.4) {
       contributions.push({ code: 'LIQUIDITY_LEAVING', family: 'drain', risk: 0.3, confidence: 0.8, text: `Liquidity fell ${pctText(-momentum.liquidityChange)} over the observed window`, evidence: ['market history'] });
     }
     domains.push(build('liquiditySafety', contributions, coverage, liq.confidence, clean, unknown));

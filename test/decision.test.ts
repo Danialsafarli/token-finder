@@ -277,8 +277,8 @@ describe('decision engine: ranking and explanation', () => {
     const t = token();
     const { decision } = run(t, bundle(t));
     assert.equal(decision.policyVersion, 'decision-policy@2');
-    assert.equal(decision.models.integrity, 'integrity@1');
-    assert.equal(decision.models.momentum, 'momentum@2');
+    assert.equal(decision.models.integrity, 'integrity@2');
+    assert.equal(decision.models.momentum, 'momentum@3');
   });
 
   test('rule status: only current versions are evidence', () => {

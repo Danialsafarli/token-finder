@@ -4,12 +4,15 @@ import { fmtAge, fmtPct, fmtUsd } from './util/num.ts';
 import { discover } from './core/discover.ts';
 import { analyze } from './core/analyze.ts';
 import { redecideAnalysed, runScan, startMonitor } from './core/monitor.ts';
-import { formatBytes, store } from './core/store.ts';
+import { DB_PATH, formatBytes, store } from './core/store.ts';
 import { countUniverse, isSurvivor, liveTokens, rankKey, VERDICT_TIER } from './core/ranking.ts';
 import { makeDecider } from './decision/inputs.ts';
 import { serve } from './server/index.ts';
 import * as dexscreener from './sources/dexscreener.ts';
 import type { TokenSnapshot } from './types.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { writeFileSync } from 'node:fs';
+import { formatCalibration, runCalibration } from './calibration/replay.ts';
 
 const HELP = `
 token-finder - discover, analyze, rank and monitor new Solana tokens
@@ -29,6 +32,9 @@ token-finder - discover, analyze, rank and monitor new Solana tokens
   node src/cli.ts intel <mint> [--run]
                                    a token's stored deep intelligence; --run
                                    analyses it now, within the cycle budgets
+  node src/cli.ts calibrate [--db path] [--json out.json]
+                                   replay stored verdicts against measured
+                                   outcomes (read-only; use a copy of the DB)
 
 Options come from .env - see .env.example.
 `;
@@ -416,6 +422,24 @@ function cmdActivity(mint: string): void {
   for (const b of buyers) console.log(`    slot ${b.firstSlot} ${b.wallet} buys ${b.buys} sells ${b.sells}${b.onCurve === false ? ' (program-derived)' : ''}`);
 }
 
+/** Read-only calibration replay over a database (default: the configured one). */
+function cmdCalibrate(args: string[]): void {
+  const at = (flag: string): string | undefined => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+  const path = at('--db') ?? DB_PATH;
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const report = runCalibration(db);
+    console.log(formatCalibration(report));
+    const out = at('--json');
+    if (out) {
+      writeFileSync(out, JSON.stringify(report, null, 2));
+      log.ok(`report written to ${out}`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
 async function main(): Promise<void> {
   const [command = 'serve', ...rest] = process.argv.slice(2);
 
@@ -512,6 +536,10 @@ async function main(): Promise<void> {
       await cmdIntel(target, rest.includes('--run'));
       break;
     }
+
+    case 'calibrate':
+      cmdCalibrate(rest);
+      break;
 
     case 'help':
     case '--help':

@@ -92,6 +92,7 @@ export function assessMomentum(
     persistence: null,
     spikiness: null,
     liquidityChange: null,
+    liquidityDrawdown: null,
     holderChange: null,
     providerFrames,
     reasons: [],
@@ -137,6 +138,8 @@ export function assessMomentum(
   const firstLiq = scope.find((p) => p.liquidity !== null)?.liquidity ?? null;
   const lastLiq = [...scope].reverse().find((p) => p.liquidity !== null)?.liquidity ?? null;
   base.liquidityChange = firstLiq && lastLiq ? Math.round((lastLiq / firstLiq - 1) * 1000) / 1000 : null;
+  const peakLiq = Math.max(0, ...scope.map((p) => p.liquidity ?? 0));
+  base.liquidityDrawdown = peakLiq > 0 && lastLiq !== null ? Math.round((lastLiq / peakLiq - 1) * 1000) / 1000 : null;
   const firstHolders = scope.find((p) => p.holders !== null)?.holders ?? null;
   const lastHolders = [...scope].reverse().find((p) => p.holders !== null)?.holders ?? null;
   base.holderChange = firstHolders !== null && lastHolders !== null ? lastHolders - firstHolders : null;

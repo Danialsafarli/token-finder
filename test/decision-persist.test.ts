@@ -68,7 +68,7 @@ describe('verdict transitions and policy versions', () => {
     assert.ok(latest!.reasons.length > 0);
     assert.ok(latest!.basis.length > 0);
     assert.equal(typeof (latest!.components as { rank: number }).rank, 'number');
-    assert.equal(latest!.models.integrity, 'integrity@1');
+    assert.equal(latest!.models.integrity, 'integrity@2');
 
     // The Changes surface reads the same record.
     const change = h.repo.verdictChanges({ mint: MINT })[0]!;

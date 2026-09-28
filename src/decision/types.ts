@@ -325,6 +325,8 @@ export interface MomentumAssessment {
   persistence: number | null;
   spikiness: number | null;
   liquidityChange: number | null;
+  /** Latest liquidity against the peak in the same window (same pool only), e.g. -0.9. */
+  liquidityDrawdown: number | null;
   holderChange: number | null;
   /** DexScreener's own frames, shown beside ours, never mixed into them. */
   providerFrames: { m5: number | null; h1: number | null; h6: number | null; h24: number | null } | null;

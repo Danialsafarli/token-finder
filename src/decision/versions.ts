@@ -39,9 +39,9 @@ export const DECISION_POLICY_VERSION = 'decision-policy@2';
 
 export const MODEL_VERSIONS = {
   gate: 'hard-gate@2',
-  integrity: 'integrity@1',
+  integrity: 'integrity@2',
   opportunity: 'opportunity@1',
-  momentum: 'momentum@2',
+  momentum: 'momentum@3',
   rank: 'rank@1',
   /** Toward danger immediately, toward safety on confirmation (`decision/stability.ts`). */
   stability: 'stability@1',

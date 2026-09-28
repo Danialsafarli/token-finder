@@ -93,11 +93,28 @@ export function gatherIntelligence(sources: DecisionSources, token: TokenSnapsho
   return normalizeIntelligence(raw, token, now);
 }
 
-export function gatherHistory(sources: DecisionSources, mint: string, now: number): MarketObservation[] {
+/**
+ * The token's recorded market history for momentum.
+ *
+ * Liquidity is only comparable within one pool: when the display pool changes
+ * (a pump.fun curve migrating to PumpSwap, or a different best pair), an
+ * earlier pool's liquidity says nothing about this one's. Found in the
+ * calibration replay: a $2.5M bonding curve followed by a $10K PumpSwap pool
+ * read as a 99.6% collapse. So a point recorded on a different known pool
+ * keeps its price and loses its liquidity. A point with no recorded pool is
+ * kept as it is: it cannot be told apart.
+ * @param pool the current snapshot's pool, when known
+ */
+export function gatherHistory(sources: DecisionSources, mint: string, now: number, pool: string | null = null): MarketObservation[] {
   const since = now - HISTORY_MS;
   const holders = sources.holderHistory(mint, since);
   const byTime = new Map(holders.map((h) => [h.observedAt, h.holderCount]));
-  return sources.marketHistory(mint, since).map((p) => ({ t: p.observedAt, price: p.priceUsd, liquidity: p.liquidityUsd, holders: byTime.get(p.observedAt) ?? null }));
+  return sources.marketHistory(mint, since).map((p) => ({
+    t: p.observedAt,
+    price: p.priceUsd,
+    liquidity: pool !== null && p.poolAddress !== null && p.poolAddress !== pool ? null : p.liquidityUsd,
+    holders: byTime.get(p.observedAt) ?? null,
+  }));
 }
 
 export interface Decider {
@@ -114,7 +131,7 @@ export function makeDecider(sources: DecisionSources, config: DecisionConfig, cl
     try {
       const now = clock();
       const bundle = gatherIntelligence(sources, snapshot, now);
-      const history = gatherHistory(sources, snapshot.mint, now);
+      const history = gatherHistory(sources, snapshot.mint, now, snapshot.pair?.pairAddress ?? null);
       const previous = sources.previousDecision?.(snapshot.mint) ?? null;
       const decision = decide({ snapshot, bundle, history, now, config, previous });
       return applyDecision(snapshot, decision, previousState);
