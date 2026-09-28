@@ -10,9 +10,11 @@ the trading looks manufactured, who launched the token, and what that creator
 did before. Written in Phase 2 as a diagnostics layer; **since Phase 3 the
 decision engine reads it** - through the normalised, rule-versioned contract
 described in [DECISION_ENGINE.md](DECISION_ENGINE.md), which decides what here
-may reject, what is soft risk, and what is only shown. No threshold here is
-calibrated against outcomes; calibration is Phase 4. Every figure below is an
-engineering measurement, not an accuracy claim.
+may reject, what is soft risk, and what is only shown. Phase 4's calibration
+replay ([CALIBRATION.md](CALIBRATION.md)) left this layer's thresholds as they
+were, for lack of outcome evidence, and changed how its work is scheduled
+(§12a). Every figure below is an engineering measurement, not an accuracy
+claim.
 
 Sources, by the tiers in [CLAUDE.md](CLAUDE.md): RPC semantics from the
 official Solana documentation (Tier 1); `getTransactionsForAddress` from
@@ -50,7 +52,7 @@ by hand (`intel-run`, `intel <mint> --run`).
 
 | Stage | What it does | Requests |
 |---|---|---|
-| **Fast screen** | Survivors only (QUALIFIED, then WATCH), evaluated within the live window, not analysed in the last `INTEL_TOKEN_REFRESH_MIN`; oldest-analysed first, then liquidity | 0 |
+| **Fast screen** | Survivors only (High potential, Qualified, Watch, High risk), evaluated within the live window, not analysed in the last `INTEL_TOKEN_REFRESH_MIN`; ordered by stated priority (§12a) | 0 |
 | **Transaction collection** | The creation transaction (attribution); the mint's oldest 5 and newest 100 transactions (security facts). Those that load the token's pool are recorded as pool activity through the same path collection uses | 2-3 |
 | **Deep wallet analysis** | Up to `INTEL_WALLETS_PER_TOKEN`: the creator, the earliest buyers, the largest buyers. Per wallet: newest `INTEL_TX_PER_WALLET` transactions, and oldest `INTEL_ASC_LIMIT` when the newest page is not the whole history. A profile younger than `INTEL_PROFILE_TTL_HOURS` is reused | 1-2 per wallet |
 | **Graph expansion** | Each funder is probed once (1,000 signatures) for being a hub; direct and likely funders are followed back up to `INTEL_GRAPH_DEPTH` hops. Edges and clusters are derived | 1 per funder, 1 per hop |
@@ -321,6 +323,39 @@ is therefore never `DIRECT`.
 
 ---
 
+## 12a. Scheduling (Phase 4)
+
+Deep analysis is the scarce resource, so each cycle spends it where it is
+most likely to change a conclusion. `intelPriority` scores every due survivor
+from what is already stored - no request is spent deciding where to spend
+requests - and records its reasons with the choice (`TokenReport.reasons`):
+
+| Reason | Points |
+|---|---|
+| Verdict tier | High potential 40, Qualified 30, Watch 15, High risk 12 |
+| Never analysed | +30 |
+| Intelligence age | +8 per hour, at most +25 |
+| Near High potential, blocked only by unanalysed evidence | +15 |
+| Elevated integrity risk unresolved | +12 |
+| Verdict awaiting confirmation (stability) | +10 |
+| Market unstable or declining | +8 |
+| Thin liquidity (< $10K) | -10 |
+
+**Measured cost.** A cycle takes `INTEL_TOKENS_PER_CYCLE` tokens (default 2)
+unless the mean cost of the last twelve *complete* analyses - requests and
+wall time - shows the budgets fit more with a 25% margin; then up to
+`INTEL_MAX_TOKENS_PER_CYCLE` (default 4). An analysis a budget cut short does
+not count: its cost is only a lower bound. `INTEL_REQUESTS_PER_CYCLE` and
+`INTEL_CYCLE_MAX_MS` are unchanged, so the spend is exactly as bounded as
+before. The cycle report states `schedule: { tokens, configured, max,
+measured }`.
+
+**Linked re-decision.** When a cycle finds security events on a token, the
+other live launches of its creator and of every actor in those events are
+re-decided (DECISION_ENGINE.md, introduction), at no request cost.
+
+---
+
 ## 13. Persistence: schema v3
 
 Migration 3 (`deep-intelligence`) is additive. Readers and writers are in
@@ -414,4 +449,8 @@ Engineering checks only; none of this measures accuracy.
   DECISION_ENGINE.md §2.
 - **Clusters are rebuilt around the wallets just analysed**, from edges up to
   one neighbour away; a cluster held together further out can split.
-- **Nothing is calibrated.** Every threshold is a starting point for Phase 4.
+- **Calibration is thin.** Phase 4's replay ([CALIBRATION.md](CALIBRATION.md))
+  found too few measured outcomes to re-tune the wash, coordination or buyer
+  thresholds; they remain starting points.
+- **Few tokens per cycle.** Two to four, by priority; most live tokens are
+  unanalysed at any moment, and the Board says so.

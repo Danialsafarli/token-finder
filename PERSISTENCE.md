@@ -147,10 +147,12 @@ that shape makes those queries and their indexes obvious.
 
 ### Evidence storage
 
-`evidence_snapshots` is bounded by construction: one row per coverage-weighted
-metric per stored snapshot, around a dozen. It answers *what did Token Finder
-believe at time T, on whose word, and how fresh was it* without archiving raw
-provider bodies. Raw provider JSON is deliberately **not** persisted.
+`evidence_snapshots` holds one row per coverage-weighted metric per stored
+snapshot, around a dozen. It answers *what did Token Finder believe at time T,
+on whose word, and how fresh was it* without archiving raw provider bodies.
+Raw provider JSON is deliberately **not** persisted. It turned out to be the
+largest table by far (measured in Phase 4: ~33 MB a day with its index), so
+it has its own, shorter retention for ordinary snapshots (§13).
 
 ### Constraints
 
@@ -309,6 +311,8 @@ conservative and the rules are stated in one place.
 | Data | Default | Configurable |
 |---|---|---|
 | Non-transition snapshot history | 90 days | `RETENTION_HISTORY_DAYS` |
+| Per-metric evidence of non-transition snapshots | 14 days | `RETENTION_EVIDENCE_DAYS` |
+| Evidence behind a verdict transition | as long as the transition | - |
 | Token unseen before it is dropped | 180 days | `RETENTION_TOKEN_DAYS` |
 | Provider-failure diagnostics | 14 days | `RETENTION_DIAGNOSTICS_DAYS` |
 | Monitor events | 500 newest | `MAX_EVENTS` |
@@ -331,6 +335,12 @@ conservative and the rules are stated in one place.
   change a deletion policy.
   `store.prune()` now takes no argument, and only the table above decides what
   is deleted. See [PIPELINE.md §6](PIPELINE.md#the-live-universe).
+
+**Measured (Phase 4, the 409 MB development database):** growth ~67 MB a day,
+half of it evidence. With the evidence rule a sweep costs 161 ms in steady
+state; the first sweep after 14 days removes ~417k rows in 3.3 s, keeping the
+evidence of every transition. Expected steady state at the defaults: 3-4 GB
+(DEPLOYMENT.md §3).
 
 **Not yet done:** downsampling old high-frequency history into lower resolution.
 It is lossy, easy to get subtly wrong, and there is no accumulated history to

@@ -1,7 +1,11 @@
 # Pipeline, evidence and the safety gate
 
 Audience: engineers working on Token Finder's analysis path.
-Status: **implemented**. This document describes `src/core/` as it runs today.
+Status: **implemented**. This document describes `src/core/` as it runs today:
+the fast screen. Since Phase 3 its output is the input of the decision engine,
+which decides the final verdict ([DECISION_ENGINE.md](DECISION_ENGINE.md)); the
+Phase 1 gate's vetoes still reject, and the Phase 1 score is kept as the
+"market score", no longer the ranking key.
 
 The prototype turned provider JSON into a number. This describes what replaced that:
 a pipeline where every value carries its provenance, missing evidence is visible,

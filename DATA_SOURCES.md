@@ -8,6 +8,13 @@
 Audience: engineers wiring providers into Token Finder.
 Part 1 is measured. Part 2 is a proposal; **none of it is implemented.**
 
+> **Phase 4 observation.** DexScreener can return a different set of pairs for
+> the same token between reads: one token's display pool alternated between a
+> ~$600K PumpSwap pool and a ~$6K Meteora pool. Token Finder therefore compares
+> liquidity only within one pool (DECISION_ENGINE.md §9, CALIBRATION.md §3.1).
+> Solana Risk Radar is linked from the Dossier, never called
+> ([integrations/risk-radar/](integrations/risk-radar/)).
+
 Probe run 2026-09-23 against live mainnet endpoints, no API keys configured.
 
 ## Part 1 — Live validation (measured)

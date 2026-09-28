@@ -1,9 +1,11 @@
 # Decision engine
 
 Audience: engineers working on Token Finder's verdicts, and anyone reviewing
-what a verdict claims. Status: **implemented** (Phase 3, `decision-policy@1`).
-Nothing here is calibrated against outcomes; calibration is Phase 4. Every
-threshold below is a stated starting point, not a measured optimum.
+what a verdict claims. Status: **implemented** (Phase 3; Phase 4 added
+verdict stability and two calibrated changes - `decision-policy@2`).
+Thresholds are stated starting points unless [CALIBRATION.md](CALIBRATION.md)
+says otherwise; it records which ones real history supported changing, which
+it did not, and why most outcomes are still unknown.
 
 Phase 2 produced deep intelligence as diagnostics. This phase makes it decide
 things - carefully. Two questions are kept apart until the last step:
@@ -46,6 +48,11 @@ It runs at two moments:
    never scanned again. A re-decision that changes the verdict is a real
    transition: persisted (dated when decided, with no market row), announced,
    and pushed to every live surface over a `decision` stream event.
+   Since Phase 4 it also reaches **linked** tokens: when a cycle finds security
+   events on a token, the other live launches of its creator and of each actor
+   in those events are re-decided too (`linkedMints`), and stored if their
+   verdict changes - so a sibling no longer attractive enough for deep
+   analysis still follows its creator's confirmed rugs.
 
 ---
 
@@ -84,9 +91,10 @@ current.
 A historical false positive produced under an older rule must not poison
 future decisions forever. `decision/versions.ts` holds:
 
-- `DECISION_POLICY_VERSION` - the ladder in §7 (`decision-policy@1`);
-- `MODEL_VERSIONS` - hard-gate@2, integrity@1, opportunity@1, momentum@2,
-  rank@1, and the Phase 1 score@1 kept beside them;
+- `DECISION_POLICY_VERSION` - the ladder in §7 plus stability (§7a)
+  (`decision-policy@2`; `@1` was the ladder alone);
+- `MODEL_VERSIONS` - hard-gate@2, integrity@2, opportunity@1, momentum@3,
+  rank@1, stability@1, and the Phase 1 score@1 kept beside them;
 - `RULE_VERSIONS` - one per detection rule set (security-events@1, wash@2,
   activity-quality@2, cluster@1, attribution@1, creator-history@1,
   serial-network@1, buyer-class@1). `ACCEPTED_RULES` lists only the current
@@ -167,7 +175,7 @@ means at least one hard fail**, and momentum cannot override one.
 | Domain | Weight | Reads |
 |---|---|---|
 | Token security | 0.20 | authorities, penalty-only Token-2022 extensions, RugCheck score and non-authority findings, authority reassigned rather than revoked |
-| Liquidity safety | 0.15 | depth (< $10K, < $25K), RugCheck LP findings, suspected drains, liquidity falling >= 40% over the observed window |
+| Liquidity safety | 0.15 | depth (< $10K, < $25K), RugCheck LP findings, suspected drains, liquidity falling >= 40% over the observed window, and (integrity@2) a same-pool collapse of >= 80% from the window's peak - risk 0.55, HIGH on its own, never a hard fail |
 | Holder integrity | 0.15 | role-aware wallet concentration (or the provider's figure; **never the raw on-chain figure**), creator-linked selling |
 | Activity integrity | 0.15 | automated share > 40%, sniper share > 25%, organic share < 10% |
 | Wallet coordination | 0.15 | coordinated trading share, wash risk |
@@ -258,9 +266,10 @@ A token trading on several pools was under-observed from one. Now:
 
 ---
 
-## 7. The verdict ladder (`decision-policy@1`)
+## 7. The verdict ladder (unchanged in `decision-policy@2`)
 
-Evaluated in order; the first that applies decides.
+Evaluated in order; the first that applies decides. Stability (§7a) then
+decides whether a better answer applies now or on confirmation.
 
 | # | Verdict | Condition |
 |---|---|---|
@@ -279,6 +288,32 @@ never counted as clean. Every unmet HIGH_POTENTIAL condition is reported as a
 
 Lifecycle: `DISCOVERED -> SCANNING -> {one of the six}`, every resting state
 back to SCANNING. Nothing is irreversible.
+
+---
+
+## 7a. Stability (`stability@1`, `decision/stability.ts`)
+
+Found live: a token alternated Rejected / High risk / Qualified between scans
+because its provider concentration sat around the 90% threshold. The ladder's
+answer is applied through an asymmetric rule:
+
+- **Toward danger, immediately.** A worse verdict - any hard fail, HIGH_RISK,
+  less evidence - applies on the reading that says so. CONFIRMED_CURRENT_RUG,
+  CONFIRMED_MALICIOUS_TOKEN and every other hard fail are never delayed.
+- **Toward safety, on confirmation.** A better verdict must be seen on **two
+  consecutive independent readings** - distinct market observations; a
+  re-decision of the same observation with new intelligence counts once. Until
+  then the previous verdict is held, the basis says so ("held at Rejected: 1
+  of 2 readings support Qualified"), and a `stability:` blocker is shown. On
+  confirmation the most conservative of the confirming readings applies.
+- A held REJECTED keeps the hard fails it was rejected on, so REJECTED still
+  always carries at least one.
+- A previous verdict more than an hour old is not held: hysteresis is about
+  consecutive readings, not a token returning to the feeds hours later.
+
+The decision records `stability: { raw, held, pending }`, so what the reading
+alone said is never lost. Replayed over the stored history: reversals 7 -> 1,
+verdict changes 209 -> 123 ([CALIBRATION.md](CALIBRATION.md) §2.4).
 
 ---
 
@@ -319,6 +354,12 @@ counts), never interpolated.
   measured. **COOLING**: earlier gains not continuing. **DECLINING**: 2 h <= -5%
   with most steps down. Otherwise **NEUTRAL**.
 - Confidence = min(1, observations/8) x min(1, span/2 h).
+- **Liquidity is compared within one pool** (momentum@3). An observation on a
+  different known pool keeps its price and loses its liquidity: a pump.fun
+  curve migrating to PumpSwap is not a collapse. The assessment also carries
+  `liquidityDrawdown`, the latest liquidity against the window's peak.
+- History is read from SQLite, so a restart keeps it. Nothing is
+  interpolated; a window with no observation near its start is not measured.
 - DexScreener's 5m-24h frames are shown beside it for comparison and never
   change the state.
 
@@ -434,20 +475,27 @@ tokens; only 14 samples represented at least half the market in their
 window. Most activity and wash readings are therefore partial, and the engine
 treats them so. Two of the most recent 15 snapshots found a second pool.
 
-**Not yet addressed.** Verdicts near a hard threshold can flip between scans
-(one token alternated Rejected / High risk / Qualified with its provider
-concentration around 90%). There is no hysteresis; choosing one is a
-calibration decision for Phase 4.
+**Addressed in Phase 4.** Verdicts near a hard threshold flipped between
+scans (one token alternated Rejected / High risk / Qualified with its provider
+concentration around 90%). Stability (§7a) now holds a better verdict for
+confirmation while applying a worse one immediately.
 
 ---
 
 ## 14. Known limitations
 
-- **Nothing is calibrated.** Every threshold, weight and band is a starting
-  point; Phase 4 backtests them against outcomes.
-- **Deep intelligence reaches few tokens.** At 2-3 tokens per cycle most live
-  tokens are unanalysed at any moment; they can be at most QUALIFIED, and
-  their integrity is UNKNOWN (and charged as unverified in rank).
+- **Calibration is thin.** A replay over real history exists and drove two
+  changes ([CALIBRATION.md](CALIBRATION.md)), but 98% of decision points have
+  no measured outcome, because tokens leave the feeds. Most weights and bands
+  remain reasoned starting points.
+- **High potential is currently unreachable.** No live token has exceeded an
+  opportunity of 61 against a bar of 65, mostly for lack of momentum history
+  and deep intelligence. The bar was not lowered: there is no outcome evidence
+  for doing so.
+- **Deep intelligence reaches few tokens.** 2-4 tokens per cycle, chosen by
+  stated priority (DEEP_INTELLIGENCE.md §12a); most live tokens are unanalysed
+  at any moment, can be at most QUALIFIED, and their integrity is UNKNOWN (and
+  charged as unverified in rank).
 - **Momentum needs time.** A token seen for under 20 minutes has no momentum
   state; one seen for under ~1.5 hours cannot be SUSTAINED or ACCELERATING,
   so a genuinely new token cannot be HIGH_POTENTIAL on its first scans. That
@@ -460,10 +508,11 @@ calibration decision for Phase 4.
   reports none, venue share stands in at half weight.
 - **A pool loaded alongside another in one transaction** (a route) is read as
   neither.
-- **No hysteresis.** A token whose evidence sits at a threshold can change
-  verdict on consecutive scans; every change is recorded as a transition.
-- **Re-decision covers analysed tokens only.** A token that stops being
-  scanned and is not re-analysed keeps its last verdict until it leaves the
-  live window, as before.
+- **Stability delays improvements by one reading.** A token that genuinely
+  recovers is shown at its worse verdict for one more scan (about two
+  minutes). That is the price of not bouncing, and it never applies to danger.
+- **Re-decision covers analysed and linked tokens.** A token that stops being
+  scanned, is not re-analysed and shares no creator or actor with a new
+  finding keeps its last verdict until it leaves the live window.
 - **Wallet classifications are samples.** At most 12 wallets per token are
   profiled; composition shares are of the trades collected.

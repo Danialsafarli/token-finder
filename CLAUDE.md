@@ -6,7 +6,9 @@ data and produces rankings. It holds no keys, signs nothing, and trades nothing.
 
 Architecture is documented in [ARCHITECTURE.md](ARCHITECTURE.md),
 [PIPELINE.md](PIPELINE.md), [SCORING.md](SCORING.md) and
-[DECISION_ENGINE.md](DECISION_ENGINE.md). Read those before changing analysis
+[DECISION_ENGINE.md](DECISION_ENGINE.md), with calibration evidence in
+[CALIBRATION.md](CALIBRATION.md) and hosting in [DEPLOYMENT.md](DEPLOYMENT.md).
+Read those before changing analysis
 behaviour. A detection-rule change that can change a conclusion must bump its
 version in `src/decision/versions.ts`.
 

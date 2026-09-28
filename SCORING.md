@@ -2,6 +2,11 @@
 
 Audience: engineers working on Token Finder's ranking.
 
+> **Since Phase 3 this score (score@1) is the "market score"**, still computed,
+> stored and shown beside the decision, but **not the ranking key**. Verdicts
+> and rank come from the decision engine ([DECISION_ENGINE.md](DECISION_ENGINE.md));
+> the calibration record is [CALIBRATION.md](CALIBRATION.md).
+
 Status: **§5.1 and §5.2 are fixed** (Phase 1, data integrity). This document now describes
 `src/core/score.ts` as it behaves after that fix; the original audit findings are kept below
 with their resolution, because the measured evidence is what justifies the change.

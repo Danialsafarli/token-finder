@@ -3,6 +3,17 @@
 Audience: engineers working on Token Finder.
 **Part 1 describes what exists. Parts 2–5 are proposals and are NOT IMPLEMENTED.**
 
+> **Current state, after Phase 4.** The system as it runs today is summarised
+> in the [README](README.md#how-it-works): discovery and chain collection, the
+> fast screen ([PIPELINE.md](PIPELINE.md)), deep intelligence on its own loop
+> ([DEEP_INTELLIGENCE.md](DEEP_INTELLIGENCE.md)), the decision engine with
+> stability and re-decision ([DECISION_ENGINE.md](DECISION_ENGINE.md)), SQLite
+> persistence ([PERSISTENCE.md](PERSISTENCE.md)), calibration
+> ([CALIBRATION.md](CALIBRATION.md)) and a single-process container deployment
+> ([DEPLOYMENT.md](DEPLOYMENT.md)). Where Part 1 below and those documents
+> differ, they are authoritative. The trading modes of Parts 2-5 remain
+> proposals: Token Finder holds no keys and trades nothing.
+
 > **A future subsystem is specified separately.** Technical Intelligence — chart
 > structure, pivots, support/resistance and pattern detection — is designed in
 > **[TECHNICAL_INTELLIGENCE.md](TECHNICAL_INTELLIGENCE.md)**. It is **PLANNED and
