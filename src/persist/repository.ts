@@ -222,6 +222,52 @@ export interface VerdictChange {
   vetoCodes: string[];
   priceUsd: number | null;
   liquidityUsd: number | null;
+  /** From the transition record, when the change was made by the decision engine. */
+  policyVersion?: string | null;
+  basis?: string | null;
+  reasons?: { kind: string; code: string; text: string }[];
+}
+
+/** A stored verdict transition, as the decision engine recorded it. */
+export interface StoredTransition {
+  id: number;
+  mint: string;
+  at: number;
+  from: string | null;
+  to: string;
+  policyVersion: string;
+  models: Record<string, string>;
+  basis: string;
+  reasons: { kind: string; code: string; text: string; domain?: string }[];
+  components: Record<string, unknown>;
+  hardFails: { code: string; family: string | null; confidence: number | null; ruleVersion: string | null }[];
+  recordedAt: number;
+}
+
+function parseJson<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== 'string') return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function toTransition(row: Record<string, unknown>): StoredTransition {
+  return {
+    id: Number(row['id']),
+    mint: String(row['mint']),
+    at: Number(row['at']),
+    from: (row['from_state'] as string | null) ?? null,
+    to: String(row['to_state']),
+    policyVersion: String(row['policy_version']),
+    models: parseJson(row['models'], {}),
+    basis: String(row['basis'] ?? ''),
+    reasons: parseJson(row['reasons'], []),
+    components: parseJson(row['components'], {}),
+    hardFails: parseJson(row['hard_fails'], []),
+    recordedAt: Number(row['recorded_at']),
+  };
 }
 
 export interface StoredEvidence {
@@ -408,7 +454,13 @@ export class Repository {
       const snapshotId = transact(this.#db, () => {
         this.#upsertTokenRow(snapshot, recordedAt);
         if (!decision.store) return null;
-        return this.#appendHistory(snapshot, scanId, recordedAt, decision);
+        const id = this.#appendHistory(snapshot, scanId, recordedAt, decision);
+        const to = snapshot.evaluation?.eligibility ?? null;
+        const from = previous?.eligibility ?? null;
+        if (decision.isTransition && to !== null && to !== from && snapshot.decision) {
+          this.#recordTransition(snapshot, from, recordedAt);
+        }
+        return id;
       });
       return { decision, snapshotId, failure: null };
     } catch (error) {
@@ -471,13 +523,15 @@ export class Repository {
     const evaluation = snapshot.evaluation ?? null;
     const observedAt = snapshot.at;
 
+    const d = snapshot.decision ?? null;
     const info = this.#db
       .prepare(
         `INSERT INTO token_snapshots (
            mint, scan_id, observed_at, recorded_at, score, base_score, grade,
            penalty, score_coverage, coverage, confidence, state, eligibility,
-           veto_codes, is_transition
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           veto_codes, is_transition, policy_version, rank_score, integrity_score,
+           integrity_band, opportunity_score, momentum_state, decision_coverage
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         snapshot.mint,
@@ -495,6 +549,13 @@ export class Repository {
         evaluation?.eligibility ?? null,
         evaluation === null ? null : evaluation.vetoes.map((v) => v.code).join(','),
         boolInt(decision.isTransition),
+        d?.policyVersion ?? null,
+        d?.rankScore ?? null,
+        d?.integrity.score ?? null,
+        d?.integrity.band ?? null,
+        d?.opportunity.score ?? null,
+        d?.momentum.state ?? null,
+        d?.coverage.decision ?? null,
       );
     const snapshotId = Number(info.lastInsertRowid);
 
@@ -601,6 +662,54 @@ export class Repository {
     }
 
     return snapshotId;
+  }
+
+  /**
+   * One verdict transition, with what decided it. Written in the snapshot's
+   * transaction, so a transition row never exists without its snapshot.
+   */
+  #recordTransition(snapshot: TokenSnapshot, from: string | null, recordedAt: number): void {
+    const d = snapshot.decision!;
+    this.#db
+      .prepare(
+        `INSERT INTO verdict_transitions (
+           mint, at, from_state, to_state, policy_version, models, basis, reasons, components, hard_fails, recorded_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        snapshot.mint,
+        snapshot.at,
+        from,
+        d.verdict,
+        d.policyVersion,
+        JSON.stringify(d.models),
+        redactSecrets(d.basis).slice(0, 300),
+        redactSecrets(JSON.stringify(d.reasons.slice(0, 10))),
+        JSON.stringify({
+          rank: d.rankScore,
+          integrity: { score: d.integrity.score, band: d.integrity.band, risk: d.integrity.risk, coverage: d.integrity.coverage },
+          opportunity: { score: d.opportunity.score, band: d.opportunity.band, coverage: d.opportunity.coverage },
+          momentum: { state: d.momentum.state, confidence: d.momentum.confidence },
+          coverage: d.coverage,
+          legacyScore: snapshot.score.total,
+        }),
+        JSON.stringify(d.hardFails.map((v) => ({ code: v.code, family: v.family ?? null, confidence: v.confidence ?? null, ruleVersion: v.ruleVersion ?? null }))),
+        recordedAt,
+      );
+  }
+
+  /** Stored verdict transitions, newest first. */
+  verdictTransitions(options: { mint?: string; limit?: number } = {}): StoredTransition[] {
+    try {
+      const rows = this.#db
+        .prepare(
+          `SELECT * FROM verdict_transitions ${options.mint !== undefined ? 'WHERE mint = ?' : ''} ORDER BY at DESC LIMIT ?`,
+        )
+        .all(...(options.mint !== undefined ? [options.mint] : []), options.limit ?? 100) as Record<string, unknown>[];
+      return rows.map(toTransition);
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -892,11 +1001,13 @@ export class Repository {
              SELECT ts.id, ts.mint, t.symbol, t.name, ts.observed_at, ts.eligibility,
                     ts.score, ts.coverage, ts.confidence, ts.veto_codes,
                     ms.price_usd, ms.liquidity_usd,
+                    vt.policy_version AS vt_policy, vt.basis AS vt_basis, vt.reasons AS vt_reasons,
                     LAG(ts.eligibility) OVER (PARTITION BY ts.mint ORDER BY ts.observed_at) AS prev_eligibility,
                     LAG(ts.observed_at) OVER (PARTITION BY ts.mint ORDER BY ts.observed_at) AS prev_at
                FROM token_snapshots ts
                LEFT JOIN tokens t ON t.mint = ts.mint
                LEFT JOIN market_snapshots ms ON ms.mint = ts.mint AND ms.observed_at = ts.observed_at
+               LEFT JOIN verdict_transitions vt ON vt.mint = ts.mint AND vt.at = ts.observed_at
               WHERE ${where}
            )
            ${outer.length ? `WHERE ${outer.join(' AND ')}` : ''}
@@ -921,6 +1032,9 @@ export class Repository {
           .filter((code) => code.length > 0),
         priceUsd: row['price_usd'] == null ? null : Number(row['price_usd']),
         liquidityUsd: row['liquidity_usd'] == null ? null : Number(row['liquidity_usd']),
+        policyVersion: (row['vt_policy'] as string | null) ?? null,
+        basis: (row['vt_basis'] as string | null) ?? null,
+        reasons: parseJson(row['vt_reasons'], []),
       }));
     } catch {
       return [];
@@ -1041,6 +1155,8 @@ export class Repository {
           'security_events',
           'creator_profiles',
           'token_intelligence',
+          'security_event_revisions',
+          'verdict_transitions',
           'tokens',
         ]) {
           this.#db.exec(`DELETE FROM ${table}`);

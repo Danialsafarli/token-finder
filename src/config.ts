@@ -189,6 +189,13 @@ export const config = {
   ingestTokensPerCycle: Math.max(0, num('INGEST_TOKENS_PER_CYCLE', 6)),
   /** Transactions fetched per token per cycle. */
   ingestTxPerToken: Math.max(1, num('INGEST_TX_PER_TOKEN', 10)),
+  /**
+   * Pools collected per survivor token: the display pair, then other pools
+   * carrying at least INGEST_MIN_POOL_VOLUME_SHARE of 24 h volume. Each pool
+   * gets its own INGEST_TX_PER_TOKEN, so this multiplies collection cost.
+   */
+  ingestPoolsPerToken: Math.min(4, Math.max(1, num('INGEST_POOLS_PER_TOKEN', 2))),
+  ingestMinPoolVolumeShare: Math.min(1, Math.max(0, num('INGEST_MIN_POOL_VOLUME_SHARE', 0.2))),
   /** Whether pump.fun launches are read from the chain. */
   launchDiscoveryEnabled: bool('LAUNCH_DISCOVERY_ENABLED', true),
   /** Launch transactions fetched per cycle; launches beyond it are counted as a gap. */

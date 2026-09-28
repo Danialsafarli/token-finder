@@ -659,9 +659,84 @@ const DEEP_INTELLIGENCE: Migration = {
 };
 
 /**
+ * Migration 4 - the decision engine.
+ *
+ * Three things the decision layer needs to be auditable and re-evaluable:
+ *
+ * - **Rule versions on findings.** A security event records which rule
+ *   version detected it, and whether a later analysis under a newer rule
+ *   superseded it. Rows written before this migration get NULL: unversioned,
+ *   which the decision layer treats as superseded. Nothing is deleted; a
+ *   reinterpreted or superseded event is copied into
+ *   `security_event_revisions` first, so every earlier reading stays
+ *   readable.
+ * - **Policy and model versions on verdicts.** Each stored snapshot names the
+ *   decision policy that produced it and carries the new model outputs as
+ *   columns, so a later calibration can compare policies without parsing
+ *   payloads.
+ * - **Verdict transitions with their reasons.** One row per material change
+ *   of verdict: from, to, the ladder step that decided it, the reasons and
+ *   the component scores at that moment. Never pruned by age; it cascades
+ *   only with its token.
+ */
+const DECISION_ENGINE: Migration = {
+  to: 4,
+  name: 'decision-engine',
+  purpose: 'rule-versioned security events and their revisions, policy-versioned verdicts, verdict transitions',
+  statements: [
+    `ALTER TABLE security_events ADD COLUMN rule_version TEXT`,
+    `ALTER TABLE security_events ADD COLUMN superseded_at INTEGER`,
+    `ALTER TABLE security_events ADD COLUMN superseded_by TEXT`,
+    `CREATE TABLE security_event_revisions (
+       id           INTEGER PRIMARY KEY AUTOINCREMENT,
+       event_id     TEXT NOT NULL,
+       mint         TEXT NOT NULL,
+       type         TEXT NOT NULL,
+       status       TEXT NOT NULL,
+       rule_version TEXT,
+       reasons      TEXT NOT NULL,
+       confidence   REAL NOT NULL,
+       detected_at  INTEGER NOT NULL,
+       revised_at   INTEGER NOT NULL,
+       revised_by   TEXT NOT NULL,
+       change       TEXT NOT NULL,
+       CHECK (change IN ('REINTERPRETED','SUPERSEDED'))
+     )`,
+    `CREATE INDEX idx_security_event_revisions_mint ON security_event_revisions(mint, revised_at)`,
+
+    `ALTER TABLE token_intelligence ADD COLUMN rule_versions TEXT`,
+
+    `ALTER TABLE token_snapshots ADD COLUMN policy_version TEXT`,
+    `ALTER TABLE token_snapshots ADD COLUMN rank_score REAL`,
+    `ALTER TABLE token_snapshots ADD COLUMN integrity_score REAL`,
+    `ALTER TABLE token_snapshots ADD COLUMN integrity_band TEXT`,
+    `ALTER TABLE token_snapshots ADD COLUMN opportunity_score REAL`,
+    `ALTER TABLE token_snapshots ADD COLUMN momentum_state TEXT`,
+    `ALTER TABLE token_snapshots ADD COLUMN decision_coverage REAL`,
+
+    `CREATE TABLE verdict_transitions (
+       id             INTEGER PRIMARY KEY AUTOINCREMENT,
+       mint           TEXT NOT NULL REFERENCES tokens(mint) ON DELETE CASCADE,
+       at             INTEGER NOT NULL,
+       from_state     TEXT,
+       to_state       TEXT NOT NULL,
+       policy_version TEXT NOT NULL,
+       models         TEXT NOT NULL,
+       basis          TEXT NOT NULL,
+       reasons        TEXT NOT NULL,
+       components     TEXT NOT NULL,
+       hard_fails     TEXT NOT NULL,
+       recorded_at    INTEGER NOT NULL
+     )`,
+    `CREATE INDEX idx_verdict_transitions_mint ON verdict_transitions(mint, at)`,
+    `CREATE INDEX idx_verdict_transitions_at ON verdict_transitions(at)`,
+  ],
+};
+
+/**
  * Every migration, in order. Append only.
  */
-export const MIGRATIONS: readonly Migration[] = [INITIAL, DATA_BACKBONE, DEEP_INTELLIGENCE];
+export const MIGRATIONS: readonly Migration[] = [INITIAL, DATA_BACKBONE, DEEP_INTELLIGENCE, DECISION_ENGINE];
 
 /** The version a fully migrated database reports. */
 export const TARGET_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.to), 0);

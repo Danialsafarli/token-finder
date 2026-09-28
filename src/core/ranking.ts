@@ -52,11 +52,32 @@ export const DEFAULT_LIVE_WINDOW_MS = FRESHNESS.liquidityUsd!.agingMs;
 export const FRESH_WITHIN_MS = FRESHNESS.liquidityUsd!.freshMs;
 
 const ELIGIBILITIES: ReadonlySet<Eligibility> = new Set([
+  'HIGH_POTENTIAL',
   'QUALIFIED',
   'WATCH',
   'INSUFFICIENT_DATA',
+  'HIGH_RISK',
   'REJECTED',
 ]);
+
+/** The verdicts that make up the candidate ranking. The rest are segments of their own. */
+export const CANDIDATE_VERDICTS: ReadonlySet<Eligibility> = new Set(['HIGH_POTENTIAL', 'QUALIFIED', 'WATCH']);
+
+/** Verdicts the gate let through: what deep collection and deep intelligence spend budget on. */
+export type SurvivorTier = 'HIGH_POTENTIAL' | 'QUALIFIED' | 'WATCH' | 'HIGH_RISK';
+
+/**
+ * Order of deep work. Candidates first (they are what a person acts on), then
+ * HIGH_RISK - whose risk deep intelligence is best placed to confirm or clear.
+ */
+export const SURVIVOR_ORDER: Record<SurvivorTier, number> = { HIGH_POTENTIAL: 0, QUALIFIED: 1, WATCH: 2, HIGH_RISK: 3 };
+
+export const isSurvivor = (eligibility: string | null | undefined): eligibility is SurvivorTier =>
+  typeof eligibility === 'string' && Object.prototype.hasOwnProperty.call(SURVIVOR_ORDER, eligibility);
+
+export function emptyEligibilityCounts(): Record<Eligibility, number> {
+  return { HIGH_POTENTIAL: 0, QUALIFIED: 0, WATCH: 0, INSUFFICIENT_DATA: 0, HIGH_RISK: 0, REJECTED: 0 };
+}
 
 export interface Placement {
   universe: Universe;
@@ -119,7 +140,7 @@ export function countUniverse(
     stale: 0,
     unevaluated: 0,
     total: tokens.length,
-    byEligibility: { QUALIFIED: 0, WATCH: 0, INSUFFICIENT_DATA: 0, REJECTED: 0 },
+    byEligibility: emptyEligibilityCounts(),
   };
   for (const token of tokens) {
     const placement = placementOf(token, now, windowMs);
@@ -144,13 +165,28 @@ export function liveTokens(
   return tokens.filter((token) => isLive(token, now, windowMs));
 }
 
-/** Verdict tier: a rejected token can never sort above a qualified one. */
+/**
+ * Verdict tier: a rejected token can never sort above a qualified one, and a
+ * high-risk one never above a candidate. Insufficient data sits above high
+ * risk because "not enough evidence" is not a finding against the token.
+ */
 export const VERDICT_TIER: Record<Eligibility, number> = {
-  QUALIFIED: 0,
-  WATCH: 1,
-  INSUFFICIENT_DATA: 2,
-  REJECTED: 3,
+  HIGH_POTENTIAL: 0,
+  QUALIFIED: 1,
+  WATCH: 2,
+  INSUFFICIENT_DATA: 3,
+  HIGH_RISK: 4,
+  REJECTED: 5,
 };
+
+/**
+ * The within-verdict ranking key: the Decision Engine's rank score when the
+ * token has one, the Phase 1 score otherwise (snapshots from before Phase 3).
+ */
+export function rankKey(token: TokenSnapshot): number {
+  const rank = token.decision?.rankScore;
+  return typeof rank === 'number' && Number.isFinite(rank) ? rank : token.score.total;
+}
 
 /**
  * Current age since launch.

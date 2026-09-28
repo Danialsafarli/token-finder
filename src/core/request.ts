@@ -13,7 +13,8 @@
 import { analyze, type AnalyzeStage } from './analyze.ts';
 import { store } from './store.ts';
 import { isScanning } from './monitor.ts';
-import { hasHelius } from '../config.ts';
+import { config, hasHelius } from '../config.ts';
+import { makeDecider } from '../decision/inputs.ts';
 import type { ProviderFailure, TokenSnapshot, TokenState } from '../types.ts';
 
 /** A real Solana mint: base58, 32 to 44 characters. */
@@ -72,7 +73,10 @@ export async function analyzeRequested(mint: string, onStage: (stage: AnalyzeSta
   // not replace it.
   const sources = [...new Set([...(previous?.sources ?? []), 'request'])];
 
-  const result = await analyze([{ mint, sources }], { includeAll: true, deepLimit: 1, priorStates, onStage });
+  // The same decision stage the monitor runs: stored intelligence and history
+  // for this mint, if Token Finder has any.
+  const decide = makeDecider(store.decisionSources(), { minCoverageQualify: config.minCoverageQualify, minCoverageWatch: config.minCoverageWatch });
+  const result = await analyze([{ mint, sources }], { includeAll: true, deepLimit: 1, priorStates, onStage, decide });
   const failures = [...result.providerFailures, ...result.failures.map((failure) => failure.failure)];
   const snapshot = result.snapshots[0];
 

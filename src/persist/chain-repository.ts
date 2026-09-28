@@ -508,24 +508,24 @@ export class ChainRepository {
           ORDER BY slot DESC, tx_index DESC LIMIT ?`,
       )
       .all(mint, limit) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      signature: String(r.signature),
-      pool: String(r.pool),
-      slot: Number(r.slot),
-      blockTime: r.block_time === null ? null : Number(r.block_time),
-      kind: String(r.kind),
-      reason: (r.reason as string | null) ?? null,
-      direction: (r.direction as string | null) ?? null,
-      trader: (r.trader as string | null) ?? null,
-      traderResolution: (r.trader_resolution as string | null) ?? null,
-      tokenAmount: (r.token_amount as string | null) ?? null,
-      quoteMint: (r.quote_mint as string | null) ?? null,
-      quoteAmount: (r.quote_amount as string | null) ?? null,
-      priceInQuote: r.price_in_quote === null ? null : Number(r.price_in_quote),
-      confidence: Number(r.confidence),
-      liquidityActor: (r.liquidity_actor as string | null) ?? null,
-      reserveFraction: r.reserve_fraction == null ? null : Number(r.reserve_fraction),
-    }));
+    return rows.map(toActivity);
+  }
+
+  /**
+   * Specific stored readings of a mint's pools, by transaction - so a finding
+   * can be re-checked against its own proof even after newer activity has
+   * pushed it out of the most-recent window.
+   */
+  activityForSignatures(mint: string, signatures: string[]): ActivityRow[] {
+    const stmt = this.#db.prepare(
+      `SELECT signature, pool, slot, block_time, kind, reason, direction, trader, trader_resolution,
+              token_amount, quote_mint, quote_amount, price_in_quote, confidence,
+              liquidity_actor, reserve_fraction
+         FROM pool_activity WHERE mint = ? AND signature = ?`,
+    );
+    const out: ActivityRow[] = [];
+    for (const s of new Set(signatures)) for (const r of stmt.all(mint, s) as Record<string, unknown>[]) out.push(toActivity(r));
+    return out;
   }
 
   /** Transfer edges touching a wallet, newest first - the wallet-graph phase's input. */
@@ -613,5 +613,26 @@ function toLaunch(row: Record<string, unknown>): LaunchRow {
     pool: (row.pool as string | null) ?? null,
     poolConfirmed: row.pool_confirmed === 1,
     recordedAt: Number(row.recorded_at),
+  };
+}
+
+function toActivity(r: Record<string, unknown>): ActivityRow {
+  return {
+    signature: String(r.signature),
+    pool: String(r.pool),
+    slot: Number(r.slot),
+    blockTime: r.block_time === null ? null : Number(r.block_time),
+    kind: String(r.kind),
+    reason: (r.reason as string | null) ?? null,
+    direction: (r.direction as string | null) ?? null,
+    trader: (r.trader as string | null) ?? null,
+    traderResolution: (r.trader_resolution as string | null) ?? null,
+    tokenAmount: (r.token_amount as string | null) ?? null,
+    quoteMint: (r.quote_mint as string | null) ?? null,
+    quoteAmount: (r.quote_amount as string | null) ?? null,
+    priceInQuote: r.price_in_quote === null ? null : Number(r.price_in_quote),
+    confidence: Number(r.confidence),
+    liquidityActor: (r.liquidity_actor as string | null) ?? null,
+    reserveFraction: r.reserve_fraction == null ? null : Number(r.reserve_fraction),
   };
 }

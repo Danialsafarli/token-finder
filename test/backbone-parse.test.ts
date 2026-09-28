@@ -392,6 +392,6 @@ describe('the processing budget', () => {
       liveWindowMs: 90 * 60_000,
       now,
     });
-    assert.deepEqual(plan.work, [{ mint: 'x', pool: 'curve-x', tier: 'QUALIFIED' }]);
+    assert.deepEqual(plan.work, [{ mint: 'x', pool: 'curve-x', tier: 'QUALIFIED', dexId: null, rank: 0 }]);
   });
 });

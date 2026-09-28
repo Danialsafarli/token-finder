@@ -20,6 +20,8 @@ export function liveIngestDeps(): IngestDeps {
     settings: {
       tokensPerCycle: config.ingestTokensPerCycle,
       txPerToken: config.ingestTxPerToken,
+      poolsPerToken: config.ingestPoolsPerToken,
+      minPoolVolumeShare: config.ingestMinPoolVolumeShare,
       launchDiscovery: config.launchDiscoveryEnabled,
       launchTxPerCycle: config.launchTxPerCycle,
       liveWindowMs: config.liveWindowMin * 60_000,

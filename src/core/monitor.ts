@@ -6,10 +6,33 @@ import { discover } from './discover.ts';
 import { analyze, type TokenFailure } from './analyze.ts';
 import type { ProviderFailure } from '../util/failure.ts';
 import { store } from './store.ts';
+import { rankKey, VERDICT_TIER } from './ranking.ts';
+import { makeDecider } from '../decision/inputs.ts';
 import type { MonitorEvent, RiskLevel, TokenSnapshot, TokenState } from '../types.ts';
+
+const TIER = VERDICT_TIER as Record<string, number>;
 
 /** Emits "event" (MonitorEvent) and "scan" (ScanResult); the server relays both over SSE. */
 export const bus = new EventEmitter();
+
+/**
+ * Where a scan's time and writes went. Measured, never estimated: each figure
+ * is wall time around the stage or a count of what it did.
+ */
+export interface ScanTimings {
+  discoverMs: number;
+  /** Market fetch, safety providers, evidence, fast gate - and the decision stage inside it. */
+  analyzeMs: number;
+  /** The decision stage alone: reading stored intelligence and history, deciding. */
+  decisionMs: number;
+  decisions: number;
+  persistMs: number;
+  /** Snapshot rows appended (a token whose change was not material writes only its current row). */
+  historyRows: number;
+  transitions: number;
+  rssMb: number;
+  rssDeltaMb: number;
+}
 
 export interface ScanResult {
   at: number;
@@ -23,6 +46,7 @@ export interface ScanResult {
   /** Providers that failed batch-wide, with the reason. */
   providerFailures: ProviderFailure[];
   top: TokenSnapshot[];
+  timings?: ScanTimings;
 }
 
 let scanning = false;
@@ -81,7 +105,13 @@ function diff(next: TokenSnapshot, previous: TokenSnapshot | null): MonitorEvent
     // An alert additionally requires enough evidence to stand behind: a score
     // assembled from a third of the inputs is not a finding worth waking on.
     const wellEvidenced = next.score.coverage >= config.minCoverageAlert;
-    if (score >= config.minScoreAlert && wellEvidenced && eligibility === 'QUALIFIED') {
+    if (eligibility === 'HIGH_POTENTIAL') {
+      events.push(
+        emit('discovered', next, 'medium', `New token ${next.symbol} assessed High potential: ${next.decision?.basis ?? ''}.`, {
+          rank: next.decision?.rankScore ?? null,
+        }),
+      );
+    } else if (score >= config.minScoreAlert && wellEvidenced && eligibility === 'QUALIFIED') {
       events.push(
         emit('discovered', next, 'medium', `New token ${next.symbol} scored ${score} (${next.score.grade}).`, {
           score,
@@ -146,16 +176,20 @@ function diff(next: TokenSnapshot, previous: TokenSnapshot | null): MonitorEvent
   const wasState = previous.evaluation?.state;
   const nowState = next.evaluation?.state;
   if (wasState !== undefined && nowState !== undefined && wasState !== nowState) {
+    // Only real verdict changes are announced, each with what decided it.
     const rejected = nowState === 'REJECTED';
+    const risky = nowState === 'HIGH_RISK';
+    const up = (TIER[nowState] ?? 9) < (TIER[wasState] ?? 9);
+    const why = rejected
+      ? next.evaluation?.vetoes[0]?.reason ?? 'failed the safety gate'
+      : next.decision?.basis ?? '';
     events.push(
       emit(
-        rejected ? 'risk_flag' : 'score_down',
+        rejected || risky ? 'risk_flag' : up ? 'score_up' : 'score_down',
         next,
-        rejected ? 'critical' : 'info',
-        `${next.symbol} moved ${wasState} -> ${nowState}${
-          rejected ? `: ${next.evaluation?.vetoes[0]?.reason ?? 'failed the safety gate'}` : ''
-        }.`,
-        { from: wasState, to: nowState },
+        rejected ? 'critical' : risky ? 'high' : nowState === 'HIGH_POTENTIAL' ? 'medium' : 'info',
+        `${next.symbol} moved ${wasState} -> ${nowState}${why ? `: ${why}` : ''}.`,
+        { from: wasState, to: nowState, policy: next.decision?.policyVersion ?? null },
       ),
     );
   }
@@ -188,6 +222,7 @@ export async function runScan(): Promise<ScanResult> {
     bus.emit('scan-stage', { ...payload, at: Date.now() });
   };
   let completed = false;
+  const rssBefore = process.memoryUsage().rss;
   try {
     stage({ stage: 'discover' });
     // Launches the data backbone read from the chain join the feeds. Reading
@@ -210,6 +245,7 @@ export async function runScan(): Promise<ScanResult> {
       log.warn(`discovery provenance not recorded: ${error instanceof Error ? error.message : String(error)}`);
     }
     stage({ stage: 'discovered', count: candidates.length });
+    const discoverMs = Date.now() - started;
 
     // Prior lifecycle state per mint, so a token moves QUALIFIED -> SCANNING ->
     // whatever the fresh evidence says, rather than being reborn each scan.
@@ -221,8 +257,16 @@ export async function runScan(): Promise<ScanResult> {
 
     let evaluated = 0;
     let deep = 0;
+    // The decision stage reads stored deep intelligence and market history;
+    // it never calls a provider, so it cannot turn a scan into a deep cycle.
+    const decider = makeDecider(store.decisionSources(), {
+      minCoverageQualify: config.minCoverageQualify,
+      minCoverageWatch: config.minCoverageWatch,
+    });
+    const analyzeStarted = Date.now();
     const analysis = await analyze(candidates, {
       priorStates,
+      decide: decider,
       onStage: (name, count) => {
         if (name === 'market') stage({ stage: 'market', count });
         else if (name === 'safety') {
@@ -235,6 +279,7 @@ export async function runScan(): Promise<ScanResult> {
       },
     });
     const { snapshots } = analysis;
+    const analyzeMs = Date.now() - analyzeStarted;
 
     // Failures are reported, never fatal: one token or one provider going down
     // must not end the scan or discard what the others returned.
@@ -247,6 +292,9 @@ export async function runScan(): Promise<ScanResult> {
 
     const events: MonitorEvent[] = [];
     let fresh = 0;
+    let historyRows = 0;
+    let transitions = 0;
+    const persistStarted = Date.now();
 
     for (const snapshot of snapshots) {
       const previous = store.token(snapshot.mint);
@@ -254,11 +302,14 @@ export async function runScan(): Promise<ScanResult> {
       events.push(...diff(snapshot, previous));
       // The resolved evidence travels with the snapshot so persistence can
       // record why this verdict was reached, not just what it was.
-      store.upsert(snapshot, analysis.evidence.get(snapshot.mint) ?? null);
+      const written = store.upsert(snapshot, analysis.evidence.get(snapshot.mint) ?? null);
+      if (written.stored) historyRows += 1;
+      if (written.transition) transitions += 1;
     }
 
     store.finishScan(started, { analyzed: snapshots.length, fresh });
     store.save();
+    const rssAfter = process.memoryUsage().rss;
 
     const result: ScanResult = {
       at: started,
@@ -269,7 +320,20 @@ export async function runScan(): Promise<ScanResult> {
       events,
       tokenFailures: analysis.failures,
       providerFailures: analysis.providerFailures,
-      top: [...snapshots].sort((a, b) => b.score.total - a.score.total).slice(0, 10),
+      top: [...snapshots]
+        .sort((a, b) => (TIER[a.evaluation?.eligibility ?? ''] ?? 9) - (TIER[b.evaluation?.eligibility ?? ''] ?? 9) || rankKey(b) - rankKey(a))
+        .slice(0, 10),
+      timings: {
+        discoverMs,
+        analyzeMs,
+        decisionMs: Math.round(decider.stats.ms * 10) / 10,
+        decisions: decider.stats.decisions,
+        persistMs: Date.now() - persistStarted,
+        historyRows,
+        transitions,
+        rssMb: Math.round(rssAfter / 1_048_576),
+        rssDeltaMb: Math.round((rssAfter - rssBefore) / 1_048_576),
+      },
     };
 
     lastScan = result;

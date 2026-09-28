@@ -43,6 +43,7 @@ import { derivePoolActivity, type ActivityKind, type PoolActivity } from './acti
 import { parsePumpfunLaunch } from './launch.ts';
 import { mintEvents, onCurve, poolCreatedEvent, transferEdges } from './derive.ts';
 import { planDeepCollection, type DeepPlan } from './budget.ts';
+import type { SurvivorTier } from '../core/ranking.ts';
 
 export interface RpcPort {
   getSignatures(address: string, options: { limit: number; until?: string }): Promise<ProviderResult<SignatureInfo[]>>;
@@ -52,6 +53,10 @@ export interface RpcPort {
 export interface IngestSettings {
   tokensPerCycle: number;
   txPerToken: number;
+  /** Pools collected per survivor token (budget.ts). Defaults to 1. */
+  poolsPerToken?: number;
+  /** A secondary pool's minimum share of the token's 24 h volume. */
+  minPoolVolumeShare?: number;
   launchDiscovery: boolean;
   launchTxPerCycle: number;
   liveWindowMs: number;
@@ -92,7 +97,10 @@ export interface LaunchReport extends Collected {
 export interface PoolReport extends Collected {
   mint: string;
   pool: string;
-  tier: 'QUALIFIED' | 'WATCH';
+  tier: SurvivorTier;
+  dexId: string | null;
+  /** 0 for the token's primary pool. */
+  rank: number;
   firstCollection: boolean;
   byKind: Partial<Record<ActivityKind, number>>;
   edges: number;
@@ -323,6 +331,8 @@ export async function runIngestionCycle(deps: IngestDeps): Promise<CycleReport> 
       tokensPerCycle: deps.settings.tokensPerCycle,
       liveWindowMs: deps.settings.liveWindowMs,
       now: at,
+      poolsPerToken: deps.settings.poolsPerToken ?? 1,
+      minPoolVolumeShare: deps.settings.minPoolVolumeShare ?? 0.2,
     });
   } catch (error) {
     failures.push(classifyFailure('ingest', error));

@@ -24,17 +24,65 @@ import type {
 export type Tone = 'good' | 'warn' | 'bad' | 'neutral';
 
 export const VERDICT_LABEL: Record<Eligibility, string> = {
+  HIGH_POTENTIAL: 'High potential',
   QUALIFIED: 'Qualified',
   WATCH: 'Watch',
   INSUFFICIENT_DATA: 'Insufficient data',
+  HIGH_RISK: 'High risk',
   REJECTED: 'Rejected',
 };
 
 export const VERDICT_TONE: Record<Eligibility, Tone> = {
+  HIGH_POTENTIAL: 'good',
   QUALIFIED: 'good',
   WATCH: 'warn',
   INSUFFICIENT_DATA: 'neutral',
+  HIGH_RISK: 'bad',
   REJECTED: 'bad',
+};
+
+/** Hard-fail families as a person reads them. */
+export const FAMILY_LABEL: Record<string, string> = {
+  CONFIRMED_CURRENT_RUG: 'Confirmed rug',
+  CONFIRMED_MALICIOUS_TOKEN: 'Confirmed malicious token',
+  STRONG_SERIAL_RUGGER: 'Serial rugger network',
+  EXTREME_MARKET_MANIPULATION: 'Extreme market manipulation',
+  CRITICAL_TOKEN_AUTHORITY_RISK: 'Critical authority risk',
+  CRITICAL_LIQUIDITY_RISK: 'Critical liquidity risk',
+  CRITICAL_TRANSFER_RESTRICTION: 'Transfer restriction',
+  CRITICAL_HOLDER_CONCENTRATION: 'Critical holder concentration',
+  DATA_INTEGRITY: 'Data failed validation',
+};
+
+export const BAND_LABEL: Record<string, string> = {
+  CLEAR: 'Clear',
+  LOW: 'Low risk',
+  ELEVATED: 'Elevated',
+  HIGH: 'High risk',
+  SEVERE: 'Severe',
+  UNKNOWN: 'Unverified',
+};
+
+export const BAND_TONE: Record<string, Tone> = { CLEAR: 'good', LOW: 'good', ELEVATED: 'warn', HIGH: 'bad', SEVERE: 'bad', UNKNOWN: 'neutral' };
+
+export const MOMENTUM_LABEL: Record<string, string> = {
+  ACCELERATING: 'Accelerating',
+  SUSTAINED: 'Sustained',
+  NEUTRAL: 'Flat',
+  COOLING: 'Cooling',
+  DECLINING: 'Declining',
+  UNSTABLE: 'Unstable',
+  INSUFFICIENT_HISTORY: 'Thin history',
+};
+
+export const MOMENTUM_TONE: Record<string, Tone> = {
+  ACCELERATING: 'good',
+  SUSTAINED: 'good',
+  NEUTRAL: 'neutral',
+  COOLING: 'warn',
+  DECLINING: 'bad',
+  UNSTABLE: 'bad',
+  INSUFFICIENT_HISTORY: 'neutral',
 };
 
 /** Metric names as a person would say them. */
@@ -89,6 +137,10 @@ const VETO_LABEL: Record<VetoCode, string> = {
   DEFAULT_ACCOUNT_STATE_FROZEN: 'New holder accounts start frozen',
   NON_TRANSFERABLE: 'Token cannot be transferred',
   EXTREME_TRANSFER_FEE: 'Transfer fee of 50% or more',
+  CONFIRMED_CURRENT_RUG: 'Liquidity pulled by the creator',
+  CONFIRMED_MALICIOUS_TOKEN: 'Confirmed malicious action on this token',
+  STRONG_SERIAL_RUGGER: 'Creator tied to repeated confirmed rugs',
+  EXTREME_MARKET_MANIPULATION: 'Extreme wash trading',
 };
 
 export function vetoLabel(code: string): string {
@@ -238,11 +290,23 @@ export function verdictReason(token: TokenSnapshot, context: ReasonContext): { t
   const counts = signalCounts(token);
   const coveragePct = Math.round(evaluation.coverage.coverage * 100);
 
+  const decision = token.decision ?? null;
+  const firstOf = (kind: string): string | null => decision?.reasons.find((r) => r.kind === kind)?.text ?? null;
+  const sentence = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+
   switch (evaluation.eligibility) {
     case 'REJECTED': {
       const [first, ...rest] = evaluation.vetoes;
       const label = first ? vetoLabelFor(first) : 'Failed the safety gate';
       return { text: rest.length ? `${label} · +${rest.length} more` : label, tone: 'bad' };
+    }
+    case 'HIGH_RISK': {
+      const risk = firstOf('risk');
+      return { text: risk ? sentence(risk) : 'Serious integrity risk', tone: 'bad' };
+    }
+    case 'HIGH_POTENTIAL': {
+      const positives = (decision?.reasons ?? []).filter((r) => r.kind === 'positive').slice(0, 2).map((r) => r.text.split(':')[0]!.split(' (')[0]!);
+      return { text: positives.length ? sentence(positives.join(' · ')) : 'Safe, well covered, strong and moving', tone: 'good' };
     }
     case 'INSUFFICIENT_DATA':
       return {
@@ -258,7 +322,10 @@ export function verdictReason(token: TokenSnapshot, context: ReasonContext): { t
       break;
   }
 
-  // Qualified: surface the most useful caveat.
+  // Qualified: surface the most useful caveat - the decision's strongest soft
+  // risk when it has one, else the strongest scoring flag.
+  const topRisk = firstOf('risk');
+  if (topRisk) return { text: sentence(topRisk), tone: 'warn' };
   const flags = [...token.score.flags]
     .filter((flag) => flag.level !== 'info' && flag.level !== 'low')
     .sort((a, b) => (FLAG_RANK[a.level] ?? 9) - (FLAG_RANK[b.level] ?? 9));
@@ -296,10 +363,13 @@ export function changeReason(change: {
   to: string | null;
   vetoCodes: string[];
   coverage: number | null;
+  basis?: string | null;
 }): string {
   const to = change.to as Eligibility | null;
+  const basis = change.basis ? change.basis.charAt(0).toUpperCase() + change.basis.slice(1) : null;
   if (change.from === null) {
     if (to === 'REJECTED' && change.vetoCodes.length) return vetoLabel(change.vetoCodes[0]!);
+    if (to === 'HIGH_POTENTIAL' || to === 'HIGH_RISK') return basis ?? 'First assessment';
     return 'First assessment';
   }
   if (to === 'REJECTED') {
@@ -307,6 +377,10 @@ export function changeReason(change: {
     if (!first) return 'Failed the safety gate';
     return rest.length ? `${vetoLabel(first)} · +${rest.length} more` : vetoLabel(first);
   }
+  // Decided by the decision engine: its own ladder step says why.
+  if (basis) return basis;
+  if (to === 'HIGH_RISK') return 'Serious integrity risk';
+  if (to === 'HIGH_POTENTIAL') return 'Strong opportunity with safety intact';
   if (change.from === 'REJECTED') return 'Vetoes no longer apply';
   if (change.coverage !== null) {
     const pct = Math.round(change.coverage * 100);

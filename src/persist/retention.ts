@@ -205,6 +205,11 @@ export function applyRetention(
       intel('launch_attributions', 'DELETE FROM launch_attributions WHERE attributed_at < ?', tokenCutoff);
       intel('creator_profiles', 'DELETE FROM creator_profiles WHERE updated_at < ?', tokenCutoff);
       intel('security_events', "DELETE FROM security_events WHERE detected_at < ? AND status <> 'CONFIRMED'", tokenCutoff);
+      // Earlier readings of an event, kept as long as a token is: the audit
+      // trail of how a finding was reinterpreted. Verdict transitions are not
+      // swept at all - like snapshot transitions, they leave only with their
+      // token, by cascade.
+      intel('security_event_revisions', 'DELETE FROM security_event_revisions WHERE revised_at < ?', tokenCutoff);
 
       // Tokens last. ON DELETE CASCADE removes whatever history remains, so a
       // token is only dropped after being cold for `tokenDays` - twice the

@@ -58,9 +58,11 @@ import {
   type ProviderFailureSummary,
   type SnapshotPolicy,
   type StoredEvidence,
+  type StoredTransition,
   type VerdictChange,
   type VerdictPoint,
 } from '../persist/repository.ts';
+import type { DecisionSources } from '../decision/inputs.ts';
 import { ChainRepository } from '../persist/chain-repository.ts';
 import { IntelRepository } from '../persist/intel-repository.ts';
 import { importLegacyState } from '../persist/legacy-import.ts';
@@ -200,20 +202,21 @@ export const store = {
    * `TokenEvidence` it is recorded alongside the snapshot, so a stored verdict
    * can later be explained by metric, provider, freshness and state.
    */
-  upsert(snapshot: TokenSnapshot, evidence?: TokenEvidence | null): void {
+  upsert(snapshot: TokenSnapshot, evidence?: TokenEvidence | null): { stored: boolean; transition: boolean } {
     runtime.tokens.set(snapshot.mint, snapshot);
 
     const repo = runtime.repo;
-    if (repo === null) return;
+    if (repo === null) return { stored: false, transition: false };
 
     const result = repo.saveTokenSnapshot(snapshot, { scanId: runtime.scanId });
     if (result.failure !== null) {
       noteFailure(result.failure);
-      return;
+      return { stored: false, transition: false };
     }
     if (result.snapshotId !== null && evidence != null) {
       repo.saveEvidence(result.snapshotId, snapshot.mint, snapshot.at, evidence);
     }
+    return { stored: result.snapshotId !== null, transition: result.snapshotId !== null && result.decision.isTransition };
   },
 
   addEvent(event: Omit<MonitorEvent, 'id' | 'at'> & { at?: number }): MonitorEvent {
@@ -318,6 +321,22 @@ export const store = {
   /** Deep-intelligence storage, or null when persistence is unavailable. */
   intel(): IntelRepository | null {
     return runtime.intel;
+  },
+
+  /**
+   * What the decision stage reads: stored intelligence and history. Degrades
+   * to nothing-known when persistence is unavailable, never to "all clear".
+   */
+  decisionSources(): DecisionSources {
+    return {
+      intel: runtime.intel,
+      marketHistory: (mint, since) => runtime.repo?.marketHistory(mint, { since, limit: 400 }) ?? [],
+      holderHistory: (mint, since) => runtime.repo?.holderHistory(mint, { since, limit: 400 }) ?? [],
+    };
+  },
+
+  verdictTransitions(options: { mint?: string; limit?: number } = {}): StoredTransition[] {
+    return runtime.repo?.verdictTransitions(options) ?? [];
   },
 
   /** True when history reads and writes are working. */

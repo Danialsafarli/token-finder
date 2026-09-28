@@ -150,11 +150,17 @@ describe('live ranking universe', () => {
     assert.equal(counts.byEligibility.REJECTED, 1);
     assert.equal(liveTokens(tokens, NOW).length, counts.live);
 
-    const board = boardResponse(tokens, parseBoardQuery(new URLSearchParams()), context(), KEYLESS_CAPS, FRESH_WITHIN_MS);
+    const board = boardResponse(tokens, parseBoardQuery(new URLSearchParams('segment=all')), context(), KEYLESS_CAPS, FRESH_WITHIN_MS);
     assert.equal(board.total, counts.live);
     assert.equal(board.counts.all, counts.live);
     assert.deepEqual(board.universe, { live: 2, stale: 1, unevaluated: 2, total: 5 });
     assert.deepEqual(board.rows.map((row) => row.mint).sort(), ['Q1', 'Q2']);
+
+    // The default segment is the candidate ranking: a rejected token is not in it.
+    const candidates = boardResponse(tokens, parseBoardQuery(new URLSearchParams()), context(), KEYLESS_CAPS, FRESH_WITHIN_MS);
+    assert.equal(candidates.query.segment, 'candidates');
+    assert.deepEqual(candidates.rows.map((row) => row.mint), ['Q1']);
+    assert.equal(candidates.counts.candidates, 1);
   });
 
   test('a rejected segment returns only rejected tokens - unevaluated ones no longer leak in', () => {
@@ -532,9 +538,9 @@ describe('Observatory selection (/api/orb)', () => {
     const response = orbResponse(tokens, [], context(), scan);
     const tops = response.tokens.filter((t) => t.role === 'top');
     assert.deepEqual(tops.map((t) => t.score), [95, 90, 85, 80]);
-    assert.equal(tops[0]!.why, 'Highest score of 4 qualified');
-    assert.equal(tops[1]!.why, '2nd-highest score of 4 qualified');
-    assert.equal(tops[3]!.why, '4th-highest score of 4 qualified');
+    assert.equal(tops[0]!.why, 'Highest rank of 4 candidates');
+    assert.equal(tops[1]!.why, '2nd-highest rank of 4 candidates');
+    assert.equal(tops[3]!.why, '4th-highest rank of 4 candidates');
   });
 
   test('roles interleave, so a phone showing three still sees different kinds of fact', () => {

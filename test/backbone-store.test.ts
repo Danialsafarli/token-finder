@@ -50,7 +50,7 @@ describe('migration 2', () => {
   test('a fresh database reaches the target version with every backbone table', () => {
     const h = harness();
     assert.equal(currentSchemaVersion(h.db), TARGET_SCHEMA_VERSION);
-    assert.equal(TARGET_SCHEMA_VERSION, 3);
+    assert.equal(TARGET_SCHEMA_VERSION, 4);
     for (const table of ['token_discoveries', 'token_launches', 'chain_transactions', 'pool_activity', 'transfer_edges', 'wallets', 'wallet_token_activity', 'chain_events', 'ingest_cursors', 'ingest_gaps']) {
       assert.equal(count(h, table), 0, table);
     }
@@ -70,7 +70,7 @@ describe('migration 2', () => {
     opened.db.exec('COMMIT');
     new Repository(opened.db).saveTokenSnapshot(snapshot({ mint: META.mint }), { scanId: null });
     const before = (opened.db.prepare('SELECT COUNT(*) AS c FROM token_snapshots').get() as { c: number }).c;
-    assert.deepEqual(migrate(opened.db), [2, 3]);
+    assert.deepEqual(migrate(opened.db), [2, 3, 4]);
     assert.deepEqual(migrate(opened.db), [], 'idempotent');
     assert.equal((opened.db.prepare('SELECT COUNT(*) AS c FROM token_snapshots').get() as { c: number }).c, before);
     assert.equal(currentSchemaVersion(opened.db), TARGET_SCHEMA_VERSION);

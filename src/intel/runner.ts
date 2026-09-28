@@ -60,6 +60,12 @@ import { activityQuality, type ActivityQuality } from './activity-quality.ts';
 import { attributeCreation, unknownAttribution, type Attribution } from './attribution.ts';
 import { detectSecurityEvents, type SecurityEvent, type SecurityInput } from './security.ts';
 import { analyzeNetwork, buildCreatorProfile, type CreatorProfile, type NetworkAnalysis, type PathEdge } from './creator.ts';
+import { dominantQuote, marketCoverage } from './coverage.ts';
+import { currentRuleVersions, RULE_VERSIONS } from '../decision/versions.ts';
+import { isSurvivor, SURVIVOR_ORDER, type SurvivorTier } from '../core/ranking.ts';
+import type { PoolRef } from '../types.ts';
+
+export type { SurvivorTier };
 
 // --- ports -----------------------------------------------------------------------
 
@@ -148,7 +154,7 @@ export class IntelBudget {
 
 export interface IntelWork {
   mint: string;
-  tier: 'QUALIFIED' | 'WATCH';
+  tier: SurvivorTier;
 }
 
 export interface IntelPlan {
@@ -166,7 +172,7 @@ export function planIntel(
   const candidates: (IntelWork & { last: number; liquidity: number })[] = [];
   for (const token of tokens) {
     const eligibility = token.evaluation?.eligibility;
-    if (eligibility !== 'QUALIFIED' && eligibility !== 'WATCH') {
+    if (!isSurvivor(eligibility)) {
       skipped.notSurvivor += 1;
       continue;
     }
@@ -182,7 +188,7 @@ export function planIntel(
     candidates.push({ mint: token.mint, tier: eligibility, last: last ?? -1, liquidity: token.liquidityUsd ?? 0 });
   }
   candidates.sort((a, b) => {
-    if (a.tier !== b.tier) return a.tier === 'QUALIFIED' ? -1 : 1;
+    if (a.tier !== b.tier) return SURVIVOR_ORDER[a.tier] - SURVIVOR_ORDER[b.tier];
     if (a.last !== b.last) return a.last - b.last;
     return b.liquidity - a.liquidity;
   });
@@ -210,7 +216,12 @@ export interface WalletSummary {
 
 export interface TokenReport {
   mint: string;
-  tier: 'QUALIFIED' | 'WATCH';
+  tier: SurvivorTier;
+  /** Pools whose trades fed this analysis, of those known. */
+  pools: { observed: number; known: number; representativeness: number };
+  /** Findings from obsolete rules re-read under the current rule, and ones it no longer supports. */
+  reinterpreted: number;
+  superseded: number;
   stages: Record<'transactions' | 'wallets' | 'graph' | 'creator', 'DONE' | 'PARTIAL' | 'SKIPPED' | 'FAILED'>;
   wallets: { selected: number; analyzed: number; reused: number; failed: number; notRead: number };
   funders: { probed: number; cached: number; hops: number };
@@ -306,6 +317,9 @@ export async function analyzeToken(
   const report: TokenReport = {
     mint,
     tier: work.tier,
+    pools: { observed: 0, known: 0, representativeness: 0 },
+    reinterpreted: 0,
+    superseded: 0,
     stages: { transactions: 'SKIPPED', wallets: 'SKIPPED', graph: 'SKIPPED', creator: 'SKIPPED' },
     wallets: { selected: 0, analyzed: 0, reused: 0, failed: 0, notRead: 0 },
     funders: { probed: 0, cached: 0, hops: 0 },
@@ -328,9 +342,26 @@ export async function analyzeToken(
 
   // === stage 2: transaction collection =====================================================
   const launchRow = chain.launch(mint);
-  // Trades are read on the live market pool, as collection reads them; a
-  // launch's curve is only a fallback, since most tokens migrate off it.
-  const pool = deps.tokens().find((t) => t.mint === mint)?.pair?.pairAddress || launchRow?.pool || null;
+  const token = deps.tokens().find((t) => t.mint === mint) ?? null;
+  // Every pool a market provider reported, deduplicated, plus the launch's
+  // curve. The mint's own history already contains trades on all of them, so
+  // reading more than the display pair costs no extra request.
+  const poolRefs: PoolRef[] = [...(token?.pools ?? [])];
+  if (token?.pair?.pairAddress && !poolRefs.some((p) => p.address === token.pair!.pairAddress)) {
+    const p = token.pair;
+    const sum = (f: { buys: number | null; sells: number | null }): number | null => (f.buys !== null && f.sells !== null ? f.buys + f.sells : null);
+    poolRefs.push({ address: p.pairAddress, dexId: p.dexId, quoteSymbol: p.quoteSymbol, liquidityUsd: p.liquidityUsd, volume24h: p.volume.h24, txnsH1: sum(p.txns.h1), txns24h: sum(p.txns.h24) });
+  }
+  if (launchRow?.pool && !poolRefs.some((p) => p.address === launchRow.pool)) {
+    poolRefs.push({ address: launchRow.pool, dexId: launchRow.venue, quoteSymbol: 'SOL', liquidityUsd: null, volume24h: null, txnsH1: null, txns24h: null });
+  }
+  const knownPools = poolRefs.map((p) => p.address);
+  // Trades are read on the live market pool first, as collection reads them;
+  // a launch's curve is only a fallback, since most tokens migrate off it.
+  const pool = token?.pair?.pairAddress || launchRow?.pool || knownPools[0] || null;
+  // Findings recorded under an older rule are re-checked against their own
+  // transactions, so the current rule decides whether they still stand.
+  const stale = intel.storedEventsOf([mint]).filter((e) => e.ruleVersion !== RULE_VERSIONS.security && e.supersededAt === null);
   let creation: NormalizedTransaction | null = null;
   let mintTxs: NormalizedTransaction[] = [];
   let mintHistoryComplete: 'COMPLETE' | 'PARTIAL' | 'NONE' = 'NONE';
@@ -362,11 +393,15 @@ export async function analyzeToken(
       // them: a deeper sample for wash and activity at no extra cost. The
       // rest (escrows, routers, transfers) never touched the pool, and
       // reading them as pool activity would invent liquidity events.
-      if (pool !== null) {
+      if (knownPools.length > 0) {
         const known = chain.knownSignatures(recent.map((t) => t.signature));
         for (const tx of recent) {
-          if (known.has(tx.signature) || !tx.accountKeys.includes(pool)) continue;
-          ingestPoolTransaction(chain, tx, { mint, pool, txIndex: null, source: deps.source, commitment: deps.commitment ?? 'finalized', at });
+          if (known.has(tx.signature)) continue;
+          // Attributed to the one known pool it loads; a route through two
+          // is not a trade on either and is left alone.
+          const touched = knownPools.filter((p) => tx.accountKeys.includes(p));
+          if (touched.length !== 1) continue;
+          ingestPoolTransaction(chain, tx, { mint, pool: touched[0] as string, txIndex: null, source: deps.source, commitment: deps.commitment ?? 'finalized', at });
         }
       }
       mintHistoryComplete = r.data.complete ? 'COMPLETE' : 'PARTIAL';
@@ -374,10 +409,26 @@ export async function analyzeToken(
     } else transactionsStage = 'PARTIAL';
   } else transactionsStage = 'PARTIAL';
   if (creation) mintTxs.push(creation);
+  // Re-verification: the proof of each obsolete-rule finding. Pool readings
+  // are already stored; a mint-history transaction is fetched if not in hand.
+  const inHand = new Set(mintTxs.map((t) => t.signature));
+  for (const e of stale.slice(0, 5)) {
+    if (inHand.has(e.signature) || e.type === 'LIQUIDITY_DRAIN' || e.type === 'CREATOR_DUMP') continue;
+    if (!budget.take(`re-verification of ${e.type.toLowerCase()}`)) break;
+    const r = await deps.history.transaction(e.signature);
+    fail(r.failure);
+    const tx = r.data === null ? null : normalizeTransaction(r.data);
+    if (tx) {
+      mintTxs.push(tx);
+      inHand.add(tx.signature);
+    }
+  }
   mintTxs = [...new Map(mintTxs.map((t) => [t.signature, t])).values()];
   report.stages.transactions = transactionsStage;
-  const activity: ActivityRow[] = chain.activityOf(mint, 1000);
-  if (activity.length === 1000) truncation.push('POOL_ACTIVITY: newest 1000 pool readings used');
+  const recentActivity: ActivityRow[] = chain.activityOf(mint, 1000);
+  if (recentActivity.length === 1000) truncation.push('POOL_ACTIVITY: newest 1000 pool readings used');
+  const reread = chain.activityForSignatures(mint, stale.map((e) => e.signature));
+  const activity: ActivityRow[] = [...new Map([...recentActivity, ...reread].map((a) => [`${a.signature}|${a.pool}`, a])).values()];
   if (pool === null) truncation.push('POOL_UNKNOWN: no pool is known for this token, so its trades could not be read from the mint history');
 
   let attribution: Attribution = creation
@@ -656,7 +707,20 @@ export async function analyzeToken(
     if (inToken.length >= 2) for (const m of inToken) clustered.add(m);
   }
   const relatedPairs = new Set(pairs.filter((p) => p.level === 'STRONG_CANDIDATE' || p.level === 'CONFIRMED_RELATIONSHIP').map((p) => pairId(p.a, p.b)));
-  const washTrades: WashTrade[] = swaps.map((a) => ({
+  // Only compatible data is summed: lamports and USDC base units are not the
+  // same money. Volume-based readings use the quote most trades were priced
+  // in; trades in another quote still count as trades and wallets.
+  const volumeQuote = dominantQuote(swaps);
+  const compatible = swaps.filter((a) => volumeQuote === null || a.quoteMint === volumeQuote);
+  const market = marketCoverage(
+    swaps.map((a) => ({ pool: a.pool, blockTime: a.blockTime, quoteMint: a.quoteMint })),
+    poolRefs,
+    volumeQuote,
+    at,
+  );
+  report.pools = { observed: market.observedPools, known: market.knownPools, representativeness: market.representativeness };
+  if (market.knownPools > market.observedPools) truncation.push(`POOL_COVERAGE: trades read on ${market.observedPools} of ${market.knownPools} known pool(s)`);
+  const washTrades: WashTrade[] = compatible.map((a) => ({
     signature: a.signature,
     trader: a.trader,
     direction: a.direction === 'SELL' ? 'SELL' : 'BUY',
@@ -671,7 +735,14 @@ export async function analyzeToken(
   const traders = [...tokenTraders];
   const classes = new Map<string, BuyerClass>();
   for (const [w, p] of intel.profiles(traders)) classes.set(w, p.classification);
-  const quality = activityQuality({ trades: swaps.map((a) => ({ trader: a.trader, quoteAmount: toBig(a.quoteAmount) })), classes, clustered });
+  const quality = {
+    ...activityQuality({
+      trades: swaps.map((a) => ({ trader: a.trader, quoteAmount: volumeQuote === null || a.quoteMint === volumeQuote ? toBig(a.quoteAmount) : null })),
+      classes,
+      clustered,
+    }),
+    market,
+  };
   report.activity = quality.status;
 
   // === stage 5: security events, creator history, serial networks ==================================
@@ -733,14 +804,21 @@ export async function analyzeToken(
   const inferred = activity.filter((a) => a.kind === 'LIQUIDITY_REMOVED' && a.confidence < DIRECT_READING).length;
   if (inferred > 0) truncation.push(`LIQUIDITY_INFERRED: ${inferred} liquidity removal(s) rest on an inferred pool side and were not used as security evidence`);
   const events: SecurityEvent[] = detectSecurityEvents(security);
-  intel.saveSecurityEvents(events, at);
+  // Stamped with the current rule; older-rule findings the current rule no
+  // longer makes are superseded, not deleted (intel-repository.ts).
+  const saved = intel.saveSecurityEvents(events, at, { mint, ruleVersion: RULE_VERSIONS.security, sweep: true });
   report.securityEvents = events.length;
+  report.reinterpreted = saved.reinterpreted;
+  report.superseded = saved.superseded;
 
   const subjects = attribution.creator ? [attribution.creator] : attribution.status === 'AMBIGUOUS' ? attribution.deployers : [];
   const freshProfiles = new Map<string, CreatorProfile>();
+  // Histories count current-rule, unsuperseded events only: an event an old
+  // rule got wrong must not make anyone a serial rugger.
+  const activeEvents = (mints: string[]) => intel.activeEventsOf(mints, RULE_VERSIONS.security);
   for (const subject of subjects) {
     const launches = intel.launchesOf(subject);
-    const recorded = intel.eventsOf(launches.map((l) => l.mint));
+    const recorded = activeEvents(launches.map((l) => l.mint));
     const profile = buildCreatorProfile(
       subject,
       launches,
@@ -752,7 +830,18 @@ export async function analyzeToken(
     freshProfiles.set(subject, profile);
   }
   const pathEdges = networkEdges(intel, subjects, settings.graphDepth);
-  const profiles = new Map([...intel.creatorsWithHistory(), ...freshProfiles]);
+  // Stored profiles were counted when they were written, possibly under an
+  // older rule; each is re-counted from current events before it can matter.
+  const recounted = new Map<string, CreatorProfile>();
+  for (const [address, stored] of intel.creatorsWithHistory()) {
+    const launches = intel.launchesOf(address);
+    const recorded = activeEvents(launches.map((l) => l.mint));
+    const profile = buildCreatorProfile(address, launches, recorded.map((e) => ({ mint: e.mint, type: e.type, status: e.status, signature: e.signature })));
+    recounted.set(address, profile);
+    // A profile an obsolete rule made malicious is corrected where it is stored.
+    if (profile.status !== stored.status) intel.saveCreatorProfile(profile, at);
+  }
+  const profiles = new Map([...recounted, ...freshProfiles]);
   const network = analyzeNetwork(subjects, pathEdges, profiles, settings.graphDepth);
   report.network = network.level;
   report.stages.creator = subjects.length === 0 ? 'SKIPPED' : 'DONE';
@@ -798,10 +887,14 @@ export async function analyzeToken(
       clusters: clusterSummary,
       weakPairs: weak.length,
       stages: report.stages,
+      mintHistory: mintHistoryComplete,
+      superseded: saved.superseded,
+      reinterpreted: saved.reinterpreted,
     },
     wallets: walletSummaries,
     coverage: report.coverage,
     truncation,
+    ruleVersions: currentRuleVersions(),
   });
   return report;
 }
@@ -883,6 +976,9 @@ export async function runIntelCycle(deps: IntelDeps): Promise<IntelCycleReport> 
       report.tokens.push({
         mint: work.mint,
         tier: work.tier,
+        pools: { observed: 0, known: 0, representativeness: 0 },
+        reinterpreted: 0,
+        superseded: 0,
         stages: { transactions: 'FAILED', wallets: 'FAILED', graph: 'FAILED', creator: 'FAILED' },
         wallets: { selected: 0, analyzed: 0, reused: 0, failed: 0, notRead: 0 },
         funders: { probed: 0, cached: 0, hops: 0 },

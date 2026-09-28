@@ -18,6 +18,19 @@ import type { Attribution } from '../intel/attribution.ts';
 import type { SecurityEvent } from '../intel/security.ts';
 import type { CreatorProfile } from '../intel/creator.ts';
 
+/** The security_events columns the versioned write reads back. */
+interface EventRow {
+  id: string;
+  mint: string;
+  type: string;
+  status: string;
+  rule_version: string | null;
+  reasons: string;
+  confidence: number;
+  detected_at: number;
+  superseded_at: number | null;
+}
+
 const json = (value: unknown): string => JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
 const parse = <T>(text: unknown, fallback: T): T => {
   if (typeof text !== 'string') return fallback;
@@ -57,6 +70,14 @@ export interface TokenIntelligenceRow {
   wallets: unknown;
   coverage: number;
   truncation: string[];
+  /** Rule version per domain the snapshot was produced under; null before Phase 3. */
+  ruleVersions?: Record<string, string> | null;
+}
+
+export interface StoredSecurityEvent extends SecurityEvent {
+  ruleVersion: string | null;
+  supersededAt: number | null;
+  supersededBy: string | null;
 }
 
 export interface IntelStats {
@@ -367,27 +388,77 @@ export class IntelRepository {
     return [...seen.entries()].map(([mint, blockTimeMs]) => ({ mint, blockTimeMs }));
   }
 
-  /** Upserts events; a status can only move towards CONFIRMED on re-detection. */
-  saveSecurityEvents(events: SecurityEvent[], at: number): void {
-    if (events.length === 0) return;
+  /**
+   * Records one analysis's security findings for a mint under `ruleVersion`.
+   *
+   * Three cases per event, and a sweep:
+   *
+   * - **Same rule, re-detected**: the status can only move towards CONFIRMED.
+   *   A later, more truncated read can miss a fact the earlier one proved, so
+   *   under an unchanged rule a finding never quietly weakens.
+   * - **Older rule (or none), re-detected**: the current rule's reading wins,
+   *   even when it is weaker - that is the point of versioning. The earlier
+   *   reading is copied to `security_event_revisions` first.
+   * - **New**: inserted with the current version.
+   * - **Sweep**: every event on this mint from an older rule that the current
+   *   rule did *not* re-detect is marked superseded. The row stays (and is
+   *   copied to the revisions table); it is simply no longer evidence.
+   *
+   * The sweep only runs when `sweep` is true: the caller asserts the
+   * detection ran over this mint's facts, not that it was skipped.
+   */
+  saveSecurityEvents(events: SecurityEvent[], at: number, options: { mint?: string; ruleVersion?: string; sweep?: boolean } = {}): { reinterpreted: number; superseded: number } {
+    const version = options.ruleVersion ?? null;
     const rank: Record<string, number> = { UNKNOWN: 0, SUSPICIOUS: 1, STRONGLY_SUSPECTED: 2, CONFIRMED: 3 };
+    const result = { reinterpreted: 0, superseded: 0 };
     transact(this.#db, () => {
-      const get = this.#db.prepare('SELECT status FROM security_events WHERE id = ?');
+      const get = this.#db.prepare('SELECT * FROM security_events WHERE id = ?');
       const put = this.#db.prepare(
         `INSERT OR REPLACE INTO security_events (
-           id, mint, type, status, actor, creator_linked, signature, slot, block_time, amount, reasons, evidence, confidence, detected_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           id, mint, type, status, actor, creator_linked, signature, slot, block_time, amount, reasons, evidence, confidence, detected_at,
+           rule_version, superseded_at, superseded_by
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)`,
       );
+      const archive = this.#db.prepare(
+        `INSERT INTO security_event_revisions (event_id, mint, type, status, rule_version, reasons, confidence, detected_at, revised_at, revised_by, change)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      );
+      const seen = new Set<string>();
       for (const e of events) {
-        const prior = get.get(e.id) as { status: string } | undefined;
-        if (prior && (rank[prior.status] ?? 0) > (rank[e.status] ?? 0)) continue;
-        put.run(e.id, e.mint, e.type, e.status, e.actor, e.creatorLinked ? 1 : 0, e.signature, e.slot, e.blockTimeMs, e.amount, json(e.reasons), json(e.evidence), e.confidence, at);
+        seen.add(e.id);
+        const prior = get.get(e.id) as EventRow | undefined;
+        const priorVersion = prior?.rule_version ?? null;
+        if (prior && priorVersion === version && prior.superseded_at == null) {
+          if ((rank[prior.status] ?? 0) > (rank[e.status] ?? 0)) continue;
+        } else if (prior) {
+          archive.run(prior.id, prior.mint, prior.type, prior.status, priorVersion, prior.reasons, prior.confidence, prior.detected_at, at, version ?? 'unversioned', 'REINTERPRETED');
+          result.reinterpreted += 1;
+        }
+        put.run(e.id, e.mint, e.type, e.status, e.actor, e.creatorLinked ? 1 : 0, e.signature, e.slot, e.blockTimeMs, e.amount, json(e.reasons), json(e.evidence), e.confidence, at, version);
+      }
+      if (options.sweep && options.mint !== undefined && version !== null) {
+        const stale = this.#db
+          .prepare('SELECT * FROM security_events WHERE mint = ? AND superseded_at IS NULL AND (rule_version IS NULL OR rule_version <> ?)')
+          .all(options.mint, version) as unknown as EventRow[];
+        const mark = this.#db.prepare('UPDATE security_events SET superseded_at = ?, superseded_by = ? WHERE id = ?');
+        for (const row of stale) {
+          if (seen.has(row.id)) continue;
+          archive.run(row.id, row.mint, row.type, row.status, row.rule_version, row.reasons, row.confidence, row.detected_at, at, version, 'SUPERSEDED');
+          mark.run(at, version, row.id);
+          result.superseded += 1;
+        }
       }
     });
+    return result;
   }
 
   eventsOf(mints: string[]): SecurityEvent[] {
-    const out: SecurityEvent[] = [];
+    return this.storedEventsOf(mints).map(({ ruleVersion: _v, supersededAt: _s, supersededBy: _b, ...event }) => event);
+  }
+
+  /** Every stored event for these mints, with its rule version and supersession. */
+  storedEventsOf(mints: string[]): StoredSecurityEvent[] {
+    const out: StoredSecurityEvent[] = [];
     const stmt = this.#db.prepare('SELECT * FROM security_events WHERE mint = ?');
     for (const m of new Set(mints)) {
       for (const r of stmt.all(m) as Record<string, unknown>[]) {
@@ -405,10 +476,33 @@ export class IntelRepository {
           reasons: parse(r.reasons, []),
           evidence: parse(r.evidence, []),
           confidence: Number(r.confidence),
+          ruleVersion: (r.rule_version as string | null) ?? null,
+          supersededAt: (r.superseded_at as number | null) ?? null,
+          supersededBy: (r.superseded_by as string | null) ?? null,
         });
       }
     }
     return out;
+  }
+
+  /** Events that are still evidence: detected under `ruleVersion` and not superseded. */
+  activeEventsOf(mints: string[], ruleVersion: string): SecurityEvent[] {
+    return this.storedEventsOf(mints)
+      .filter((e) => e.ruleVersion === ruleVersion && e.supersededAt === null)
+      .map(({ ruleVersion: _v, supersededAt: _s, supersededBy: _b, ...event }) => event);
+  }
+
+  /** The audit trail of how a mint's findings were reinterpreted, newest first. */
+  eventRevisionsOf(mint: string, limit = 50): { eventId: string; type: string; status: string; ruleVersion: string | null; revisedAt: number; revisedBy: string; change: string }[] {
+    return (this.#db.prepare('SELECT * FROM security_event_revisions WHERE mint = ? ORDER BY revised_at DESC LIMIT ?').all(mint, limit) as Record<string, unknown>[]).map((r) => ({
+      eventId: String(r.event_id),
+      type: String(r.type),
+      status: String(r.status),
+      ruleVersion: (r.rule_version as string | null) ?? null,
+      revisedAt: Number(r.revised_at),
+      revisedBy: String(r.revised_by),
+      change: String(r.change),
+    }));
   }
 
   saveCreatorProfile(p: CreatorProfile, at: number): void {
@@ -454,10 +548,10 @@ export class IntelRepository {
   saveTokenIntelligence(row: TokenIntelligenceRow): void {
     this.#db
       .prepare(
-        `INSERT INTO token_intelligence (mint, analyzed_at, activity, wash, attribution, network, wallets, coverage, truncation)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO token_intelligence (mint, analyzed_at, activity, wash, attribution, network, wallets, coverage, truncation, rule_versions)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(row.mint, row.analyzedAt, json(row.activity), json(row.wash), json(row.attribution), json(row.network), json(row.wallets), row.coverage, json(row.truncation));
+      .run(row.mint, row.analyzedAt, json(row.activity), json(row.wash), json(row.attribution), json(row.network), json(row.wallets), row.coverage, json(row.truncation), row.ruleVersions ? json(row.ruleVersions) : null);
   }
 
   latestTokenIntelligence(mint: string): TokenIntelligenceRow | null {
@@ -473,6 +567,7 @@ export class IntelRepository {
       wallets: parse(r.wallets, null),
       coverage: Number(r.coverage),
       truncation: parse(r.truncation, []),
+      ruleVersions: parse<Record<string, string> | null>(r.rule_versions, null),
     };
   }
 

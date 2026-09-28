@@ -5,7 +5,8 @@ import { discover } from './core/discover.ts';
 import { analyze } from './core/analyze.ts';
 import { runScan, startMonitor } from './core/monitor.ts';
 import { formatBytes, store } from './core/store.ts';
-import { countUniverse, liveTokens, VERDICT_TIER } from './core/ranking.ts';
+import { countUniverse, isSurvivor, liveTokens, rankKey, VERDICT_TIER } from './core/ranking.ts';
+import { makeDecider } from './decision/inputs.ts';
 import { serve } from './server/index.ts';
 import * as dexscreener from './sources/dexscreener.ts';
 import type { TokenSnapshot } from './types.ts';
@@ -46,8 +47,11 @@ function printTable(tokens: TokenSnapshot[]): void {
   const header = [
     pad('#', 3, true),
     pad('SYMBOL', 12),
+    pad('VERDICT', 14),
+    pad('RANK', 5, true),
+    pad('INTEGRITY', 9),
+    pad('MOMENTUM', 12),
     pad('SCORE', 6, true),
-    pad('GR', 3),
     pad('PRICE', 11, true),
     pad('1H', 8, true),
     pad('LIQ', 9, true),
@@ -69,8 +73,11 @@ function printTable(tokens: TokenSnapshot[]): void {
       [
         pad(String(index + 1), 3, true),
         pad(token.symbol, 12),
+        pad(token.evaluation?.eligibility ?? '-', 14),
+        pad(token.decision?.rankScore == null ? '-' : token.decision.rankScore.toFixed(0), 5, true),
+        pad(token.decision?.integrity.band ?? '-', 9),
+        pad(token.decision?.momentum.state ?? '-', 12),
         pad(token.score.total.toFixed(1), 6, true),
-        pad(token.score.grade, 3),
         pad(fmtUsd(token.priceUsd), 11, true),
         change === null
           ? log.paint('dim', pad('-', 8, true))
@@ -106,7 +113,23 @@ function printDetail(token: TokenSnapshot): void {
     `price ${fmtUsd(token.priceUsd)}  liq ${fmtUsd(token.liquidityUsd)}  vol24 ${fmtUsd(token.volume24h)}  mcap ${fmtUsd(token.marketCap)}  holders ${token.holders ?? '-'}  age ${fmtAge(token.ageHours)}`,
   );
 
-  console.log(`\n${log.paint('dim', 'breakdown')}`);
+  const d = token.decision;
+  if (d) {
+    console.log(`\n${log.paint('cyan', `verdict ${d.verdict}`)}  ${log.paint('dim', `${d.basis} · ${d.policyVersion}`)}`);
+    console.log(
+      `rank ${d.rankScore ?? '-'}  integrity ${d.integrity.score ?? '-'} (${d.integrity.band}, coverage ${Math.round(d.integrity.coverage * 100)}%)  opportunity ${d.opportunity.score} (${d.opportunity.band})  momentum ${d.momentum.state}  coverage ${Math.round(d.coverage.decision * 100)}% (market ${Math.round(d.coverage.market * 100)}%, intelligence ${Math.round(d.coverage.intelligence * 100)}%)`,
+    );
+    for (const reason of d.reasons) {
+      const mark = reason.kind === 'positive' ? '+' : reason.kind === 'risk' || reason.kind === 'hard_fail' ? '-' : reason.kind === 'blocker' ? '↑' : '·';
+      console.log(`  ${mark} ${reason.text}`);
+    }
+    console.log(`\n${log.paint('dim', 'intelligence')}`);
+    for (const domain of d.intelligence.domains) {
+      console.log(`  ${pad(domain.key, 13)} ${pad(domain.status, 17)} coverage ${pad(String(Math.round(domain.coverage * 100)), 3, true)}%  ${log.paint('dim', domain.note.slice(0, 90))}`);
+    }
+  }
+
+  console.log(`\n${log.paint('dim', 'breakdown (score@1)')}`);
   for (const component of token.score.components) {
     if (component.value === null) {
       // An unknown component gets no bar at all: an empty bar would read as a
@@ -164,7 +187,7 @@ function cmdRank(limit: number): void {
     .sort(
       (a, b) =>
         VERDICT_TIER[a.evaluation!.eligibility] - VERDICT_TIER[b.evaluation!.eligibility] ||
-        b.score.total - a.score.total,
+        rankKey(b) - rankKey(a),
     )
     .slice(0, limit);
 
@@ -198,7 +221,14 @@ async function cmdAnalyze(target: string): Promise<void> {
     log.info(`matched ${matches[0]!.symbol} (${mint})`);
   }
 
-  const result = await analyze([{ mint, sources: ['cli'] }], { includeAll: true, deepLimit: 1 });
+  const previous = store.token(mint)?.evaluation?.state;
+  const decide = makeDecider(store.decisionSources(), { minCoverageQualify: config.minCoverageQualify, minCoverageWatch: config.minCoverageWatch });
+  const result = await analyze([{ mint, sources: ['cli'] }], {
+    includeAll: true,
+    deepLimit: 1,
+    decide,
+    ...(previous ? { priorStates: new Map([[mint, previous]]) } : {}),
+  });
   const snapshot = result.snapshots[0];
 
   for (const failure of [...result.providerFailures, ...result.failures.map((f) => f.failure)]) {
@@ -323,7 +353,8 @@ async function cmdIntel(mint: string, run: boolean): Promise<void> {
     const deps = liveIntelDeps();
     const chain = store.chain();
     if (chain === null) return;
-    const tier = store.token(mint)?.evaluation?.eligibility === 'QUALIFIED' ? 'QUALIFIED' : 'WATCH';
+    const current = store.token(mint)?.evaluation?.eligibility;
+    const tier = isSurvivor(current) ? current : 'WATCH';
     const budget = new IntelBudget(deps.settings.requestsPerCycle, Date.now() + deps.settings.cycleMaxMs, Date.now);
     const failures: import('./util/failure.ts').ProviderFailure[] = [];
     const started = Date.now();

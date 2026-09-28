@@ -4,6 +4,7 @@ import type { FieldIssue } from './core/validate.ts';
 import type { Evidence, EvidenceState, TokenEvidence } from './core/evidence.ts';
 import type { ProviderFailure, ProviderFailureKind } from './util/failure.ts';
 import type { ExtensionPolicy, TokenProgram } from './core/token-program.ts';
+import type { Decision } from './decision/types.ts';
 
 export type { FieldIssue, Evidence, EvidenceState, TokenEvidence };
 export type { ProviderFailure, ProviderFailureKind };
@@ -304,7 +305,29 @@ export type VetoCode =
   | 'MINT_PAUSABLE'
   | 'DEFAULT_ACCOUNT_STATE_FROZEN'
   | 'NON_TRANSFERABLE'
-  | 'EXTREME_TRANSFER_FEE';
+  | 'EXTREME_TRANSFER_FEE'
+  // Hard Gate v2: deep-intelligence findings strong enough to reject. Each
+  // needs current-rule, sufficiently covered evidence; see decision/gate.ts.
+  | 'CONFIRMED_CURRENT_RUG'
+  | 'CONFIRMED_MALICIOUS_TOKEN'
+  | 'STRONG_SERIAL_RUGGER'
+  | 'EXTREME_MARKET_MANIPULATION';
+
+/**
+ * The family a hard fail belongs to. Several codes can describe one kind of
+ * danger (four different Token-2022 powers all restrict transfers), and the
+ * family is what a person reads first.
+ */
+export type HardFailFamily =
+  | 'CONFIRMED_CURRENT_RUG'
+  | 'CONFIRMED_MALICIOUS_TOKEN'
+  | 'STRONG_SERIAL_RUGGER'
+  | 'EXTREME_MARKET_MANIPULATION'
+  | 'CRITICAL_TOKEN_AUTHORITY_RISK'
+  | 'CRITICAL_LIQUIDITY_RISK'
+  | 'CRITICAL_TRANSFER_RESTRICTION'
+  | 'CRITICAL_HOLDER_CONCENTRATION'
+  | 'DATA_INTEGRITY';
 
 /**
  * What kind of claim a veto is making about time.
@@ -336,10 +359,36 @@ export interface Veto {
    * revoked later; a creator's history of rugs cannot be undone.
    */
   recheckable: boolean;
+  /**
+   * Hard Gate v2 detail. Optional so vetoes stored before Phase 3 still read;
+   * every veto the decision engine emits carries all of them.
+   */
+  family?: HardFailFamily;
+  /** 0-1: how strongly the evidence supports the condition. */
+  confidence?: number;
+  /** How current the triggering evidence is. */
+  freshness?: EvidenceFreshness;
+  /** The gate or detection rule version that produced this. */
+  ruleVersion?: string;
+  /** Transaction signatures or provider findings that prove it, at most six. */
+  evidence?: string[];
 }
 
-/** Where a token sits relative to the main ranking. */
-export type Eligibility = 'QUALIFIED' | 'WATCH' | 'INSUFFICIENT_DATA' | 'REJECTED';
+/**
+ * Where a token sits relative to the main ranking.
+ *
+ * Six resting verdicts since Phase 3. REJECTED always means a hard fail;
+ * HIGH_RISK means serious soft risk without one; HIGH_POTENTIAL is reachable
+ * only with safety survival, sufficient coverage, strong opportunity and real
+ * momentum. The exact ladder is in decision/engine.ts.
+ */
+export type Eligibility =
+  | 'HIGH_POTENTIAL'
+  | 'QUALIFIED'
+  | 'WATCH'
+  | 'INSUFFICIENT_DATA'
+  | 'HIGH_RISK'
+  | 'REJECTED';
 
 /** Deterministic token lifecycle. No trading states exist yet, by design. */
 export type TokenState =
@@ -348,6 +397,8 @@ export type TokenState =
   | 'INSUFFICIENT_DATA'
   | 'WATCH'
   | 'QUALIFIED'
+  | 'HIGH_POTENTIAL'
+  | 'HIGH_RISK'
   | 'REJECTED';
 
 /**
@@ -491,7 +542,33 @@ export interface TokenSnapshot {
    * rows (which carry the winning value but not every provider's claim).
    */
   ledger?: LedgerEntry[] | null;
+  /**
+   * Every pool a market provider reported for this token, deduplicated, with
+   * its venue and activity. Deep collection and activity coverage read it; the
+   * best pair above stays the display pair. Absent on older snapshots.
+   */
+  pools?: PoolRef[] | null;
+  /**
+   * The Decision Engine's verdict and everything behind it: hard fails,
+   * integrity, opportunity, momentum, reasons and versions. Absent on
+   * snapshots written before Phase 3.
+   */
+  decision?: Decision | null;
 }
+
+/** One trading venue for a token, as a market provider reported it. */
+export interface PoolRef {
+  address: string;
+  dexId: string;
+  quoteSymbol: string;
+  liquidityUsd: number | null;
+  volume24h: number | null;
+  /** Buys plus sells the provider reported, per frame; null when not reported. */
+  txnsH1: number | null;
+  txns24h: number | null;
+}
+
+export type { Decision };
 
 export type EventKind =
   | 'discovered'

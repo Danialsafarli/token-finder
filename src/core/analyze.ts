@@ -19,11 +19,13 @@ import {
 } from './lifecycle.ts';
 import { isUsable, type TokenEvidence } from './evidence.ts';
 import { ledgerFrom } from './ledger.ts';
+import { makeDecider, NO_SOURCES } from '../decision/inputs.ts';
 import type {
   Evaluation,
   JupiterInfo,
   OnChainInfo,
   PairMetrics,
+  PoolRef,
   RugcheckInfo,
   TokenCandidate,
   TokenSnapshot,
@@ -74,6 +76,33 @@ export interface AnalyzeOptions {
   deepLimit?: number;
   /** Prior lifecycle state per mint, so transitions are continuous across scans. */
   priorStates?: Map<string, TokenState>;
+  /**
+   * The decision stage, run on each screened snapshot. Defaults to a decider
+   * with no stored intelligence or history - the same ladder, with every deep
+   * domain UNAVAILABLE - so a caller without a database still gets an honest
+   * verdict rather than the fast screen's alone.
+   */
+  decide?: (snapshot: TokenSnapshot, previousState: TokenState | null) => TokenSnapshot;
+}
+
+/** Every pool the market providers reported, deduplicated by address. */
+function poolRefs(pairs: PairMetrics[]): PoolRef[] {
+  const seen = new Map<string, PoolRef>();
+  for (const pair of pairs) {
+    if (!pair.pairAddress || seen.has(pair.pairAddress)) continue;
+    const sum = (frame: { buys: number | null; sells: number | null } | undefined): number | null =>
+      frame && frame.buys !== null && frame.sells !== null ? frame.buys + frame.sells : null;
+    seen.set(pair.pairAddress, {
+      address: pair.pairAddress,
+      dexId: pair.dexId,
+      quoteSymbol: pair.quoteSymbol,
+      liquidityUsd: pair.liquidityUsd,
+      volume24h: pair.volume.h24,
+      txnsH1: sum(pair.txns.h1),
+      txns24h: sum(pair.txns.h24),
+    });
+  }
+  return [...seen.values()].sort((a, b) => (b.volume24h ?? -1) - (a.volume24h ?? -1));
 }
 
 /**
@@ -205,6 +234,8 @@ export async function analyze(
   // Screening runs only on this list - candidates that already cleared
   // discovery, liquidity and age.
   typesafe.resetScanBudget();
+
+  const decideToken = options.decide ?? makeDecider(NO_SOURCES, eligibilityConfig);
 
   /** Populated per token inside the pool below; see AnalyzeResult.evidence. */
   const evidenceByMint = new Map<string, TokenEvidence>();
@@ -345,7 +376,7 @@ export async function analyze(
       ? (evidence.buyPressure.value as number)
       : null;
 
-    return {
+    const screened: TokenSnapshot = {
       mint: candidate.mint,
       symbol: symbol ?? '?',
       name: name ?? '',
@@ -371,7 +402,14 @@ export async function analyze(
       // The receipt for this verdict: every metric's winning value, state,
       // source, age and the claims that lost. A projection, not a decision.
       ledger: ledgerFrom(evidence),
+      pools: poolRefs(pairs),
     };
+
+    // --- decision ------------------------------------------------------------
+    // The fast screen above is the gate's first word. The decision stage adds
+    // what deep intelligence and the token's own history say, and sets the
+    // final verdict. It reads only stored data, so it costs no provider call.
+    return decideToken(screened, previousState);
   });
 
   // A token that threw is reported, not fatal. The rest of the batch stands.

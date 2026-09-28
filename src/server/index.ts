@@ -44,6 +44,8 @@ import { liveIngestDeps } from '../ingest/wiring.ts';
 import { intelStatus, startIntel } from '../intel/runner.ts';
 import { liveIntelDeps } from '../intel/wiring.ts';
 import { largestAccountsGuardState } from '../sources/helius.ts';
+import { gatherIntelligence } from '../decision/inputs.ts';
+import { DECISION_POLICY_VERSION, MODEL_VERSIONS, RULE_VERSIONS } from '../decision/versions.ts';
 import { txCacheStats } from '../sources/solana-rpc.ts';
 import { rpcEndpoint, rpcThrottleCount } from '../sources/solana-rpc.ts';
 
@@ -318,8 +320,14 @@ function systemBody(now = Date.now()): unknown {
             fresh: scan.fresh,
             tokenFailures: scan.tokenFailures.length,
             providerFailures: scan.providerFailures.map((f) => ({ provider: f.provider, kind: f.kind, message: f.message.slice(0, 160) })),
+            timings: scan.timings ?? null,
           }
         : null,
+    },
+    decision: {
+      policyVersion: DECISION_POLICY_VERSION,
+      models: MODEL_VERSIONS,
+      rules: RULE_VERSIONS,
     },
     providers: store.providerFailureSummary(now - 60 * 60_000),
     ingestion: ingestionBody(now),
@@ -606,7 +614,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         );
       }
       const { context } = currentContext();
-      return sendJson(res, 200, dossier(token, token.ledger ? [] : store.latestEvidence(mint), context));
+      // Deep intelligence is read at request time, from stored rows only, so
+      // the Dossier shows the same normalised contract the engine decided on.
+      const now = Date.now();
+      const intel = store.intel();
+      const bundle = intel ? gatherIntelligence(store.decisionSources(), token, now) : null;
+      const revisions = intel?.eventRevisionsOf(mint) ?? [];
+      return sendJson(res, 200, dossier(token, token.ledger ? [] : store.latestEvidence(mint), context, bundle, revisions));
     }
 
     // Diagnostic JSON for one token's deep intelligence. Read-only; not a

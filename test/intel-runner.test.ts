@@ -351,9 +351,9 @@ describe('intelligence persistence', () => {
     ).run(tx.signature, POOL, MINT, tx.slot, 'SWAP', A, 1, 'test', 1);
     db.prepare(`INSERT INTO holder_snapshots (mint, observed_at, recorded_at, top_holders_pct, source) VALUES (?,?,?,?,?)`).run(MINT, 1, 1, 42.5, 'jupiter');
     db.exec('PRAGMA foreign_keys = ON');
-    assert.deepEqual(migrate(db), [3]);
+    assert.deepEqual(migrate(db), [3, 4]);
     assert.deepEqual(migrate(db), [], 'idempotent');
-    assert.equal(currentSchemaVersion(db), 3);
+    assert.equal(currentSchemaVersion(db), 4);
     assert.equal(count(db, 'SELECT COUNT(*) AS c FROM pool_activity'), 1);
     const holders = db.prepare('SELECT top_holders_pct, wallet_top10_pct, role_breakdown FROM holder_snapshots').get() as Record<string, unknown>;
     assert.equal(holders.top_holders_pct, 42.5, 'the raw figure is untouched');

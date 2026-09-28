@@ -180,18 +180,12 @@ export function evaluateEligibility(
   return 'QUALIFIED';
 }
 
-/** Eligibility maps one-to-one onto the resting states of the lifecycle. */
+/**
+ * Eligibility maps one-to-one onto the resting states of the lifecycle. The
+ * verdict is decided in decision/engine.ts; this only names the state.
+ */
 export function stateForEligibility(eligibility: Eligibility): TokenState {
-  switch (eligibility) {
-    case 'REJECTED':
-      return 'REJECTED';
-    case 'INSUFFICIENT_DATA':
-      return 'INSUFFICIENT_DATA';
-    case 'WATCH':
-      return 'WATCH';
-    default:
-      return 'QUALIFIED';
-  }
+  return eligibility;
 }
 
 /**
@@ -202,12 +196,15 @@ export function stateForEligibility(eligibility: Eligibility): TokenState {
  * veto that put it there was re-checkable and no longer fires. Nothing here is
  * irreversible: a permanent state would mean trusting one observation forever.
  */
+const RESTING: readonly TokenState[] = ['HIGH_POTENTIAL', 'QUALIFIED', 'WATCH', 'INSUFFICIENT_DATA', 'HIGH_RISK', 'REJECTED'];
 const TRANSITIONS: Record<TokenState, readonly TokenState[]> = {
   DISCOVERED: ['SCANNING'],
-  SCANNING: ['QUALIFIED', 'WATCH', 'INSUFFICIENT_DATA', 'REJECTED', 'SCANNING'],
+  SCANNING: [...RESTING, 'SCANNING'],
+  HIGH_POTENTIAL: ['SCANNING'],
   QUALIFIED: ['SCANNING'],
   WATCH: ['SCANNING'],
   INSUFFICIENT_DATA: ['SCANNING'],
+  HIGH_RISK: ['SCANNING'],
   REJECTED: ['SCANNING'],
 };
 
