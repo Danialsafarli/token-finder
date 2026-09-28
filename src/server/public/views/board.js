@@ -29,6 +29,7 @@ import {
   skeleton,
   timeAgo,
   tokenIcon,
+  toneChip,
   toneClass,
   verdictChip,
 } from '../ui/components.js';
@@ -36,10 +37,11 @@ import {
 /**
  * @typedef {{
  *   mint: string, symbol: string, name: string, icon: string | null, verified: boolean,
- *   verdict: string, reason: string, tone: string, score: number, coverage: number, confidence: number,
- *   measured: number | null, signals: number | null, liquidityUsd: number | null, volume24h: number | null,
- *   change1h: number | null, change24h: number | null, ageHours: number | null, lastSeenAt: number,
- *   freshness: 'FRESH' | 'AGING', program: string | null
+ *   verdict: string, reason: string, tone: string, score: number, coverage: number,
+ *   liquidityUsd: number | null, change1h: number | null, ageHours: number | null, lastSeenAt: number,
+ *   freshness: 'FRESH' | 'AGING', program: string | null, rank: number | null, rankCoverage: number,
+ *   integrity: { band: string, label: string, tone: string, coverage: number } | null,
+ *   momentum: { state: string, label: string, tone: string } | null
  * }} BoardRow
  * @typedef {{
  *   generatedAt: number, window: { liveMinutes: number, freshMinutes: number },
@@ -52,17 +54,25 @@ import {
  * }} BoardResponse
  */
 
+/**
+ * Candidates - High potential, Qualified and Watch - are the default view.
+ * High risk, insufficient data and rejected tokens keep their own segments so
+ * they never pollute the ranking a person scans.
+ */
 const SEGMENTS = [
-  { id: 'all', label: 'All live', countKey: 'all' },
+  { id: 'candidates', label: 'Candidates', countKey: 'candidates' },
+  { id: 'high-potential', label: 'High potential', countKey: 'HIGH_POTENTIAL' },
   { id: 'qualified', label: 'Qualified', countKey: 'QUALIFIED' },
   { id: 'watch', label: 'Watch', countKey: 'WATCH' },
+  { id: 'high-risk', label: 'High risk', countKey: 'HIGH_RISK' },
   { id: 'insufficient', label: 'Insufficient data', countKey: 'INSUFFICIENT_DATA' },
   { id: 'rejected', label: 'Rejected', countKey: 'REJECTED' },
+  { id: 'all', label: 'All live', countKey: 'all' },
 ];
 
 const SORTS = [
-  { id: 'verdict', label: 'Verdict' },
-  { id: 'score', label: 'Score' },
+  { id: 'verdict', label: 'Rank' },
+  { id: 'score', label: 'Rank, all verdicts' },
   { id: 'liquidity', label: 'Liquidity' },
   { id: 'momentum', label: '1h move' },
   { id: 'newest', label: 'Newest launch' },
@@ -72,7 +82,7 @@ const SORTS = [
 /** @param {string} segment @param {{ q: string, sort: string }} query */
 function segmentHref(segment, query) {
   const params = new URLSearchParams();
-  if (segment !== 'all') params.set('segment', segment);
+  if (segment !== 'candidates') params.set('segment', segment);
   if (query.sort && query.sort !== 'verdict') params.set('sort', query.sort);
   if (query.q) params.set('q', query.q);
   const search = params.toString();
@@ -80,9 +90,11 @@ function segmentHref(segment, query) {
 }
 
 const VERDICT_LABEL = /** @type {Record<string, string>} */ ({
+  HIGH_POTENTIAL: 'High potential',
   QUALIFIED: 'Qualified',
   WATCH: 'Watch',
   INSUFFICIENT_DATA: 'Insufficient data',
+  HIGH_RISK: 'High risk',
   REJECTED: 'Rejected',
 });
 
@@ -116,8 +128,12 @@ function groupRule(verdict, rules) {
   const q = Math.round(rules.minCoverageQualify * 100);
   const w = Math.round(rules.minCoverageWatch * 100);
   switch (verdict) {
+    case 'HIGH_POTENTIAL':
+      return 'Safety held · well covered · strong opportunity · real momentum';
     case 'QUALIFIED':
       return `No hard vetoes · at least ${q}% of evidence measured`;
+    case 'HIGH_RISK':
+      return 'No hard veto, but serious integrity risk on confident evidence';
     case 'WATCH':
       return `No hard vetoes · ${w}–${q}% of evidence measured`;
     case 'INSUFFICIENT_DATA':
@@ -134,6 +150,22 @@ function move(value) {
   if (value === null) return html`<span class="muted">—</span>`;
   const dir = value > 0 ? 'up' : value < 0 ? 'down' : 'flat';
   return html`<span class="move move--${dir}">${pct(value)}</span>`;
+}
+
+/**
+ * Integrity state for a row. Unverified when deep intelligence has not run:
+ * that is a gap, never a pass.
+ * @param {BoardRow} row
+ */
+function integrityCell(row) {
+  if (!row.integrity) return html`<span class="muted">—</span>`;
+  return toneChip(row.integrity.label, row.integrity.tone, `Integrity ${row.integrity.label.toLowerCase()} · ${Math.round(row.integrity.coverage * 100)}% of integrity evidence checked`);
+}
+
+/** Momentum state from observed history; the provider's 1h move where there is no decision. @param {BoardRow} row */
+function momentumCell(row) {
+  if (!row.momentum) return move(row.change1h);
+  return toneChip(row.momentum.label, row.momentum.tone, `Momentum: ${row.momentum.label.toLowerCase()}${row.change1h === null ? '' : ` · provider 1h ${row.change1h}%`}`);
 }
 
 /**
@@ -162,9 +194,9 @@ function rowTemplate(row) {
         </span>
       </a>
     </td>
-    <td class="col-score">${scoreRing(row.score, row.coverage)}</td>
+    <td class="col-score">${row.rank === null ? html`<span class="muted" title="Rejected tokens are not ranked">—</span>` : scoreRing(row.rank, row.rankCoverage, 'Rank')}</td>
+    <td class="col-state"><span class="stacked">${integrityCell(row)}${momentumCell(row)}</span></td>
     <td class="col-num">${usd(row.liquidityUsd)}</td>
-    <td class="col-num">${move(row.change1h)}</td>
     <td class="col-num col-age">${age(row.ageHours)}</td>
   </tr>`;
 }
@@ -179,10 +211,12 @@ function cardTemplate(row) {
           <span class="card__symbol">${row.symbol}</span>
           <span class="card__name">${row.name}</span>
         </span>
-        ${scoreRing(row.score, row.coverage)}
+        ${row.rank === null ? '' : scoreRing(row.rank, row.rankCoverage, 'Rank')}
       </span>
       <span class="card__verdict"><span class="sr-only">${VERDICT_LABEL[row.verdict] ?? row.verdict}: </span><span class="reason ${toneClass(row.tone)}">${row.reason}</span></span>
       <span class="card__facts">
+        ${row.integrity ? html`<span><span class="card__k">Integrity</span> ${integrityCell(row)}</span>` : ''}
+        ${row.momentum ? html`<span><span class="card__k">Momentum</span> ${toneChip(row.momentum.label, row.momentum.tone)}</span>` : ''}
         <span><span class="card__k">Liq</span> ${usd(row.liquidityUsd)}</span>
         <span><span class="card__k">1h</span> ${move(row.change1h)}</span>
         <span><span class="card__k">Age</span> ${age(row.ageHours)}</span>
@@ -262,7 +296,7 @@ function boardTemplate(data) {
       );
     } else {
       const label = SEGMENTS.find((s) => s.id === segment)?.label ?? segment;
-      body = emptyState(`No live tokens are ${label.toLowerCase()} right now.`, `${count(data.universe.live)} live tokens in other verdicts.`, html`<a class="btn" href="${appUrl('/discover')}" data-link>Show all live</a>`);
+      body = emptyState(`No live tokens are ${label.toLowerCase()} right now.`, `${count(data.universe.live)} live tokens in other verdicts.`, html`<a class="btn" href="${appUrl('/discover?segment=all')}" data-link>Show all live</a>`);
     }
   } else {
     body = html`
@@ -272,9 +306,9 @@ function boardTemplate(data) {
           <thead>
             <tr>
               <th scope="col">Token <span class="th-note">· why</span></th>
-              <th scope="col" class="col-score" title="Score in the centre; the ring shows coverage — how much of the evidence was measured">Score</th>
+              <th scope="col" class="col-score" title="Rank within the verdict in the centre: opportunity less integrity risk and what could not be checked. The ring shows coverage — how much of the evidence, market and deep intelligence, was measured">Rank</th>
+              <th scope="col" class="col-state" title="Integrity from deep intelligence (Unverified when it has not run), and momentum from Token Finder's own observed price history">State</th>
               <th scope="col" class="col-num">Liquidity</th>
-              <th scope="col" class="col-num">1h</th>
               <th scope="col" class="col-num col-age">Age</th>
             </tr>
           </thead>
@@ -306,9 +340,11 @@ function boardTemplate(data) {
             <h1 id="board-title">Live board</h1>
             <p class="board-head__sub">
               <strong>${count(data.universe.live)}</strong> tokens evaluated in the last ${span(data.window.liveMinutes)} ·
+              ${data.counts.HIGH_POTENTIAL ? html`<span class="tone--good"><strong>${count(data.counts.HIGH_POTENTIAL)}</strong> high potential</span> · ` : ''}
               <span class="tone--good">${count(data.counts.QUALIFIED ?? 0)} qualified</span> ·
               <span class="tone--bad">${count(data.counts.REJECTED ?? 0)} rejected</span>
               ${data.counts.WATCH ? html` · <span class="tone--warn">${count(data.counts.WATCH)} watch</span>` : ''}
+              ${data.counts.HIGH_RISK ? html` · <span class="tone--bad">${count(data.counts.HIGH_RISK)} high risk</span>` : ''}
             </p>
             ${freshnessLine(data)}
           </div>`;
@@ -318,7 +354,7 @@ function boardTemplate(data) {
 
         <div class="toolbar" role="search">
           <nav class="segments" aria-label="Filter by verdict">
-            ${SEGMENTS.filter((s) => s.id !== 'insufficient' || (data.counts.INSUFFICIENT_DATA ?? 0) > 0).map(
+            ${SEGMENTS.filter((s) => !['insufficient', 'high-risk', 'high-potential'].includes(s.id) || (data.counts[s.countKey] ?? 0) > 0 || segment === s.id).map(
               (s) => html`<a class="segment ${segment === s.id ? 'is-active' : ''}" href="${segmentHref(s.id, data.query)}" data-link data-segment="${s.id}" ${segment === s.id ? html`aria-current="page"` : ''}>
                 ${s.label} <span class="segment__count">${count(data.counts[s.countKey] ?? 0)}</span>
               </a>`,
@@ -410,7 +446,7 @@ function railTemplate(changes) {
  */
 export function mountBoard(root, route) {
   const query = {
-    segment: route.query.get('segment') ?? 'all',
+    segment: route.query.get('segment') ?? 'candidates',
     sort: route.query.get('sort') ?? 'verdict',
     q: route.query.get('q') ?? '',
   };
@@ -580,7 +616,7 @@ export function mountBoard(root, route) {
   return {
     /** Segment and sort links update in place: no remount, no skeleton flash. @param {import('../lib/router.js').Route} next */
     update(next) {
-      query.segment = next.query.get('segment') ?? 'all';
+      query.segment = next.query.get('segment') ?? 'candidates';
       query.sort = next.query.get('sort') ?? 'verdict';
       query.q = next.query.get('q') ?? '';
       focusIndex = -1;

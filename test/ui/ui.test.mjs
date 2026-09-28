@@ -52,6 +52,12 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
   });
 
   test('only live, evaluated tokens are ranked', async () => {
+    // The default view is the candidate ranking: rejected tokens are not in it.
+    const candidates = await boardMints();
+    for (const mint of [MINTS.qualified, MINTS.watch]) assert.ok(candidates.includes(mint), `${mint} should be a live candidate`);
+    for (const mint of [MINTS.rejected, MINTS.t22]) assert.equal(candidates.includes(mint), false, `${mint} is rejected and must not be among the candidates`);
+    await browser.goto(`${server.origin}/discover?segment=all`);
+    await browser.waitFor(`document.querySelectorAll('.board-row[data-verdict="REJECTED"]').length > 0`);
     const mints = await boardMints();
     for (const mint of [MINTS.qualified, MINTS.watch, MINTS.rejected, MINTS.t22]) assert.ok(mints.includes(mint), `${mint} should be live`);
     assert.equal(mints.includes(MINTS.stale), false, 'a stale token is on the live Board');
@@ -181,9 +187,9 @@ describe('product surface in a real browser', { skip: SKIP, timeout: 180_000 }, 
     // Deep intelligence is diagnostics only, and says both that it is not
     // running here and that it feeds nothing.
     const intel = await browser.eval(`document.querySelector('[aria-labelledby="intel-title"]')?.textContent.replace(/\\s+/g, ' ') ?? ''`);
-    assert.match(intel, /Deep intelligence \(diagnostics\)/);
+    assert.match(intel, /Deep intelligence/);
     assert.match(intel, /Not running/);
-    assert.match(intel, /None of this feeds a score/);
+    assert.match(intel, /Read by the decision engine/);
   });
 
   test('stale and never-evaluated Dossiers say so', async () => {

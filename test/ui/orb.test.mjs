@@ -83,7 +83,7 @@ describe('the Observatory', { skip: SKIP, timeout: 180_000 }, () => {
 
   test('the compact Board: five columns, the reason kept, freshness stated once', async () => {
     const headers = await browser.eval(`[...document.querySelectorAll('.board thead th')].map((th) => th.textContent.replace(/\\s+/g, ' ').trim())`);
-    assert.deepEqual(headers, ['Token · why', 'Score', 'Liquidity', '1h', 'Age']);
+    assert.deepEqual(headers, ['Token · why', 'Rank', 'State', 'Liquidity', 'Age']);
     // Token Finder's verdict reason is still in every row.
     assert.equal(await browser.eval(`[...document.querySelectorAll('.board-row')].every((r) => r.querySelector('.token-link__reason')?.textContent.trim().length > 0)`), true);
     assert.match(await browser.eval(`document.querySelector('.board-head__fresh').textContent`), /Last scan/);

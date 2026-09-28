@@ -65,7 +65,8 @@ function changeRow(change) {
       <span class="stream-item__token">${change.symbol ?? change.mint.slice(0, 6)}<span class="stream-item__name">${change.name ?? ''}</span></span>
       <span class="transition">${change.from ? html`${verdictChip(change.from)}<span class="transition__arrow" aria-label="to">→</span>` : ''}${verdictChip(change.to)}</span>
       <span class="stream-item__reason ${toneClass(change.tone)}">${change.reason}</span>
-      <span class="stream-item__context">${change.liquidityUsd !== null ? `Liquidity ${usd(change.liquidityUsd)}` : ''}${change.priceUsd !== null ? ` · ${price(change.priceUsd)}` : ''}</span>
+      <span class="stream-item__context">${change.liquidityUsd !== null ? `Liquidity ${usd(change.liquidityUsd)}` : ''}${change.priceUsd !== null ? ` · ${price(change.priceUsd)}` : ''}${change.policyVersion ? html` · <code class="small">${change.policyVersion}</code>` : ''}</span>
+      ${change.details?.length ? html`<span class="stream-item__details">${change.details.map((/** @type {string} */ d) => html`<span>${d}</span>`)}</span>` : ''}
     </a>
   </li>`;
 }

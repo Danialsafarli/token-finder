@@ -17,6 +17,8 @@ import { age, count, pct, price, share, shortAddress, usd, when } from '../lib/f
 import { onServerEvent } from '../lib/live.js';
 import { attachTimeline, timeline } from '../ui/charts.js';
 import {
+  ACTIVITY_CATEGORIES,
+  compositionBar,
   dossierUrl,
   emptyState,
   errorState,
@@ -26,6 +28,7 @@ import {
   stateTag,
   timeAgo,
   tokenIcon,
+  toneChip,
   toneClass,
   verdictChip,
 } from '../ui/components.js';
@@ -154,9 +157,10 @@ function header(d) {
       </section>
     </header>
 
+    ${decisionStrip(d)}
     <section class="trust" aria-label="Score, coverage and confidence">
       <div class="trust__metric">
-        <p class="trust__label">Score</p>
+        <p class="trust__label">${d.decision ? 'Market score' : 'Score'}</p>
         <p class="trust__value">${trust.score}<span class="trust__unit">/100</span></p>
         <p class="trust__caption">How strong it looks on the evidence measured</p>
       </div>
@@ -195,6 +199,261 @@ function tabsNav(d, active) {
   </nav>`;
 }
 
+// --- decision -----------------------------------------------------------------
+
+const pct0 = (/** @type {number | null | undefined} */ x) => (x === null || x === undefined ? '—' : `${Math.round(x * 100)}%`);
+const signed = (/** @type {number} */ x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
+
+/**
+ * The three separate answers, side by side and never combined: is it safe
+ * enough, is it interesting, is the move real - plus how much of it rests on
+ * evidence. @param {Dossier} d
+ */
+function decisionStrip(d) {
+  const x = d.decision;
+  if (!x) return '';
+  const cov = x.coverage;
+  return html`<section class="decision-strip" aria-label="Safety, opportunity and momentum">
+    <div class="decision-card decision-card--${x.integrity.tone}">
+      <p class="decision-card__label">Safety &amp; integrity</p>
+      <p class="decision-card__value">${x.integrity.score === null ? '—' : Math.round(x.integrity.score)}<span class="decision-card__unit">/100</span></p>
+      <p class="decision-card__state">${toneChip(x.integrity.bandLabel, x.integrity.tone)}${x.integrity.driver ? html` <span class="small muted">driven by ${x.integrity.driver.toLowerCase()}</span>` : ''}</p>
+      ${meter(x.integrity.coverage, 'accent')}
+      <p class="decision-card__caption">${pct0(x.integrity.coverage)} of integrity evidence checked · confidence ${pct0(x.integrity.confidence)}</p>
+    </div>
+    <div class="decision-card">
+      <p class="decision-card__label">Opportunity</p>
+      <p class="decision-card__value">${Math.round(x.opportunity.score)}<span class="decision-card__unit">/100</span></p>
+      <p class="decision-card__state">${toneChip(x.opportunity.band === 'STRONG' ? 'Strong' : x.opportunity.band === 'MODERATE' ? 'Moderate' : x.opportunity.band === 'WEAK' ? 'Weak' : 'Not enough evidence', x.opportunity.band === 'STRONG' ? 'good' : x.opportunity.band === 'WEAK' ? 'warn' : 'neutral')}</p>
+      ${meter(x.opportunity.coverage, 'accent')}
+      <p class="decision-card__caption">${pct0(x.opportunity.coverage)} of opportunity inputs measured</p>
+    </div>
+    <div class="decision-card decision-card--${x.momentum.tone}">
+      <p class="decision-card__label">Momentum</p>
+      <p class="decision-card__value decision-card__value--word">${x.momentum.label}</p>
+      <p class="decision-card__state small muted">${x.momentum.observations} observations over ${x.momentum.spanMinutes >= 60 ? `${(x.momentum.spanMinutes / 60).toFixed(1)} h` : `${x.momentum.spanMinutes} min`}</p>
+      ${meter(x.momentum.confidence, 'accent')}
+      <p class="decision-card__caption">confidence ${pct0(x.momentum.confidence)} · from Token Finder's own observations</p>
+    </div>
+    <div class="decision-card">
+      <p class="decision-card__label">Rank</p>
+      <p class="decision-card__value">${x.rank ? Math.round(x.rank.score) : '—'}</p>
+      <p class="decision-card__state small muted">${x.rank
+        ? `opportunity ${Math.round(x.rank.opportunity)} − ${Math.round(x.rank.integrityPenalty)} integrity risk − ${Math.round(x.rank.uncertaintyPenalty)} unverified`
+        : 'rejected tokens are not ranked'}</p>
+      ${meter(cov.decision, 'accent')}
+      <p class="decision-card__caption">coverage ${pct0(cov.decision)}: market evidence ${pct0(cov.market)}, deep intelligence ${pct0(cov.intelligence)}</p>
+    </div>
+  </section>`;
+}
+
+/** Why: the reasons, split by what they did to the verdict. @param {Dossier} d */
+function reasonsPanel(d) {
+  const x = d.decision;
+  if (!x) return '';
+  const list = (/** @type {string[]} */ items, /** @type {string} */ kind, /** @type {string} */ mark) =>
+    items.length ? html`<ul class="reasons reasons--${kind}">${items.map((text) => html`<li><span class="reasons__mark" aria-hidden="true">${mark}</span>${text}</li>`)}</ul>` : '';
+  return html`<section class="panel" aria-labelledby="why-title">
+    <h2 id="why-title" class="panel__title">Why ${verdictChip(d.verdict.eligibility)} <span class="panel__note">${x.basis}</span></h2>
+    ${x.hardFails.length
+      ? html`<ul class="reasons reasons--risk">${x.hardFails.map((f) => html`<li><span class="reasons__mark" aria-hidden="true">✕</span><strong>${f.familyLabel}</strong> — ${f.reason}</li>`)}</ul>`
+      : ''}
+    ${list(x.positives, 'positive', '+')}
+    ${list(x.risks, 'risk', '−')}
+    ${x.blockers.length ? html`<p class="reasons__head small muted">Not higher because</p>${list(x.blockers, 'blocker', '↑')}` : ''}
+    <p class="small muted">${x.coverageLine} · decided by ${x.policyVersion} ${timeAgo(x.decidedAt)}</p>
+  </section>`;
+}
+
+/** Hard fails, each with family, confidence, freshness and rule version. @param {Dossier} d */
+function hardFailsPanel(d) {
+  const fails = d.decision?.hardFails;
+  if (!fails || fails.length === 0) return '';
+  return html`<section class="panel panel--bad" aria-labelledby="vetoes-title">
+    <h2 id="vetoes-title" class="panel__title">Hard fails</h2>
+    <ul class="vetoes">
+      ${fails.map(
+        (f) => html`<li class="veto">
+          <p class="veto__label">${f.label} <span class="tag tag--bad">${f.familyLabel}</span></p>
+          <p class="veto__reason">${f.reason}</p>
+          <p class="veto__meta">
+            ${f.confidence !== null ? html`<span>Confidence ${f.confidence.toFixed(2)}</span>` : ''}
+            ${f.freshness ? html`<span>${freshnessTag(f.freshness)}</span>` : ''}
+            ${f.ruleVersion ? html`<span><code class="small">${f.ruleVersion}</code></span>` : ''}
+            <span class="tag ${f.recheckable ? 'tag--neutral' : 'tag--bad'}">${f.recheckable ? 'Can clear on fresh evidence' : 'Permanent'}</span>
+          </p>
+          ${f.evidence.length ? html`<details class="evidence-more"><summary>Evidence</summary><ul class="mono-list">${f.evidence.map((e) => html`<li><code>${e}</code></li>`)}</ul></details>` : ''}
+        </li>`,
+      )}
+    </ul>
+  </section>`;
+}
+
+const BASIS_LABEL = /** @type {Record<string, string>} */ ({ wallets: 'By wallets', trades: 'By trades', volume: 'By volume' });
+
+/** Activity Integrity: what kind of trading this is, on which basis, and how much of the market it saw. @param {Dossier} d */
+function activityPanel(d) {
+  const a = d.activityIntegrity;
+  if (!a) return '';
+  const unavailable = a.status === 'UNAVAILABLE';
+  const statusNote = a.status === 'SUPERSEDED' ? 'Reading from an obsolete rule — shown for audit, not used' : a.status === 'STALE' ? 'Last reading too old to use' : a.status === 'INSUFFICIENT_DATA' ? 'Too little trading classified to state shares' : '';
+  const m = a.market;
+  const w = a.wash;
+  const ind = a.independence;
+  return html`<section class="panel" aria-labelledby="activity-title">
+    <h2 id="activity-title" class="panel__title">Activity integrity <span class="panel__note">${unavailable ? 'not analysed yet' : html`coverage ${pct0(a.coverage)} · confidence ${pct0(a.confidence)}${a.analyzedAt ? html` · ${timeAgo(a.analyzedAt)}` : ''}`}</span></h2>
+    ${unavailable
+      ? html`<p class="muted">Deep intelligence has not analysed this token. Nothing is known about who is trading it — which is not the same as nothing wrong.</p>`
+      : html`
+        ${statusNote ? html`<p class="small tone--warn">${statusNote}.</p>` : ''}
+        <ul class="composition">
+          ${a.bases.map((b) => html`<li class="composition__row">
+            <span class="composition__label">${BASIS_LABEL[b.basis]}<span class="small muted"> · ${b.total} ${b.basis === 'volume' ? 'units' : b.basis}</span></span>
+            ${compositionBar(b.shares, BASIS_LABEL[b.basis] ?? b.basis)}
+            <span class="composition__note small muted">${b.shares ? `${pct0(b.classified)} classified` : 'counts only — too little classified'}</span>
+          </li>`)}
+        </ul>
+        <p class="legend small" aria-hidden="true">${ACTIVITY_CATEGORIES.map(([key, name]) => html`<span class="legend__item"><span class="legend__swatch legend__swatch--${key}"></span>${name}</span>`)}</p>
+        <dl class="kv kv--compact">
+          <div><dt>Wash / manipulation</dt><dd>${w ? html`${toneChip(w.risk === 'INSUFFICIENT_DATA' ? 'Not enough trades' : w.risk === 'LOW' ? 'Low' : w.risk === 'ELEVATED' ? 'Elevated' : 'High', w.tone)} <span class="small muted">${w.families.length ? w.families.join(', ').toLowerCase() : ''}${w.coverage ? ` · coverage ${pct0(w.coverage)}` : ''}</span>` : html`<span class="muted">—</span>`}</dd></div>
+          <div><dt>Wallet independence</dt><dd>${ind ? html`${ind.clusters === 0 ? 'No strong cluster' : `${ind.clusters} cluster${ind.clusters === 1 ? '' : 's'} (largest ${ind.largest})`}${ind.coordinatedShare !== null ? html` · <span class="small muted">${pct0(ind.coordinatedShare)} of trading wallets coordinated</span>` : ''}${ind.effectiveParticipants !== null ? html` · <span class="small muted">${ind.effectiveParticipants} independent participants</span>` : ''}` : html`<span class="muted">—</span>`}</dd></div>
+          <div><dt>Market observed</dt><dd>${m ? html`${m.observedPools} of ${m.knownPools} pool${m.knownPools === 1 ? '' : 's'} · <span class="small muted">${m.sampleShare !== null ? `${pct0(m.sampleShare)} of trades in the window` : 'no provider trade counts'} · representativeness ${pct0(m.representativeness)}</span>` : html`<span class="muted">not recorded</span>`}</dd></div>
+        </dl>
+        <details class="evidence-more">
+          <summary>Evidence</summary>
+          ${m ? html`<p class="small">${m.note}${m.volumeQuote && m.excludedFromVolume ? ` · ${m.excludedFromVolume} trade(s) in another quote currency counted, not summed` : ''}</p>
+            <ul class="mono-list">${m.pools.map((p) => html`<li><code>${shortAddress(p.address)}</code> ${p.dexId} · ${p.observedTrades} observed${p.volumeShare !== null ? ` · ${pct0(p.volumeShare)} of volume` : ''}</li>`)}</ul>` : ''}
+          ${w && w.signals.length ? html`<p class="small muted">Manipulation signals</p><ul class="signals">${w.signals.map((s) => html`<li class="${s.triggered ? 'tone--warn' : 'muted'}">${s.triggered ? '●' : '○'} ${s.text}</li>`)}</ul>` : ''}
+          ${w && w.counter.length ? html`<p class="small muted">Counter-evidence</p><ul class="signals">${w.counter.map((c) => html`<li>${c}</li>`)}</ul>` : ''}
+          ${a.truncation.length ? html`<p class="small muted">Cut by budget</p><ul class="signals">${a.truncation.map((t) => html`<li>${t}</li>`)}</ul>` : ''}
+          <p class="small muted">Percentages are of the trades collected, not of all trading. Unknown is shown, never redistributed. Bots and snipers are behaviours, not accusations.${a.ruleVersion ? html` Rule <code>${a.ruleVersion}</code>.` : ''}</p>
+        </details>`}
+  </section>`;
+}
+
+const EVENT_LABEL = /** @type {Record<string, string>} */ ({
+  LIQUIDITY_DRAIN: 'Liquidity drain',
+  SUPPLY_EXPANSION: 'Supply minted after launch',
+  AUTHORITY_REASSIGNED: 'Authority moved, not revoked',
+  FREEZE_ABUSE: 'Holders frozen',
+  CREATOR_DUMP: 'Creator-linked selling',
+});
+
+/** @param {any} e */
+function eventItem(e) {
+  const tone = e.status === 'CONFIRMED' ? 'bad' : e.status === 'STRONGLY_SUSPECTED' ? 'warn' : 'neutral';
+  return html`<li class="event-item">
+    ${toneChip(e.status.replace('_', ' ').toLowerCase(), tone)} <strong>${EVENT_LABEL[e.type] ?? e.type}</strong>
+    <span class="small muted">${e.reasons[0] ?? ''}</span>
+    <span class="small"><code title="${e.signature}">${shortAddress(e.signature)}</code>${e.ruleVersion ? html` · <code>${e.ruleVersion}</code>` : html` · <span class="muted">unversioned</span>`}</span>
+  </li>`;
+}
+
+/** Rug Intelligence: this token's own record, its creator, and the network around it. @param {Dossier} d */
+function rugPanel(d) {
+  const r = d.rugIntelligence;
+  if (!r) return '';
+  const c = r.creator;
+  const n = r.network;
+  return html`<section class="panel" aria-labelledby="rug-title">
+    <h2 id="rug-title" class="panel__title">Rug intelligence <span class="panel__note">coverage ${pct0(r.coverage)}${r.analyzedAt ? html` · ${timeAgo(r.analyzedAt)}` : ' · not analysed yet'}</span></h2>
+    <dl class="kv kv--compact">
+      <div><dt>This token</dt><dd>${toneChip(r.tokenStatus.label, r.tokenStatus.tone)} <span class="small muted">${r.tokenStatus.detail}</span></dd></div>
+      <div><dt>Creator</dt><dd>${c
+        ? html`${toneChip(c.statusLabel, c.tone)} ${c.address ? html`<code class="small" title="${c.address}">${shortAddress(c.address)}</code>` : ''}
+          <span class="small muted">${c.launches} launch${c.launches === 1 ? '' : 'es'} observed${c.otherConfirmed ? ` · ${c.otherConfirmed} other confirmed malicious` : ''}${c.otherSuspected ? ` · ${c.otherSuspected} other suspected` : ''}${c.attribution ? ` · attribution ${c.attribution.status.toLowerCase()} (${c.attribution.confidence.toFixed(2)})` : ''}</span>`
+        : html`<span class="muted">not attributed</span>`}</dd></div>
+      <div><dt>Serial network</dt><dd>${n ? html`${toneChip(n.label, n.tone)}${n.confidence ? html` <span class="small muted">confidence ${n.confidence.toFixed(2)}</span>` : ''}` : html`<span class="muted">not searched</span>`}</dd></div>
+    </dl>
+    ${r.active.length ? html`<ul class="events">${r.active.map(eventItem)}</ul>` : ''}
+    ${n && n.findings.length
+      ? html`<div class="paths"><p class="small muted">Relationship path${n.findings.length === 1 ? '' : 's'}</p>${n.findings.map((f) => html`<p class="path">
+          ${f.path.length === 0 ? html`<span class="path__node">creator itself</span>` : f.path.map((p, i) => html`${i === 0 ? html`<span class="path__node"><code>${shortAddress(p.from)}</code></span>` : ''}<span class="path__edge">${p.type.toLowerCase().replace('_', ' ')}</span><span class="path__node"><code>${shortAddress(p.to)}</code></span>`)}
+          <span class="small muted"> · ${f.confirmedLaunches} confirmed malicious launch${f.confirmedLaunches === 1 ? '' : 'es'} · path confidence ${f.pathConfidence.toFixed(2)}</span></p>`)}</div>`
+      : ''}
+    ${r.caveats.length ? html`<ul class="caveats">${r.caveats.map((text) => html`<li>${text}</li>`)}</ul>` : ''}
+    ${r.superseded.length || r.revisions.length
+      ? html`<details class="evidence-more"><summary>Superseded findings (${r.superseded.length}) — audit only</summary>
+          <p class="small muted">Made under a rule this build no longer accepts, or no longer supported by the current rule. Kept for audit; they do not affect the verdict.</p>
+          <ul class="events">${r.superseded.map(eventItem)}</ul>
+          ${r.revisions.length ? html`<ul class="signals">${r.revisions.map((v) => html`<li class="small">${when(v.revisedAt)} · ${EVENT_LABEL[v.type] ?? v.type} ${v.status.toLowerCase()} under <code>${v.ruleVersion ?? 'unversioned'}</code> — ${v.change === 'SUPERSEDED' ? 'superseded' : 'reinterpreted'} by <code>${v.revisedBy}</code></li>`)}</ul>` : ''}
+        </details>`
+      : ''}
+  </section>`;
+}
+
+/** Integrity by domain, drill-down. @param {Dossier} d */
+function integrityPanel(d) {
+  const x = d.decision;
+  if (!x) return '';
+  return html`<section class="panel" aria-labelledby="integrity-title">
+    <h2 id="integrity-title" class="panel__title">Safety &amp; integrity by domain</h2>
+    <ul class="domains">
+      ${x.integrity.domains.map((dm) => html`<li class="domain">
+        <details>
+          <summary class="domain__summary">
+            <span class="domain__label">${dm.label}</span>
+            ${toneChip(dm.bandLabel, dm.tone)}
+            <span class="domain__meter">${meter(dm.coverage, 'accent')}</span>
+            <span class="small muted">${pct0(dm.coverage)} checked</span>
+          </summary>
+          <div class="domain__detail">
+            ${dm.findings.length ? html`<ul class="reasons reasons--risk">${dm.findings.map((f) => html`<li><span class="reasons__mark" aria-hidden="true">−</span>${f}</li>`)}</ul>` : ''}
+            ${dm.clean.length ? html`<ul class="reasons reasons--positive">${dm.clean.map((f) => html`<li><span class="reasons__mark" aria-hidden="true">✓</span>${f}</li>`)}</ul>` : ''}
+            ${dm.unknown.length ? html`<p class="small muted">Not checked: ${dm.unknown.join('; ')}</p>` : ''}
+            <p class="small muted">Risk ${dm.risk === null ? 'not measured' : dm.risk.toFixed(2)} · confidence ${pct0(dm.confidence)}</p>
+          </div>
+        </details>
+      </li>`)}
+    </ul>
+    <details class="evidence-more"><summary>Deep intelligence sources</summary>
+      <ul class="signals">${x.intelligence.map((i) => html`<li class="small"><strong>${i.key}</strong> ${toneChip(i.status.toLowerCase().replace('_', ' '), i.status === 'AVAILABLE' ? 'good' : i.status === 'PARTIAL' ? 'warn' : 'neutral')} ${pct0(i.coverage)} · ${i.freshness.toLowerCase()}${i.ruleVersion ? html` · <code>${i.ruleVersion}</code>` : ''}${i.note ? html` — <span class="muted">${i.note}</span>` : ''}</li>`)}</ul>
+    </details>
+  </section>`;
+}
+
+/** Market and Momentum v2 together: the move, and whether it is real. @param {Dossier} d */
+function momentumBlock(d) {
+  const mo = d.decision?.momentum;
+  if (!mo) return '';
+  return html`<div class="momentum">
+    <p class="momentum__head">${toneChip(mo.label, mo.tone)} <span class="small muted">${mo.reasons[0] ?? ''}</span></p>
+    ${mo.windows.length ? html`<dl class="stats stats--tight">${mo.windows.map((w) => html`<div><dt>${w.key} (observed)</dt><dd class="move-cell">${signed(w.change)}</dd></div>`)}
+      ${mo.persistence !== null ? html`<div><dt>Steps up</dt><dd>${pct0(mo.persistence)}</dd></div>` : ''}
+      ${mo.liquidityChange !== null ? html`<div><dt>Liquidity Δ</dt><dd>${signed(mo.liquidityChange)}</dd></div>` : ''}
+      ${mo.holderChange !== null ? html`<div><dt>Holders Δ</dt><dd>${mo.holderChange >= 0 ? '+' : ''}${mo.holderChange}</dd></div>` : ''}</dl>` : ''}
+    <p class="small muted">Windows are from Token Finder's own stored observations; the 5m–24h figures above are the provider's and are shown for comparison only.</p>
+  </div>`;
+}
+
+/** Opportunity components, compact. @param {Dossier} d */
+function opportunityPanel(d) {
+  const o = d.decision?.opportunity;
+  if (!o) return '';
+  return html`<section class="panel" aria-labelledby="opp-title">
+    <h2 id="opp-title" class="panel__title">Opportunity <span class="panel__note">separate from safety — it cannot lift a verdict</span></h2>
+    <ul class="components">
+      ${o.components.map((c) => html`<li class="component ${c.value === null ? 'component--unknown' : ''}">
+        <span class="component__label">${c.label}</span>
+        <span class="component__bar">${meter(c.value, 'accent')}</span>
+        <span class="component__value">${c.value === null ? 'Unknown' : Math.round(c.value * 100)}</span>
+        <span class="component__detail">${c.detail} · weight ${Math.round(c.weight * 100)}%</span>
+      </li>`)}
+    </ul>
+  </section>`;
+}
+
+/** Raw and role-aware concentration, side by side. @param {Dossier} d */
+function holderRows(d) {
+  const h = d.holders;
+  if (h.rawTop10Pct === null && h.walletTop10Pct === null) return '';
+  return html`<div><dt>Top 10, raw</dt><dd>${h.rawTop10Pct === null ? '—' : `${h.rawTop10Pct}%`} <span class="small muted">every account, pools and curves included</span></dd></div>
+    <div><dt>Top 10, wallets only</dt><dd>${h.walletTop10Pct === null
+      ? html`<span class="tag tag--unknown">Withheld</span> <span class="small muted">${h.rolesTotal ? `${h.rolesTotal - h.rolesResolved} of ${h.rolesTotal} owners unreadable` : 'roles not read'}</span>`
+      : html`${h.walletTop10Pct}% <span class="small muted">role-aware</span>`}</dd></div>
+    ${h.byRolePct ? html`<div><dt>Held by programs</dt><dd class="small">${['BONDING_CURVE', 'POOL', 'PROGRAM_OWNED'].filter((k) => (h.byRolePct?.[k] ?? 0) > 0).map((k) => `${k === 'BONDING_CURVE' ? 'curve' : k === 'POOL' ? 'pool' : 'program'} ${h.byRolePct?.[k]}%`).join(' · ') || 'none'}</dd></div>` : ''}`;
+}
+
 // --- overview ---------------------------------------------------------------
 
 /** @param {Dossier} d */
@@ -203,7 +462,9 @@ function overview(d) {
   const m = d.market;
   const s = d.score;
 
-  const vetoes = v.vetoes.length
+  const vetoes = d.decision
+    ? hardFailsPanel(d)
+    : v.vetoes.length
     ? html`<section class="panel panel--bad" aria-labelledby="vetoes-title">
         <h2 id="vetoes-title" class="panel__title">Hard vetoes</h2>
         <ul class="vetoes">
@@ -247,10 +508,22 @@ function overview(d) {
       <div><dt>Age</dt><dd>${age(d.token.ageHours)}</dd></div>
       <div><dt>Venue</dt><dd>${m.venue ? `${m.venue.dex} · ${m.venue.quote}` : '—'}</dd></div>
     </dl>
+    ${momentumBlock(d)}
   </section>`;
 
-  const breakdown = html`<section class="panel" aria-labelledby="score-title">
-    <h2 id="score-title" class="panel__title">How the score was built</h2>
+  const holdersPanel = html`<section class="panel" aria-labelledby="hl-title">
+    <h2 id="hl-title" class="panel__title">Holders &amp; liquidity</h2>
+    <dl class="kv kv--compact">
+      <div><dt>Holders</dt><dd>${count(d.holders.count)}</dd></div>
+      <div><dt>Top holders</dt><dd>${d.holders.topHoldersPct === null ? html`<span class="tag tag--unknown">Unknown</span>` : html`${d.holders.topHoldersPct}% <span class="small muted">${providerName(d.holders.topHoldersSource)}</span>`}</dd></div>
+      ${holderRows(d)}
+      <div><dt>Liquidity</dt><dd>${usd(m.liquidityUsd)}</dd></div>
+    </dl>
+  </section>`;
+
+  const breakdown = html`<section class="panel panel--quiet" aria-labelledby="score-title">
+    <details ${d.decision ? '' : html`open`}>
+    <summary><h2 id="score-title" class="panel__title">How the market score was built <span class="panel__note">score@1 · kept beside the decision, not the ranking key</span></h2></summary>
     <p class="panel__lede">${d.trust.penalty > 0
       ? html`Components add up to ${d.trust.base}; risk findings take ${d.trust.penalty}% off, leaving <strong>${d.trust.score}</strong>.`
       : html`Components add up to <strong>${d.trust.score}</strong>, with no risk penalties.`}
@@ -267,6 +540,7 @@ function overview(d) {
         </li>`,
       )}
     </ul>
+    </details>
   </section>`;
 
   const findings = s.findings.length
@@ -287,9 +561,12 @@ function overview(d) {
     </ul>
   </section>`;
 
+  // The order answers a trader's questions in turn: verdict and why, can the
+  // market be trusted, is activity real, who is behind it, is the move real,
+  // what is unknown. Everything past the first screen is drill-down.
   return html`<div class="overview-grid">
-    <div class="overview-main">${vetoes}${watch}${breakdown}${findings}</div>
-    <div class="overview-side">${market}${about}</div>
+    <div class="overview-main">${vetoes}${reasonsPanel(d)}${activityPanel(d)}${rugPanel(d)}${integrityPanel(d)}${watch}${breakdown}${findings}</div>
+    <div class="overview-side">${market}${holdersPanel}${opportunityPanel(d)}${about}</div>
   </div>`;
 }
 

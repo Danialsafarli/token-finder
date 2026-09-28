@@ -10,12 +10,14 @@
 import { appUrl, html, safeUrl } from '../lib/html.js';
 import { ago, when } from '../lib/format.js';
 
-/** @typedef {'QUALIFIED' | 'WATCH' | 'INSUFFICIENT_DATA' | 'REJECTED'} Eligibility */
+/** @typedef {'HIGH_POTENTIAL' | 'QUALIFIED' | 'WATCH' | 'INSUFFICIENT_DATA' | 'HIGH_RISK' | 'REJECTED'} Eligibility */
 
 export const VERDICT = /** @type {Record<string, { label: string, tone: string }>} */ ({
+  HIGH_POTENTIAL: { label: 'High potential', tone: 'good' },
   QUALIFIED: { label: 'Qualified', tone: 'good' },
   WATCH: { label: 'Watch', tone: 'warn' },
   INSUFFICIENT_DATA: { label: 'Insufficient data', tone: 'neutral' },
+  HIGH_RISK: { label: 'High risk', tone: 'bad' },
   REJECTED: { label: 'Rejected', tone: 'bad' },
 });
 
@@ -24,20 +26,58 @@ export function verdictChip(eligibility, options = {}) {
   const verdict = eligibility ? VERDICT[eligibility] : null;
   const label = verdict?.label ?? 'Not assessed';
   const tone = verdict?.tone ?? 'none';
-  return html`<span class="verdict verdict--${tone} ${options.size === 'lg' ? 'verdict--lg' : ''}"><span class="verdict__dot" aria-hidden="true"></span>${label}</span>`;
+  // High potential and high risk share a colour with Qualified and Rejected;
+  // a second mark keeps them apart for anyone who does not read colour.
+  const mark = eligibility === 'HIGH_POTENTIAL' ? 'verdict--potential' : eligibility === 'HIGH_RISK' ? 'verdict--risk' : '';
+  return html`<span class="verdict verdict--${tone} ${mark} ${options.size === 'lg' ? 'verdict--lg' : ''}"><span class="verdict__dot" aria-hidden="true"></span>${label}</span>`;
+}
+
+/** A compact labelled state, coloured by tone. @param {string} label @param {string} tone @param {string} [title] */
+export function toneChip(label, tone, title) {
+  return html`<span class="chip chip--${tone || 'neutral'}" ${title ? html`title="${title}"` : ''}>${label}</span>`;
+}
+
+/** Activity categories in display order, with their labels. */
+export const ACTIVITY_CATEGORIES = /** @type {const} */ ([
+  ['likely_organic', 'Organic'],
+  ['automated', 'Automated'],
+  ['sniper', 'Sniper'],
+  ['coordinated', 'Coordinated'],
+  ['unknown', 'Unknown'],
+]);
+
+/**
+ * A stacked composition bar: one segment per activity category, unknown always
+ * drawn. SVG attributes only, so it is CSP-safe. Null shares draw a hatched
+ * track: the composition was not stated, which is not the same as empty.
+ * @param {Record<string, number> | null} shares @param {string} label
+ */
+export function compositionBar(shares, label) {
+  if (!shares) {
+    return html`<svg class="stack stack--unknown" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label="${label}: not stated"><rect class="stack__track" x="0" y="0" width="100" height="8" rx="4"></rect></svg>`;
+  }
+  let x = 0;
+  const parts = ACTIVITY_CATEGORIES.map(([key]) => {
+    const width = Math.max(0, Math.min(100 - x, (shares[key] ?? 0) * 100));
+    const rect = width > 0 ? html`<rect class="stack__seg stack__seg--${key}" x="${x.toFixed(2)}" y="0" width="${width.toFixed(2)}" height="8"></rect>` : '';
+    x += width;
+    return rect;
+  });
+  const text = ACTIVITY_CATEGORIES.map(([key, name]) => `${name} ${Math.round((shares[key] ?? 0) * 100)}%`).join(', ');
+  return html`<svg class="stack" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label="${label}: ${text}"><rect class="stack__track" x="0" y="0" width="100" height="8" rx="4"></rect>${parts}</svg>`;
 }
 
 /**
  * Score inside a ring whose arc is coverage. Two numbers, one glyph, both
  * spelled out for assistive technology and on hover.
  *
- * @param {number} score @param {number | null} coverage
+ * @param {number} score @param {number | null} coverage @param {string} [name]
  */
-export function scoreRing(score, coverage) {
+export function scoreRing(score, coverage, name = 'Score') {
   const r = 15;
   const circumference = 2 * Math.PI * r;
   const filled = coverage === null ? 0 : Math.max(0, Math.min(1, coverage)) * circumference;
-  const label = `Score ${score}; ${coverage === null ? 'coverage unknown' : `${Math.round(coverage * 100)}% of evidence measured`}`;
+  const label = `${name} ${score}; ${coverage === null ? 'coverage unknown' : `${Math.round(coverage * 100)}% of evidence measured`}`;
   return html`<span class="ring" role="img" aria-label="${label}" title="${label}">
     <svg viewBox="0 0 36 36" aria-hidden="true">
       <circle class="ring__track" cx="18" cy="18" r="${r}"></circle>

@@ -98,7 +98,7 @@ function intelligencePanel(intel) {
   const last = intel.lastCycle;
   const guard = intel.largestAccountsGuard;
   return html`<section class="panel" aria-labelledby="intel-title">
-    <h2 id="intel-title" class="panel__title">Deep intelligence (diagnostics)</h2>
+    <h2 id="intel-title" class="panel__title">Deep intelligence</h2>
     <p class="small"><span class="tag tag--${health.tone}">${health.label}</span> ${intel.health.reason}</p>
     <dl class="kv">
       ${last ? html`<div><dt>Last cycle</dt><dd>${timeAgo(last.at)} · ${duration(last.durationMs)} · ${count(last.tokens)} tokens · ${count(last.requests)} of ${count(last.requestLimit)} requests${last.failures ? html` · <span class="tone--warn">${count(last.failures)} failed</span>` : ''}${last.truncations ? html` · <span class="small muted">${count(last.truncations)} truncations</span>` : ''}</dd></div>` : ''}
@@ -115,7 +115,7 @@ function intelligencePanel(intel) {
       )}</ul></dd></div>` : ''}
       ${guard ? html`<div><dt>Largest-accounts guard</dt><dd>${guard.breakerOpenUntil ? html`<span class="tag tag--warn">Paused</span> until ${when(guard.breakerOpenUntil)} · ` : ''}${count(guard.calls)} calls · ${count(guard.skipped)} skipped · ${count(guard.overloads)} overloads · ${count(guard.timeouts)} timeouts</dd></div>` : ''}
     </dl>
-    <p class="small muted">Diagnostics for engineering only. None of this feeds a score, a ranking or a veto yet, and nothing here is calibrated.</p>
+    <p class="small muted">Read by the decision engine at every scan, from stored rows only: it can reject on strong, current-rule evidence, flag serious soft risk, and is required for High potential. Nothing here is calibrated against outcomes yet.</p>
   </section>`;
 }
 
@@ -164,7 +164,9 @@ function template(s) {
           ${scan.last ? html`
             <div><dt>Last scan took</dt><dd>${duration(scan.last.durationMs)}</dd></div>
             <div><dt>Analysed</dt><dd>${count(scan.last.analyzed)} of ${count(scan.last.candidates)} candidates · ${count(scan.last.fresh)} new</dd></div>
-            <div><dt>Provider failures</dt><dd>${scan.last.providerFailures.length === 0 ? 'None' : scan.last.providerFailures.map((f) => html`<span class="tag tag--warn">${f.provider}: ${f.kind}</span> `)}</dd></div>` : ''}
+            <div><dt>Provider failures</dt><dd>${scan.last.providerFailures.length === 0 ? 'None' : scan.last.providerFailures.map((f) => html`<span class="tag tag--warn">${f.provider}: ${f.kind}</span> `)}</dd></div>
+            ${scan.last.timings ? html`<div><dt>Where the time went</dt><dd class="small">discovery ${duration(scan.last.timings.discoverMs)} · analysis ${duration(scan.last.timings.analyzeMs)} (decision ${scan.last.timings.decisionMs.toFixed(0)} ms over ${count(scan.last.timings.decisions)} tokens) · persistence ${duration(scan.last.timings.persistMs)} · ${count(scan.last.timings.historyRows)} history rows, ${count(scan.last.timings.transitions)} transitions · memory ${scan.last.timings.rssMb} MB (${scan.last.timings.rssDeltaMb >= 0 ? '+' : ''}${scan.last.timings.rssDeltaMb})</dd></div>` : ''}` : ''}
+          ${s.decision ? html`<div><dt>Decision policy</dt><dd><code>${s.decision.policyVersion}</code> <span class="small muted">${Object.values(s.decision.models).join(' · ')}</span></dd></div>` : ''}
         </dl>
         ${s.providers.length ? html`<p class="small tone--warn">In the last hour: ${s.providers.map((p) => `${p.provider} failed ${p.count}×`).join(', ')}.</p>` : ''}
       </section>
