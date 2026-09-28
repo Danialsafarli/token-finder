@@ -3339,7 +3339,7 @@ th.col-num {
 .landing__deck {
   position: relative;
   z-index: 1;
-  margin-top: clamp(-28px, -2.4vh, -12px);
+  margin-top: clamp(-8px, -0.4vh, 0px);
 }
 
 /* The two ways in: one instrument, split in two. Not two identical cards. */

@@ -273,8 +273,8 @@ export function mountLanding(root, route) {
     placement: placementFor('idle'),
   });
   // The atmospheric scan field behind the Observatory: decoration only, never
-  // input. It eases away around the sphere wherever the sphere is on screen.
-  const scanner = mountScanner(section, { focus: () => orb.sphereOnScreen() });
+  // input. The sphere's own body hides it, wherever the sphere is.
+  const scanner = mountScanner(section);
 
   /** @type {Phase} */
   let phase = 'idle';

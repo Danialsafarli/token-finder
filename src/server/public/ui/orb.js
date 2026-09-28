@@ -468,6 +468,11 @@ export function mountOrb(host, options = {}) {
     warn: rgb('--warn', '#e2b04e'),
     bad: rgb('--bad', '#f0706f'),
     neutral: rgb('--neutral', '#97a0b2'),
+    /** The sphere's interior: halfway from the page's deepest tone to its surface tone. */
+    deep: rgb('--bg-sunk', '#08090d')
+      .split(',')
+      .map((v, i) => Math.round((Number(v) + Number(rgb('--surface', '#11141b').split(',')[i])) / 2))
+      .join(','),
   };
 
   const reducedQuery = matchMedia('(prefers-reduced-motion: reduce)');
@@ -600,16 +605,45 @@ export function mountOrb(host, options = {}) {
   };
 
   /**
-   * The body: lit disc, atmosphere, rim and rim light. Painted into the cache
-   * at rest, and straight onto the frame while the sphere is moving - a cached
-   * body clipped at its old stage's edge would show that edge as it moved.
+   * The body: volume, lit disc, atmosphere, rim and rim light. Painted into
+   * the cache at rest, and straight onto the frame while the sphere is moving -
+   * a cached body clipped at its old stage's edge would show that edge as it
+   * moved.
    * @param {CanvasRenderingContext2D} g @param {number} cx @param {number} cy @param {number} radius
    */
   const paintBody = (g, cx, cy, radius) => {
     const A = colors.accent;
+    if (scene.composition === 'sphere') {
+      // Volume: the sphere is a solid object in front of whatever lies behind
+      // the page. Densest in its body, thinning toward the limb so it never
+      // reads as a cut-out disc, and a little deeper away from the light.
+      const D = colors.deep;
+      const volume = g.createRadialGradient(cx + radius * 0.08, cy + radius * 0.09, 0, cx, cy, radius * 1.07);
+      volume.addColorStop(0, `rgba(${D},0.94)`);
+      volume.addColorStop(0.6, `rgba(${D},0.92)`);
+      volume.addColorStop(0.84, `rgba(${D},0.9)`);
+      volume.addColorStop(0.9, `rgba(${D},0.8)`);
+      volume.addColorStop(0.94, `rgba(${D},0.56)`);
+      volume.addColorStop(0.97, `rgba(${D},0.24)`);
+      volume.addColorStop(1, `rgba(${D},0)`);
+      g.fillStyle = volume;
+      g.beginPath();
+      g.arc(cx, cy, radius * 1.07, 0, TAU);
+      g.fill();
+      // Limb light: a thin haze just inside the edge, where a lit volume is
+      // seen through the most of itself.
+      const limb = g.createRadialGradient(cx, cy, radius * 0.78, cx, cy, radius * 1.02);
+      limb.addColorStop(0, `rgba(${A},0)`);
+      limb.addColorStop(0.8, `rgba(${A},0.06)`);
+      limb.addColorStop(1, `rgba(${A},0)`);
+      g.fillStyle = limb;
+      g.beginPath();
+      g.arc(cx, cy, radius * 1.02, 0, TAU);
+      g.fill();
+    }
     const disc = g.createRadialGradient(cx - radius * 0.35, cy - radius * 0.4, radius * 0.1, cx, cy, radius * 1.08);
-    disc.addColorStop(0, `rgba(${A},0.075)`);
-    disc.addColorStop(0.7, `rgba(${A},0.025)`);
+    disc.addColorStop(0, `rgba(${A},0.095)`);
+    disc.addColorStop(0.7, `rgba(${A},0.035)`);
     disc.addColorStop(1, `rgba(${A},0)`);
     g.fillStyle = disc;
     g.beginPath();
@@ -628,13 +662,13 @@ export function mountOrb(host, options = {}) {
     g.arc(cx, cy, radius * 1.32, 0, TAU);
     g.fill();
     g.lineWidth = 1;
-    g.strokeStyle = `rgba(${A},0.09)`;
+    g.strokeStyle = `rgba(${A},0.11)`;
     g.beginPath();
     g.arc(cx, cy, radius * 1.004, 0, TAU);
     g.stroke();
     // A rim light on the upper left: the only "lighting" in the scene.
     const rim = g.createLinearGradient(cx - radius, cy - radius, cx + radius * 0.2, cy);
-    rim.addColorStop(0, `rgba(${A},0.34)`);
+    rim.addColorStop(0, `rgba(${A},0.42)`);
     rim.addColorStop(1, `rgba(${A},0)`);
     g.strokeStyle = rim;
     g.lineWidth = 1.25;
@@ -828,10 +862,16 @@ export function mountOrb(host, options = {}) {
     return c;
   };
 
-  /** How visible a point at depth z is: back of the sphere fades, not vanishes. @param {number} z */
+  /**
+   * How visible a point at depth z is: back of the sphere fades, not vanishes.
+   * The far hemisphere is also seen through the body, which thins it further;
+   * the facing hemisphere is untouched.
+   * @param {number} z
+   */
   const depthAlpha = (z) => {
     const k = clamp((z + 1) / 2);
-    return 0.07 + 0.93 * k ** 2.4;
+    const throughBody = z < 0 ? 1 - 0.6 * clamp(-z / 0.6) : 1;
+    return (0.06 + 0.94 * k ** 2.6) * throughBody;
   };
 
   // --- signals ---------------------------------------------------------------
@@ -1096,7 +1136,7 @@ export function mountOrb(host, options = {}) {
     }
     ctx.lineWidth = 1;
     for (let i = 0; i < ROUTE_BUCKETS; i++) {
-      ctx.strokeStyle = `rgba(${A},${((i + 0.5) / ROUTE_BUCKETS) * 0.16 * dim * life})`;
+      ctx.strokeStyle = `rgba(${A},${((i + 0.5) / ROUTE_BUCKETS) * 0.19 * dim * life})`;
       ctx.stroke(routePaths[i]);
     }
     for (const courier of scene.couriers) {
@@ -1152,8 +1192,10 @@ export function mountOrb(host, options = {}) {
 
     // Edges, batched into alpha buckets: a handful of strokes per frame.
     const BUCKETS = 8;
-    const MAX_EDGE = 0.42;
+    const MAX_EDGE = 0.5;
+    const FAINT_EDGE = MAX_EDGE / BUCKETS;
     const paths = Array.from({ length: BUCKETS }, () => new Path2D());
+    const faintEdges = [new Path2D(), new Path2D()];
     const hot = new Path2D();
     let hotCount = 0;
     for (const edge of network.edges) {
@@ -1161,7 +1203,7 @@ export function mountOrb(host, options = {}) {
       const { a, b } = edge;
       if (horizon && !inView(a) && !inView(b)) continue;
       const z = (proj.z[a] + proj.z[b]) / 2;
-      let alpha = depthAlpha(z) * 0.3 * edge.w * Math.min(shellAlpha(network.nodes[a]), shellAlpha(network.nodes[b]));
+      let alpha = depthAlpha(z) * 0.36 * edge.w * Math.min(shellAlpha(network.nodes[a]), shellAlpha(network.nodes[b]));
       const inFocus = near && near.has(a) && near.has(b);
       alpha *= inFocus ? 1 : dim;
       const glow = Math.max(glowOf(a), glowOf(b));
@@ -1176,14 +1218,22 @@ export function mountOrb(host, options = {}) {
         hotCount++;
         continue;
       }
-      const index = Math.min(BUCKETS - 1, Math.floor((alpha * life) / (MAX_EDGE / BUCKETS)));
-      paths[index].moveTo(proj.x[a], proj.y[a]);
-      paths[index].lineTo(proj.x[b], proj.y[b]);
+      const lit = alpha * life;
+      // The faintest - the far side, through the body - get their own finer
+      // steps, so they are drawn as faint as they are rather than lifted to
+      // the first bucket's level.
+      const target = lit < FAINT_EDGE ? faintEdges[lit < FAINT_EDGE / 2 ? 0 : 1] : paths[Math.min(BUCKETS - 1, Math.floor(lit / (MAX_EDGE / BUCKETS)))];
+      target.moveTo(proj.x[a], proj.y[a]);
+      target.lineTo(proj.x[b], proj.y[b]);
     }
     ctx.lineWidth = 0.8;
     for (let i = 0; i < BUCKETS; i++) {
       ctx.strokeStyle = `rgba(${A},${((i + 0.5) / BUCKETS) * MAX_EDGE})`;
       ctx.stroke(paths[i]);
+    }
+    for (let i = 0; i < 2; i++) {
+      ctx.strokeStyle = `rgba(${A},${((i + 0.5) / 2) * FAINT_EDGE})`;
+      ctx.stroke(faintEdges[i]);
     }
     if (hotCount > 0) {
       ctx.strokeStyle = `rgba(${A},${(0.28 + 0.3 * Math.max(scene.scanAmount, scene.focusAmount, waveK < 1 ? 1 - waveK : 0)) * life})`;
@@ -1242,6 +1292,7 @@ export function mountOrb(host, options = {}) {
 
     // Nodes, batched by alpha. Hubs carry a faint halo when facing us.
     const nodePaths = Array.from({ length: BUCKETS }, () => new Path2D());
+    const faintNodes = [new Path2D(), new Path2D()];
     const litPath = new Path2D();
     const breathing = reduced ? 0 : 1;
     for (let i = 0; i < network.nodes.length; i++) {
@@ -1251,16 +1302,18 @@ export function mountOrb(host, options = {}) {
       const breath = (0.62 + 0.38 * p.density) * (0.8 + 0.2 * breathing * Math.sin(t * p.freq + p.phase));
       const inFocus = near ? near.has(i) : false;
       const glow = glowOf(i);
-      const alpha = clamp(depthAlpha(z) * breath * shellAlpha(p) * (inFocus ? 1 : dim) * life + glow * 0.6 * depthAlpha(z));
+      // The facing side reads a touch brighter; the far side keeps its fade.
+      const front = 1 + 0.15 * clamp(z);
+      const alpha = clamp(depthAlpha(z) * front * breath * shellAlpha(p) * (inFocus ? 1 : dim) * life + glow * 0.6 * depthAlpha(z));
       const r = p.size * proj.s[i] * (0.75 + 0.45 * clamp((z + 1) / 2)) + glow * 0.8;
       if (glow > 0.3 || (inFocus && scene.focusAmount > 0.05)) {
         litPath.moveTo(proj.x[i] + r + 0.6, proj.y[i]);
         litPath.arc(proj.x[i], proj.y[i], r + 0.6, 0, TAU);
         continue;
       }
-      const index = Math.min(BUCKETS - 1, Math.floor(alpha * BUCKETS));
-      nodePaths[index].moveTo(proj.x[i] + r, proj.y[i]);
-      nodePaths[index].arc(proj.x[i], proj.y[i], r, 0, TAU);
+      const nodePath = alpha < 1 / BUCKETS ? faintNodes[alpha < 0.5 / BUCKETS ? 0 : 1] : nodePaths[Math.min(BUCKETS - 1, Math.floor(alpha * BUCKETS))];
+      nodePath.moveTo(proj.x[i] + r, proj.y[i]);
+      nodePath.arc(proj.x[i], proj.y[i], r, 0, TAU);
       if (p.hub && z > 0.1) {
         ctx.fillStyle = `rgba(${A},${0.07 * alpha})`;
         ctx.beginPath();
@@ -1271,6 +1324,10 @@ export function mountOrb(host, options = {}) {
     for (let i = 0; i < BUCKETS; i++) {
       ctx.fillStyle = `rgba(${N},${(i + 0.5) / BUCKETS})`;
       ctx.fill(nodePaths[i]);
+    }
+    for (let i = 0; i < 2; i++) {
+      ctx.fillStyle = `rgba(${N},${(i + 0.5) / 2 / BUCKETS})`;
+      ctx.fill(faintNodes[i]);
     }
     ctx.fillStyle = `rgba(${colors.node},${0.95 * life})`;
     ctx.fill(litPath);
