@@ -100,9 +100,12 @@ export function gatherIntelligence(sources: DecisionSources, token: TokenSnapsho
  * (a pump.fun curve migrating to PumpSwap, or a different best pair), an
  * earlier pool's liquidity says nothing about this one's. Found in the
  * calibration replay: a $2.5M bonding curve followed by a $10K PumpSwap pool
- * read as a 99.6% collapse. So a point recorded on a different known pool
- * keeps its price and loses its liquidity. A point with no recorded pool is
- * kept as it is: it cannot be told apart.
+ * read as a 99.6% collapse. So when the current pool is known, only points
+ * recorded on it keep their liquidity; every other point keeps its price and
+ * loses its liquidity - including points with no recorded pool, which cannot
+ * be attributed. (Found live: a $1.1M reading of unknown pool set against a
+ * $6K current pool read as a 99% collapse.) With no current pool nothing can
+ * be compared more strictly, and points are kept as they are.
  * @param pool the current snapshot's pool, when known
  */
 export function gatherHistory(sources: DecisionSources, mint: string, now: number, pool: string | null = null): MarketObservation[] {
@@ -112,7 +115,7 @@ export function gatherHistory(sources: DecisionSources, mint: string, now: numbe
   return sources.marketHistory(mint, since).map((p) => ({
     t: p.observedAt,
     price: p.priceUsd,
-    liquidity: pool !== null && p.poolAddress !== null && p.poolAddress !== pool ? null : p.liquidityUsd,
+    liquidity: pool !== null && p.poolAddress !== pool ? null : p.liquidityUsd,
     holders: byTime.get(p.observedAt) ?? null,
   }));
 }

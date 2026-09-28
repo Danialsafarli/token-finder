@@ -58,6 +58,15 @@ test('regression: a pool migration is not a liquidity collapse; a same-pool coll
   assert.ok(!codes(migrated).includes('LIQUIDITY_COLLAPSE'), 'another pool\'s liquidity is not compared');
   assert.ok(!codes(migrated).includes('LIQUIDITY_LEAVING'));
 
+  // Found live on the Board: readings with no recorded pool ($1.1M) against a
+  // $6K current pool read as a 99% collapse. Unattributed liquidity is not compared.
+  const unattributed = decideWith(
+    points(['BIG', null as unknown as string, null as unknown as string, 'SMALL'], [600_000, 1_100_000, 800_000, 6_200]),
+    'SMALL',
+    5_700,
+  );
+  assert.ok(!codes(unattributed).includes('LIQUIDITY_COLLAPSE'), 'a reading of unknown pool is not this pool\'s history');
+
   const drained = decideWith(points(['POOL', 'POOL', 'POOL', 'POOL'], [66_000, 69_000, 56_000, 15_700]), 'POOL', 6_800);
   assert.ok(codes(drained).includes('LIQUIDITY_COLLAPSE'));
   assert.equal(drained.verdict, 'HIGH_RISK', 'serious soft risk on confident evidence');

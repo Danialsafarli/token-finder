@@ -85,7 +85,8 @@ export function labelOutcome(at: number, liquidity: number | null, later: Observ
       detail: `${event.type.toLowerCase().replace('_', ' ')} confirmed ${Math.round((event.at - at) / 60_000)} min after the verdict`,
     };
   }
-  const samePool = (o: Observation): boolean => pool === null || o.pool === undefined || o.pool === null || o.pool === pool;
+  // A reading with no recorded pool cannot be attributed, so it is not compared.
+  const samePool = (o: Observation): boolean => pool === null || o.pool === pool;
   const obs = later.filter((o) => inWindow(o.t) && o.liquidity !== null && samePool(o)).sort((a, b) => a.t - b.t) as { t: number; liquidity: number }[];
   if (liquidity === null || liquidity < OUTCOME_RULES.minLiquidityUsd || obs.length === 0) {
     return { class: 'UNKNOWN', label: 'NOT_OBSERVED', detail: liquidity === null ? 'no liquidity measured at the verdict' : obs.length === 0 ? 'not observed after the verdict' : 'liquidity too small to compare' };
