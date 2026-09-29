@@ -9,7 +9,7 @@ the activity, and decides which of them can be trusted enough to watch - then
 keeps that read current as conditions change.
 
 **[▶ Live demo](https://130-61-32-89.sslip.io)** &nbsp;·&nbsp;
-**[X / Twitter](https://x.com/danialsafarli)** &nbsp;·&nbsp;
+**[X / Twitter](https://x.com/danialsafarli/status/2105040943560728987?s=20)** &nbsp;·&nbsp;
 **[Email](mailto:danialsafarli@gmail.com)** &nbsp;·&nbsp;
 **[One-minute tour](DEMO.md)**
 
