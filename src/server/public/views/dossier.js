@@ -785,6 +785,10 @@ export function mountDossier(root, route) {
   let disposed = false;
   /** @type {ResizeObserver | null} */
   let resize = null;
+  // Presentation only: the whole Dossier eases in on its first paint and a
+  // newly opened tab's content on a tab change. A live refresh repaints still.
+  /** @type {'' | 'enter' | 'tab-enter'} */
+  let entrance = 'enter';
 
   const content = () => root.querySelector('#dossier-tab');
 
@@ -825,12 +829,13 @@ export function mountDossier(root, route) {
     document.title = `${data.token.symbol} · ${data.verdict.label} — Token Finder`;
     render(
       root,
-      html`<article class="dossier" aria-labelledby="verdict-label">
+      html`<article class="dossier ${entrance ? `dossier--${entrance}` : ''}" aria-labelledby="verdict-label">
         ${header(data)}
         ${tabsNav(data, tab)}
         <div id="dossier-tab" class="dossier-tab" tabindex="-1"></div>
       </article>`,
     );
+    entrance = '';
     paintTab();
   };
 
@@ -900,6 +905,7 @@ export function mountDossier(root, route) {
       if (next.params.mint !== mint) return false;
       tab = TABS.some((t) => t.id === next.params.tab && t.available) ? /** @type {string} */ (next.params.tab) : 'overview';
       if (data) {
+        entrance = 'tab-enter';
         paint();
         /** @type {HTMLElement | null} */ (root.querySelector('#dossier-tab'))?.focus({ preventScroll: true });
       }

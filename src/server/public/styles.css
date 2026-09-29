@@ -4307,3 +4307,546 @@ th.col-num {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ------------------------------------------------------- dossier: finish -- */
+/*
+ * The Dossier's presentation layer. Nothing here adds, hides or reorders
+ * information. It sets the reading order by weight - the verdict, then the
+ * four decision numbers, then evidence quality, then drill-down - and trades
+ * box-on-box contrast for softer surfaces, hairlines and type.
+ *
+ * Section icons are same-origin SVG masks (the CSP allows no data: URIs),
+ * tinted like the label beside them; they carry no meaning of their own.
+ * Motion runs once: when a Dossier opens (`dossier--enter`) or a tab's
+ * content is shown (`dossier--tab-enter`); a live refresh repaints still.
+ */
+.dossier {
+  --edge: rgba(255, 255, 255, 0.06);
+  --edge-hover: rgba(255, 255, 255, 0.1);
+  --hair: rgba(255, 255, 255, 0.05);
+  --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0) 160px);
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* icons */
+.dossier :is(#vetoes-title, #why-title, #activity-title, #rug-title, #integrity-title, #watch-title, #score-title, #findings-title, #market-title, #hl-title, #opp-title, #about-title, #program-title, #ext-title, #holders-title, #timeline-title, #changes-title)::before,
+.dossier .decision-card__label::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  background-color: var(--glyph-tint, var(--text-3));
+  -webkit-mask: var(--glyph) center / contain no-repeat;
+  mask: var(--glyph) center / contain no-repeat;
+}
+.dossier #vetoes-title { --glyph: url("/icons/veto.svg"); --glyph-tint: var(--bad); }
+.dossier #why-title { --glyph: url("/icons/why.svg"); }
+.dossier #activity-title { --glyph: url("/icons/activity.svg"); }
+.dossier #rug-title { --glyph: url("/icons/rug.svg"); }
+.dossier #integrity-title { --glyph: url("/icons/shield.svg"); }
+.dossier #watch-title { --glyph: url("/icons/change.svg"); --glyph-tint: var(--accent); }
+.dossier #score-title { --glyph: url("/icons/bars.svg"); }
+.dossier #findings-title { --glyph: url("/icons/flag.svg"); }
+.dossier #market-title { --glyph: url("/icons/market.svg"); }
+.dossier :is(#hl-title, #holders-title) { --glyph: url("/icons/holders.svg"); }
+.dossier #opp-title { --glyph: url("/icons/target.svg"); }
+.dossier #about-title { --glyph: url("/icons/info.svg"); }
+.dossier #program-title { --glyph: url("/icons/coin.svg"); }
+.dossier #ext-title { --glyph: url("/icons/blocks.svg"); }
+.dossier #timeline-title { --glyph: url("/icons/clock.svg"); }
+.dossier #changes-title { --glyph: url("/icons/change.svg"); }
+.dossier .decision-card:nth-child(1) { --glyph: url("/icons/shield.svg"); }
+.dossier .decision-card:nth-child(2) { --glyph: url("/icons/target.svg"); }
+.dossier .decision-card:nth-child(3) { --glyph: url("/icons/momentum.svg"); }
+.dossier .decision-card:nth-child(4) { --glyph: url("/icons/rank.svg"); }
+
+/* header */
+.dossier .dossier-head {
+  gap: 28px;
+  margin-bottom: 18px;
+}
+.dossier .identity {
+  gap: 18px;
+  padding-top: 10px;
+}
+.dossier .identity .avatar--48 {
+  width: 56px;
+  height: 56px;
+  box-shadow: 0 0 0 4px var(--bg), 0 0 0 5px var(--line-strong), 0 12px 28px -12px rgba(0, 0, 0, 0.9);
+}
+.dossier .identity__symbol {
+  font-size: 38px;
+  letter-spacing: -0.03em;
+}
+.dossier .identity__name {
+  margin-top: 6px;
+}
+.dossier .identity__mint {
+  margin-top: 12px;
+}
+.dossier .identity__mint code {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: var(--surface-2);
+}
+
+.dossier .verdict-panel {
+  --tone: var(--line-strong);
+  --tone-wash: rgba(151, 160, 178, 0.06);
+  --tone-edge: var(--edge);
+  --tone-glow: transparent;
+  padding: 20px 24px 18px 28px;
+  border-radius: 18px;
+  border-color: var(--tone-edge);
+  background: radial-gradient(130% 160% at 0% 0%, var(--tone-wash), transparent 58%), var(--sheen), var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 26px 50px -34px var(--tone-glow);
+}
+.dossier .verdict-panel--good { --tone: var(--good); --tone-wash: rgba(76, 201, 143, 0.1); --tone-edge: rgba(76, 201, 143, 0.24); --tone-glow: rgba(76, 201, 143, 0.4); }
+.dossier .verdict-panel--warn { --tone: var(--warn); --tone-wash: rgba(226, 176, 78, 0.1); --tone-edge: rgba(226, 176, 78, 0.24); --tone-glow: rgba(226, 176, 78, 0.35); }
+.dossier .verdict-panel--bad { --tone: var(--bad); --tone-wash: rgba(240, 112, 111, 0.1); --tone-edge: rgba(240, 112, 111, 0.26); --tone-glow: rgba(240, 112, 111, 0.4); }
+.dossier .verdict-panel::before {
+  inset: 16px auto 16px 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--tone);
+  box-shadow: 0 0 14px var(--tone-glow);
+}
+.dossier .verdict-panel__label {
+  margin: 12px 0 10px;
+}
+.dossier .verdict-panel__reason {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.dossier .facts {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hair);
+}
+
+/* the four decision numbers: the instrument cluster */
+.dossier .decision-strip {
+  border-color: var(--edge);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 75%), var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 20px 44px -34px rgba(0, 0, 0, 0.95);
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.dossier .decision-card {
+  --card-tone: var(--line-strong);
+  position: relative;
+  padding: 20px 22px 18px;
+  transition: background-color 0.2s ease;
+}
+.dossier .decision-card + .decision-card {
+  border-color: var(--hair);
+}
+.dossier .decision-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 22px;
+  right: 22px;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: linear-gradient(90deg, var(--card-tone), transparent 85%);
+  opacity: 0.85;
+}
+.dossier .decision-card--good { --card-tone: var(--good); }
+.dossier .decision-card--warn { --card-tone: var(--warn); }
+.dossier .decision-card--bad { --card-tone: var(--bad); }
+.dossier .decision-card:hover {
+  background-color: rgba(255, 255, 255, 0.015);
+}
+.dossier .decision-card__label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.dossier .decision-card__value {
+  font-family: var(--font-display);
+  font-size: 36px;
+  letter-spacing: -0.035em;
+  margin: 12px 0 10px;
+  font-variant-numeric: tabular-nums;
+}
+.dossier .decision-card__value--word {
+  font-size: 24px;
+  letter-spacing: -0.02em;
+  padding: 7px 0 5px;
+}
+.dossier .decision-card__unit {
+  font-size: var(--fs-s);
+  letter-spacing: 0;
+  margin-left: 3px;
+}
+.dossier .decision-card--good .decision-card__value { text-shadow: 0 0 26px rgba(76, 201, 143, 0.28); }
+.dossier .decision-card--warn .decision-card__value { text-shadow: 0 0 26px rgba(226, 176, 78, 0.24); }
+.dossier .decision-card--bad .decision-card__value { text-shadow: 0 0 26px rgba(240, 112, 111, 0.26); }
+
+/* evidence quality: secondary to the decision, so it recedes */
+.dossier .trust {
+  border-color: var(--hair);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.012);
+  margin-bottom: 26px;
+}
+.dossier .trust > * {
+  padding: 14px 22px 16px;
+}
+.dossier .trust > * + * {
+  border-color: var(--hair);
+}
+.dossier .trust__value {
+  font-family: var(--font-display);
+  font-size: 22px;
+}
+
+/* meters: blue stays the trust colour; a faint halo lifts the filled part */
+.dossier .meter {
+  filter: drop-shadow(0 0 3px rgba(138, 180, 255, 0.22));
+}
+.dossier .meter__track {
+  fill: rgba(255, 255, 255, 0.06);
+}
+.dossier .stack {
+  clip-path: inset(0 round 5px);
+}
+
+/* tabs */
+.dossier .tabs {
+  gap: 2px;
+  border-bottom-color: var(--hair);
+  margin-bottom: 22px;
+}
+.dossier .tab {
+  border-radius: 8px 8px 0 0;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+.dossier .tab:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+.dossier .tab.is-active::after {
+  left: 12px;
+  right: 12px;
+  box-shadow: 0 0 10px rgba(138, 180, 255, 0.5);
+}
+.dossier .tab__count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+/* panels: surfaces, not boxes */
+.dossier .panel {
+  padding: 20px 22px;
+  border-color: var(--edge);
+  border-radius: 16px;
+  background: var(--sheen), var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  transition: border-color 0.2s ease;
+}
+.dossier .panel:hover {
+  border-color: var(--edge-hover);
+}
+.dossier .panel__title {
+  font-size: var(--fs-m);
+  letter-spacing: -0.01em;
+  margin-bottom: 14px;
+  row-gap: 4px;
+}
+.dossier .panel > p.small.muted:last-child {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hair);
+}
+.dossier .panel--bad {
+  border-color: var(--bad-line);
+  background: radial-gradient(120% 90% at 0% 0%, rgba(240, 112, 111, 0.08), transparent 60%), var(--sheen), var(--surface);
+}
+.dossier .veto__label {
+  font-size: 17px;
+}
+.dossier .panel:has(> #why-title .verdict--good) { background: radial-gradient(110% 80% at 0% 0%, rgba(76, 201, 143, 0.055), transparent 55%), var(--sheen), var(--surface); }
+.dossier .panel:has(> #why-title .verdict--warn) { background: radial-gradient(110% 80% at 0% 0%, rgba(226, 176, 78, 0.055), transparent 55%), var(--sheen), var(--surface); }
+.dossier .panel:has(> #why-title .verdict--bad) { background: radial-gradient(110% 80% at 0% 0%, rgba(240, 112, 111, 0.055), transparent 55%), var(--sheen), var(--surface); }
+
+/* reasons: the mark sits in its own gutter, so a long reason wraps under
+   itself instead of into the mark's column */
+.dossier .reasons {
+  gap: 2px;
+  margin-top: 8px;
+}
+.dossier .reasons li {
+  display: block;
+  position: relative;
+  padding: 5px 0 5px 28px;
+}
+.dossier .reasons__mark {
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+  background: var(--neutral-soft);
+}
+.dossier .reasons--positive .reasons__mark { background: var(--good-soft); }
+.dossier .reasons--risk .reasons__mark { background: var(--bad-soft); }
+.dossier .reasons__head {
+  margin-top: 14px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+/* key/value rows: hairlines instead of air */
+.dossier .kv--compact {
+  gap: 0;
+}
+.dossier .kv--compact > div {
+  padding: 10px 0;
+}
+.dossier .kv > div + div {
+  border-top: 1px solid var(--hair);
+}
+.dossier .kv:not(.kv--compact) > div + div {
+  padding-top: 12px;
+}
+
+/* activity integrity */
+.dossier .composition {
+  gap: 12px;
+  margin: 14px 0 8px;
+}
+.dossier .legend__swatch {
+  border-radius: 50%;
+}
+
+/* rug intelligence */
+.dossier .event-item {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--hair);
+  background: rgba(255, 255, 255, 0.018);
+}
+.dossier .caveats {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(226, 176, 78, 0.16);
+  background: rgba(226, 176, 78, 0.05);
+  gap: 6px;
+}
+.dossier .caveats li {
+  padding-left: 18px;
+}
+.dossier .caveats li::before {
+  left: 4px;
+}
+
+/* integrity by domain: rows with a hover and a disclosure chevron */
+.dossier .domains {
+  gap: 0;
+  margin-top: 4px;
+}
+.dossier .domain + .domain {
+  border-top: 1px solid var(--hair);
+}
+.dossier .domain__summary {
+  grid-template-columns: minmax(120px, 1.3fr) auto minmax(60px, 1fr) auto 12px;
+  list-style: none;
+  padding: 9px 8px;
+  margin: 0 -8px;
+  border-radius: 8px;
+  transition: background-color 0.15s ease;
+}
+.dossier .domain__summary::-webkit-details-marker {
+  display: none;
+}
+.dossier .domain__summary:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+.dossier .domain__summary::after {
+  content: "";
+  justify-self: center;
+  width: 6px;
+  height: 6px;
+  border-right: 1.6px solid var(--text-3);
+  border-bottom: 1.6px solid var(--text-3);
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.dossier .domain details[open] > .domain__summary::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+.dossier .domain__detail {
+  margin: 2px 0 12px 4px;
+  padding: 4px 0 4px 14px;
+}
+
+/* opportunity and score components */
+.dossier .components {
+  gap: 0;
+}
+.dossier .component {
+  padding: 11px 0;
+}
+.dossier .component + .component {
+  border-top: 1px solid var(--hair);
+}
+.dossier .component__value {
+  font-family: var(--font-display);
+  font-size: var(--fs-m);
+}
+
+/* market */
+.dossier .stats {
+  gap: 16px 12px;
+}
+.dossier .panel[aria-labelledby="market-title"] > .stats > div:nth-child(-n + 3) dd {
+  font-family: var(--font-display);
+  font-size: var(--fs-l);
+  letter-spacing: -0.01em;
+}
+.dossier .momentum {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top-color: var(--hair);
+}
+
+/* what would change this verdict: forward-looking, so it reads differently */
+.dossier .panel[aria-labelledby="watch-title"] {
+  border-style: dashed;
+  border-color: rgba(138, 180, 255, 0.22);
+  background: radial-gradient(120% 100% at 100% 0%, rgba(138, 180, 255, 0.06), transparent 55%), var(--sheen), var(--surface);
+}
+.dossier .watchpoint {
+  padding: 2px 0 2px 18px;
+}
+.dossier .watchpoint::before {
+  top: calc(0.62em + 2px);
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+/* the market-score breakdown: a quiet disclosure with a chevron */
+.dossier .panel--quiet > details > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dossier .panel--quiet > details > summary::after {
+  content: "";
+  flex: none;
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.6px solid var(--text-3);
+  border-bottom: 1.6px solid var(--text-3);
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.dossier .panel--quiet > details[open] > summary::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+.dossier .panel--quiet > details:not([open]) .panel__title {
+  margin-bottom: 0;
+}
+
+/* links and the evidence ledger */
+.dossier .ext-link {
+  border-radius: 999px;
+  border-color: var(--edge-hover);
+  background: rgba(255, 255, 255, 0.02);
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.dossier .ext-link:hover {
+  background: var(--accent-soft);
+}
+.dossier .ev-list {
+  border-color: var(--edge);
+  border-radius: 16px;
+  background: var(--sheen), var(--surface);
+}
+.dossier .ev + .ev {
+  border-top-color: var(--hair);
+}
+.dossier .ev details > summary {
+  transition: background-color 0.15s ease;
+}
+
+/* motion: once, on arrival. The History tab is left still: its panels arrive
+   after an async load and Chromium does not repaint them if they animate. */
+@keyframes dossier-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+/* Meters draw in by a wipe; the end state overhangs the box so the halo is
+   not clipped. Meters inside a <summary> (the domain rows) are not animated:
+   Chromium does not repaint an animation there, and they would stay hidden. */
+@keyframes dossier-grow {
+  from {
+    clip-path: inset(-6px 100% -6px -6px);
+  }
+  to {
+    clip-path: inset(-6px -6px -6px -6px);
+  }
+}
+@keyframes dossier-wipe {
+  from {
+    clip-path: inset(0 100% 0 0 round 5px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 5px);
+  }
+}
+.dossier--enter > :is(.notice, .dossier-head, .decision-strip, .trust, .tabs) {
+  animation: dossier-rise 0.5s var(--ease-out) backwards;
+}
+.dossier--enter > .decision-strip { animation-delay: 60ms; }
+.dossier--enter > .trust { animation-delay: 110ms; }
+.dossier--enter > .tabs { animation-delay: 150ms; }
+.dossier--enter .dossier-tab {
+  --enter-base: 180ms;
+}
+:is(.dossier--enter, .dossier--tab-enter) .dossier-tab > .notice,
+:is(.dossier--enter, .dossier--tab-enter) .dossier-tab :is(.overview-main, .overview-side, .evidence) > * {
+  animation: dossier-rise 0.5s var(--ease-out) backwards;
+  animation-delay: calc(var(--enter-base, 0ms) + var(--i, 0) * 50ms);
+}
+.dossier-tab :is(.overview-main, .overview-side, .evidence, .history) > :nth-child(2) { --i: 1; }
+.dossier-tab :is(.overview-main, .overview-side, .evidence, .history) > :nth-child(3) { --i: 2; }
+.dossier-tab :is(.overview-main, .overview-side, .evidence, .history) > :nth-child(4) { --i: 3; }
+.dossier-tab :is(.overview-main, .overview-side, .evidence, .history) > :nth-child(n + 5) { --i: 4; }
+:is(.dossier--enter, .dossier--tab-enter) .meter:not(summary .meter) {
+  animation: dossier-grow 0.9s var(--ease-out) 0.2s both;
+}
+:is(.dossier--enter, .dossier--tab-enter) .stack {
+  animation: dossier-wipe 0.9s var(--ease-out) 0.25s both;
+}
+
+@media (max-width: 560px) {
+  .dossier .identity__symbol {
+    font-size: var(--fs-2xl);
+  }
+  .dossier .decision-card__value {
+    font-size: 32px;
+  }
+  .dossier .domain__summary {
+    grid-template-columns: minmax(0, 1fr) auto 12px;
+  }
+  .dossier .panel {
+    padding: 18px 16px;
+  }
+}
