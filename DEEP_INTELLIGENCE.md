@@ -435,7 +435,8 @@ Engineering checks only; none of this measures accuracy.
 ## 16. Known limitations
 
 - **Pool coverage is partial.** *(Phase 3: every provider-reported pool is now read from the mint's own history and up to two are collected; each reading states how much of the market it represents, and that caps its coverage. See DECISION_ENGINE.md §6.)* A busy token is still sampled, not read in full.
-- **Windows are small.** Newest 100 transactions per wallet and per mint;
+- **Windows are small.** Newest 100 transactions per wallet and per mint by
+  default (current production reads 30 per wallet, DEPLOYMENT.md §6);
   older facts (an early mint, an old freeze) can be missed, and the
   truncation says so.
 - **Oldest-first history is Helius-only.** Elsewhere, funding is never

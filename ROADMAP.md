@@ -31,12 +31,14 @@ depends on a provider, what is limited, and what is future.
   (CALIBRATION.md §4).
 - **High potential** is currently unreachable (no token above an opportunity
   of 61 against 65), for lack of momentum history and deep coverage.
-- **Deep intelligence coverage**: 2-4 tokens a cycle; most live tokens are
+- **Deep intelligence coverage**: 2-4 tokens a cycle by default (current
+  production: 2 every 15 minutes, DEPLOYMENT.md §6); most live tokens are
   unanalysed at any moment and are at most Qualified.
 - **Momentum** needs at least 20 minutes and three observations; SUSTAINED and
   ACCELERATING need about 1.5 hours.
-- **Samples**: at most 12 wallets per token, the newest 100 transactions per
-  wallet and per mint; wash and coordination readings rarely represent half
+- **Samples**: by default at most 12 wallets per token, the newest 100
+  transactions per wallet and per mint (current production: 6 wallets and 30
+  transactions per wallet; the mint window stays 100); wash and coordination readings rarely represent half
   the market, and are capped accordingly.
 - **Deployment** is one instance by design (SQLite has one writer); it runs
   live on Oracle Cloud, Frankfurt (DEPLOYMENT.md §6).

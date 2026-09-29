@@ -12,7 +12,7 @@ collection and deep intelligence side by side, over **one SQLite database**.
 
 | Requirement | Why |
 |---|---|
-| A process that stays up | the scanner runs every two minutes; the product is what it has observed |
+| A process that stays up | the scanner runs on an interval (2 min by default, 5 min in current production, §6); the product is what it has observed |
 | A persistent disk for `/data` | SQLite is the history; losing it on restart loses the product |
 | Exactly one instance | SQLite has one writer; two machines would each keep a different history |
 | Server-side secrets | `HELIUS_API_KEY` and friends are read only by `src/config.ts` and never reach the browser |
@@ -119,4 +119,33 @@ and point an HTTPS reverse proxy (Caddy: `reverse_proxy 127.0.0.1:8080`) at it.
 | HTTPS | Caddy with automatic certificates, `reverse_proxy 127.0.0.1:8080`; port 8080 is closed to the internet |
 | Storage | a separate 50 GB block volume mounted by UUID; a host-side compose override binds the `token-finder-data` volume onto it, and Docker is ordered after the mount so a restart can never start on an empty directory |
 | Secrets | `HELIUS_API_KEY` and `PUBLIC_ORIGIN` in a root-only `.env` (mode 600) on the host |
+| Configuration | the same override adds `env_file: /opt/token-finder/.env`, so every key in that file reaches the app. `deploy/docker-compose.yml` on its own forwards only the four keys it names; tuning variables need this line |
 | Recovery | verified with a real reboot: Docker, Caddy and the container returned on their own, with the same scan count and database |
+
+### Competition RPC profile
+
+Production runs a reduced profile that bounds Helius usage while keeping every
+capability on. It is set in the host `.env`; the code defaults (and
+`.env.example`) are unchanged, and so is every rule that reaches a verdict.
+
+| Variable | Production | Code default |
+|---|---|---|
+| `SCAN_INTERVAL_SEC` | 300 (5 min) | 120 |
+| `INGEST_INTERVAL_SEC` | 300 (5 min) | 60 |
+| `INGEST_TOKENS_PER_CYCLE` | 3 | 6 |
+| `INGEST_TX_PER_TOKEN` | 5 | 10 |
+| `INGEST_POOLS_PER_TOKEN` | 1 | 2 |
+| `LAUNCH_TX_PER_CYCLE` | 20 | 60 |
+| `INTEL_INTERVAL_SEC` | 900 (15 min) | 300 |
+| `INTEL_TOKENS_PER_CYCLE` | 2 | 2 |
+| `INTEL_MAX_TOKENS_PER_CYCLE` | 2 | 4 |
+| `INTEL_WALLETS_PER_TOKEN` | 6 | 12 |
+| `INTEL_TX_PER_WALLET` | 30 | 100 |
+| `INTEL_GRAPH_DEPTH` | 1 | 2 |
+| `INTEL_REQUESTS_PER_CYCLE` | 50 | 150 |
+
+The effective values are visible at runtime: `/api/status` reports
+`scanIntervalSec`, `/api/system` reports `ingestion.intervalSec` and
+`intelligence.intervalSec`, and the startup log prints all three. Smaller
+samples show up as more truncations and lower coverage, never as a cleaner
+verdict.

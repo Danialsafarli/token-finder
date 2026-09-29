@@ -29,18 +29,71 @@ keeps that read current as conditions change.
 
 ---
 
-## Why Token Finder
+## Problem → Solution
 
 Most new Solana tokens are noise, and many are traps. A price chart cannot tell
 you whether the buyers are real people or a bot farm, whether the creator has
 drained pools before, or whether "no risk found" means *safe* or *never checked*.
 
-| The usual screener | Token Finder |
-|---|---|
-| A single score that blends safety and hype | **Safety and opportunity are separate numbers.** Momentum can never lift a verdict |
-| Missing data quietly counts as zero risk | **Unknown is never zero.** What was not measured is shown, and costs rank |
-| Trusts volume at face value | **Asks who is trading** - organic, automated, snipers, coordinated wallets, wash |
-| A verdict with no explanation | **Every verdict explains itself** - reasons, risks, what blocks a better one, coverage - and every change is recorded |
+| The problem | What goes wrong today | How Token Finder solves it |
+|---|---|---|
+| **Fragmented token intelligence** | Safety on one site, holders on another, the chart on a third, wallet behaviour nowhere. The trader stitches it together by hand | **One pipeline, one page per token.** Four to five market feeds plus launches read from the chain, merged per mint; safety, holders, buyers, wallets, the creator and momentum in one Dossier, with every provider's claim kept |
+| **Opaque risk scores** | A number with no reasons; no way to tell what drove it or whether it changed | **Every verdict explains itself** - reasons, risks, what blocks a better verdict, coverage. The Evidence tab shows each provider's reading and which one won; every verdict change is recorded with its reasons |
+| **Missing data creates false confidence** | A check that never ran quietly counts as zero risk | **Unknown is never zero.** Missing evidence earns no points, lowers coverage and costs rank; an unanalysed token is at most *Qualified*; the Dossier lists what was not measured and why |
+| **New tokens are hard to evaluate** | No history, volume that may be bots, a creator nobody knows | **It reads the chain itself** - pump.fun launches, first buyers profiled from their own wallet history (sniper, high-frequency, automated, organic or unknown), funding links, coordinated entry, wash trading, and the creator's earlier launches and security events |
+| **Safety confused with opportunity** | One blended score, so hype can lift a dangerous token | **Separate numbers.** A hard gate and seven integrity domains decide safety; opportunity and momentum are scored apart, and momentum can never lift a verdict. A token with strong momentum can still be *Rejected* |
+
+## Why Solana
+
+Token Finder is Solana-native: its core evidence exists only on Solana, and it
+reads it directly from Mainnet through Helius-backed JSON-RPC.
+
+- **Token programs** - SPL and Token-2022 mint and freeze authorities, and
+  Token-2022 extensions, read from the mint account.
+- **Holders** - the largest token accounts, with pools, bonding curves and
+  programs separated from wallets.
+- **Transactions** - pump.fun launches and pool activity parsed into swaps,
+  liquidity events and transfers.
+- **Wallet behaviour** - each profiled wallet's own history, oldest-first for
+  its first funding, to classify buyers and link funders.
+
+Without chain reads, the on-chain safety checks, buyer intelligence and rug
+intelligence are reported `UNAVAILABLE` - never assumed clean. What would
+remain is market data and third-party risk flags: a screener, not Token Finder.
+
+## Hackathon fit
+
+| | Criterion | Evidence |
+|---|---|---|
+| ✅ | **Live & functional** | Running 24/7 at [130-61-32-89.sslip.io](https://130-61-32-89.sslip.io); public [`/healthz`](https://130-61-32-89.sslip.io/healthz) and [`/readyz`](https://130-61-32-89.sslip.io/readyz) |
+| ✅ | **Real Solana integration** | Helius JSON-RPC over `fetch`: token authorities, Token-2022 extensions, holders, launch and swap transactions, wallet histories |
+| ✅ | **Solana Mainnet** | Every token on the Board is a live Mainnet mint. Nothing is simulated, staged or on devnet |
+| ✅ | **Clear problem** | Five concrete failures of today's token screening, each with its solution - [above](#problem--solution) |
+| ✅ | **Solana is essential** | On-chain safety checks, buyer and rug intelligence are built from Solana data; without it they are `UNAVAILABLE` ([Why Solana](#why-solana)) |
+| ✅ | **Usable, demoable MVP** | Landing, live Board, per-token Dossier, Changes and System; analyse any mint by address; a [one-minute demo path](DEMO.md) |
+| ✅ | **Public GitHub** | [github.com/Danialsafarli/token-finder](https://github.com/Danialsafarli/token-finder) |
+| ✅ | **Live test deployment** | Oracle Cloud, Frankfurt: HTTPS, persistent SQLite, reboot-verified recovery ([Production deployment](#production-deployment)) |
+
+**What is distinctive** - not a claim, a set of rules the code enforces:
+
+- **Evidence-backed verdicts.** Every verdict carries its reasons, its
+  coverage and each provider's claim.
+- **Unknown ≠ Safe.** What was not checked earns nothing and is charged in rank.
+- **Safety ≠ Opportunity.** Two separate scores; momentum never lifts a verdict.
+- **Buyer, creator and activity intelligence.** Who is trading, who launched
+  it, and what they did before - from their own on-chain history.
+- **Deterministic decisions.** Rule-versioned code over stored rows; the same
+  evidence always gives the same verdict.
+
+## Live demo
+
+**[▶ https://130-61-32-89.sslip.io](https://130-61-32-89.sslip.io)** - follow
+the **[one-minute path](DEMO.md)**: Landing → Board → a candidate's Dossier →
+why it got its verdict.
+
+The live instance runs a reduced RPC profile for the competition: **a scan
+every 5 minutes, chain ingestion every 5 minutes, deep intelligence every 15
+minutes**. The top bar shows when the last scan ran.
 
 ---
 
@@ -63,7 +116,7 @@ flowchart LR
 
 | Stage | What happens | Where |
 |---|---|---|
-| **Live feeds** | Jupiter (recent, organic), DexScreener (profiles, boosts), Birdeye (new, optional) every 2 min, plus pump.fun launches read from the chain every 60 s | `core/discover.ts`, `ingest/` |
+| **Live feeds** | Jupiter (recent, organic), DexScreener (profiles, boosts), Birdeye (new, optional) on every scan, plus pump.fun launches read from the chain on every collection cycle (production: both every 5 min) | `core/discover.ts`, `ingest/` |
 | **Discovery** | Candidates merged across feeds; a mint seen by several feeds is a stronger signal | `core/discover.ts` |
 | **Safety** | Mint and freeze authority, Token-2022 extensions, exact holder concentration, RugCheck findings, liquidity floor. Any **hard fail rejects outright** | `core/analyze.ts`, `decision/gate.ts` |
 | **Buyer intelligence** | Wallet profiles from their own history: age, cadence, entry speed, hold time, first funding | `intel/features.ts`, `intel/funding.ts` |
@@ -167,11 +220,19 @@ flowchart LR
   API --> UI["Browser UI<br/>buildless ES modules"]
 ```
 
-**One long-lived Node process** runs the dashboard, the scanner (every 2 min),
-chain collection (every 60 s) and deep intelligence (every 5 min, 2-4 tokens
-chosen by stated priority) side by side, over **one SQLite database**. Each
-loop has its own request and time budget; what a budget cuts is recorded as
-truncation and lowers coverage. Details: [ARCHITECTURE.md](ARCHITECTURE.md),
+**One long-lived Node process** runs the dashboard, the scanner, chain
+collection and deep intelligence (tokens chosen by stated priority) side by
+side, over **one SQLite database**. Each loop has its own interval and its own
+request and time budget; what a budget cuts is recorded as truncation and
+lowers coverage.
+
+| Loop | Current production | Code default |
+|---|---|---|
+| Scanner | every 5 min | every 2 min |
+| Chain collection | every 5 min | every 60 s |
+| Deep intelligence | every 15 min, 2 tokens | every 5 min, 2-4 tokens |
+
+Details: [ARCHITECTURE.md](ARCHITECTURE.md),
 [PIPELINE.md](PIPELINE.md), [DATA_BACKBONE.md](DATA_BACKBONE.md),
 [PERSISTENCE.md](PERSISTENCE.md).
 
@@ -216,6 +277,25 @@ flowchart LR
 | **On-chain data** | Helius-backed chain collection and deep intelligence |
 | **One writer** | exactly one instance: SQLite has one writer |
 | **Public limits** | analyses, manual scans, API reads and live streams bounded per client and globally (`429` + `Retry-After`) |
+| **RPC profile** | a reduced competition profile that bounds Helius usage while keeping every capability on |
+
+The competition profile overrides these code defaults through the host's
+`.env`; nothing else about the product changes, and the verdict logic is
+identical:
+
+| Setting | Production | Default |
+|---|---|---|
+| Scan interval (`SCAN_INTERVAL_SEC`) | 300 s | 120 s |
+| Chain ingestion interval (`INGEST_INTERVAL_SEC`) | 300 s | 60 s |
+| Survivors / transactions / pools per ingestion cycle | 3 / 5 / 1 | 6 / 10 / 2 |
+| Launches read per ingestion cycle (`LAUNCH_TX_PER_CYCLE`) | 20 | 60 |
+| Deep intelligence interval (`INTEL_INTERVAL_SEC`) | 900 s | 300 s |
+| Deep tokens per cycle (base / max) | 2 / 2 | 2 / 4 |
+| Wallets per token / transactions per wallet / graph depth | 6 / 30 / 1 | 12 / 100 / 2 |
+| Deep requests per cycle (`INTEL_REQUESTS_PER_CYCLE`) | 50 | 150 |
+
+Smaller samples mean more readings are capped or marked partial - which the
+product reports as lower coverage, never as a cleaner token.
 
 Deploy your own (Docker Compose behind any HTTPS proxy, or Fly.io):
 **[DEPLOYMENT.md](DEPLOYMENT.md)**.
@@ -296,6 +376,8 @@ install only to type-check.
 <summary><b>Configuration</b></summary>
 
 Every key is optional. Keys are read only by `src/config.ts`, server-side.
+The defaults below are the code's; the live instance overrides some of them
+(see [Production deployment](#production-deployment)).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -308,6 +390,8 @@ Every key is optional. Keys are read only by `src/config.ts`, server-side.
 | `MIN_COVERAGE_QUALIFY` / `MIN_COVERAGE_WATCH` | `0.6` / `0.35` | Market-evidence coverage for Qualified / below which a token is Insufficient data. |
 | `CATASTROPHIC_CONCENTRATION_PCT` | `90` | Top-holder share that hard-fails. |
 | `INGEST_ENABLED`, `INTEL_ENABLED` | `true` | Chain collection and deep intelligence beside the monitor (`serve` only). |
+| `INGEST_INTERVAL_SEC` / `INTEL_INTERVAL_SEC` | `60` / `300` | Seconds between chain-collection / deep-intelligence cycles. |
+| `INTEL_WALLETS_PER_TOKEN` / `INTEL_TX_PER_WALLET` / `INTEL_GRAPH_DEPTH` | `12` / `100` / `2` | Deep-intelligence sample: wallets profiled, newest transactions per wallet, funding hops followed. |
 | `INTEL_TOKENS_PER_CYCLE` / `INTEL_MAX_TOKENS_PER_CYCLE` | `2` / `4` | Tokens per deep cycle; more only when measured cost shows the budgets fit them. |
 | `INTEL_REQUESTS_PER_CYCLE` / `INTEL_CYCLE_MAX_MS` | `150` / `90000` | The hard budget every deep stage draws on. |
 | `RETENTION_HISTORY_DAYS` / `RETENTION_EVIDENCE_DAYS` | `90` / `14` | History kept; per-metric evidence kept for ordinary snapshots (transitions keep theirs). |
@@ -349,25 +433,35 @@ View-shaped DTOs (`src/server/dto.ts`), gzipped over 1 KB.
   starting points ([CALIBRATION.md](CALIBRATION.md)).
 - **High potential is currently unreachable** - no token has yet shown the
   momentum history and deep coverage it requires.
-- **Deep intelligence reaches 2-4 tokens a cycle.** Most live tokens are
-  unanalysed at any moment, are at most Qualified, and the product says so.
-- **Samples are bounded** - at most 12 wallets per token and the newest 100
-  transactions per wallet; thin readings are capped rather than trusted.
+- **Deep intelligence reaches few tokens** - 2-4 a cycle by default; the live
+  instance analyses 2 every 15 minutes. Most live tokens are unanalysed at any
+  moment, are at most Qualified, and the product says so.
+- **Samples are bounded** - by default at most 12 wallets per token and the
+  newest 100 transactions per wallet (live instance: 6 wallets, 30
+  transactions, one funding hop), and the newest 100 per mint; thin readings
+  are capped rather than trusted.
 - **No dedicated bundler classifier.** Coordinated entry (first buys within 2
   slots) and shared-funder clusters are the coordination signals today.
-- **Discovery is polled**, not streamed: feeds every 2 min, chain launches every 60 s.
+- **Discovery is polled**, not streamed: feeds on every scan and chain launches
+  on every collection cycle - every 5 minutes each on the live instance.
 - **Providers vary** - DexScreener can return different pair sets between
   reads; liquidity is only compared within one pool, and each adapter fails soft.
 
-## Roadmap
+## Next phase
 
-| Next | |
-|---|---|
-| **Outcome tracking** after tokens leave the feeds - what calibration needs most | planned |
-| **Technical intelligence** - chart structure from OHLCV candles ([spec](TECHNICAL_INTELLIGENCE.md)) | specified, not implemented |
-| **Realtime ingestion** - websocket/gRPC pool events instead of polled feeds | planned |
-| **Watchlists and alerts** delivered outside the dashboard | planned |
-| **Trading** - paper trading first, each step gated on the last | not started; no key handling without explicit approval |
+The MVP works today, on Mainnet, end to end. Funding or prize support would
+not make it work; it would widen what it can afford to read and how far it can
+be trusted:
+
+| Area | Today | Next phase |
+|---|---|---|
+| **Mainnet data and RPC capacity** | the live instance runs a reduced profile (5 / 5 / 15 min, 2 deep tokens a cycle) to bound provider cost | full default cadence or faster, more of the live universe analysed, realtime websocket/gRPC ingestion instead of polling |
+| **Wallet and actor intelligence** | 6 wallets per token, 30 transactions each, one funding hop on the live instance | larger samples, longer wallet histories and deeper funding graphs, so fewer readings are capped |
+| **Calibration** | 98% of past decision points have no measured outcome, so most thresholds are reasoned ([CALIBRATION.md](CALIBRATION.md)) | outcome tracking after tokens leave the feeds, and replays over months of history instead of days |
+| **Technical intelligence** | specified, not implemented ([spec](TECHNICAL_INTELLIGENCE.md)) | an OHLCV candle source and the specified chart-structure analysis |
+| **Sybil, bundler and coordination analysis** | coordinated entry within 2 slots and shared-funder clusters; no dedicated bundler classifier | a dedicated bundler classifier and cross-token Sybil detection |
+| **Production scaling and monitoring** | one ARM VM, one SQLite writer, health and readiness endpoints | external uptime and budget alerting, off-host backups, watchlists and alerts outside the dashboard |
+| **Trading workflows** | not started; the code holds no keys and signs nothing | paper and manual trading workflows, each step gated on the last; no key handling without explicit approval |
 
 Status of everything, implemented or not: **[ROADMAP.md](ROADMAP.md)**.
 

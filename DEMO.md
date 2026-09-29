@@ -21,7 +21,9 @@ differ from any screenshot.
 
 - **The data is real.** The top bar shows when the last scan ran; System shows
   provider health, which checks are on, degraded or off, and the last scan's
-  timings. Nothing is simulated.
+  timings. Nothing is simulated. The live instance runs a reduced RPC
+  profile - a scan and a chain-collection cycle every 5 minutes, deep
+  intelligence every 15 - so the last scan can be up to 5 minutes old.
 - **Safety and opportunity are separate.** A token can have strong momentum
   and still be Rejected; momentum never lifts a verdict. Open a **Rejected**
   token from its segment: its hard fail is named with the evidence.

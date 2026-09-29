@@ -492,7 +492,8 @@ confirmation while applying a worse one immediately.
   opportunity of 61 against a bar of 65, mostly for lack of momentum history
   and deep intelligence. The bar was not lowered: there is no outcome evidence
   for doing so.
-- **Deep intelligence reaches few tokens.** 2-4 tokens per cycle, chosen by
+- **Deep intelligence reaches few tokens.** 2-4 tokens per cycle by default
+  (current production: 2 every 15 minutes, DEPLOYMENT.md §6), chosen by
   stated priority (DEEP_INTELLIGENCE.md §12a); most live tokens are unanalysed
   at any moment, can be at most QUALIFIED, and their integrity is UNKNOWN (and
   charged as unverified in rank).
@@ -509,10 +510,10 @@ confirmation while applying a worse one immediately.
 - **A pool loaded alongside another in one transaction** (a route) is read as
   neither.
 - **Stability delays improvements by one reading.** A token that genuinely
-  recovers is shown at its worse verdict for one more scan (about two
-  minutes). That is the price of not bouncing, and it never applies to danger.
+  recovers is shown at its worse verdict for one more scan (2 minutes at the
+  default interval, 5 in current production). That is the price of not bouncing, and it never applies to danger.
 - **Re-decision covers analysed and linked tokens.** A token that stops being
   scanned, is not re-analysed and shares no creator or actor with a new
   finding keeps its last verdict until it leaves the live window.
 - **Wallet classifications are samples.** At most 12 wallets per token are
-  profiled; composition shares are of the trades collected.
+  profiled by default (6 in current production); composition shares are of the trades collected.

@@ -318,6 +318,10 @@ above are their inputs; none of them reads or writes a verdict.
 | `CHAIN_CANDIDATE_WINDOW_MIN` | 30 | launches this young join discovery |
 | `CHAIN_CANDIDATE_MAX` | 150 | at most this many per scan |
 | `RETENTION_CHAIN_DAYS` | 30 | chain history kept |
+
+These are code defaults. Current production collects every 300 s with 3
+survivors, 5 transactions and 1 pool per survivor, and 20 launches per cycle
+(DEPLOYMENT.md §6).
 | `RETENTION_LAUNCH_DAYS` | 30 | untracked launches kept |
 | `SOLANA_RPC_URL` | unset | any RPC endpoint; treated as a secret |
 
