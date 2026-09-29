@@ -4242,46 +4242,6 @@ th.col-num {
 }
 
 /*
- * Deep Risk Analysis: the hand-off to Solana Risk Radar, a separate product.
- * Quiet on purpose - a second opinion from elsewhere, not part of the verdict.
- */
-.radar-handoff {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 16px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--r-l);
-  background: var(--bg-sunk);
-}
-
-.radar-handoff__title {
-  margin: 0;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.radar-handoff__note {
-  margin: 2px 0 0;
-  font-size: var(--fs-xs);
-  color: var(--text-3);
-}
-
-.radar-handoff__link {
-  flex-shrink: 0;
-  text-decoration: none;
-}
-
-@media (max-width: 760px) {
-  .radar-handoff {
-    flex-direction: column;
-    align-items: stretch;
-  }
-}
-
-/*
  * How a verdict is reached: four sentences under the ways in, so someone
  * seeing Token Finder for the first time learns what makes a verdict
  * trustworthy. Idle Landing only; the other phases use the space.

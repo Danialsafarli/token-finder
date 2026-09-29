@@ -15,7 +15,6 @@ differ from any screenshot.
 | 5 | **Activity integrity** (Dossier) | Who traded it - organic, automated, snipers, coordinated - by wallets, trades and volume, with unknown always drawn; wash risk; wallet independence; how much of the market was observed |
 | 6 | **Rug intelligence** (Dossier) | The token, its creator and their network: security events, the creator's other launches, relationship paths - and what could not be read |
 | 7 | **Evidence** and **History** tabs | Every signal with each provider's claim and which reading won; every verdict change with its reasons |
-| 8 | **Deep Risk Analysis** (Dossier) | Hands the mint to Solana Risk Radar, a separate deterministic analyser. Its score is its own |
 
 ## What to notice
 

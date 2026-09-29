@@ -115,11 +115,6 @@ export const config = {
   maxStreams: Math.max(1, num('MAX_STREAMS', 200)),
 
   /**
-   * Solana Risk Radar, the separate deep risk analyser a Dossier hands a mint
-   * to. Token Finder links to it; it never embeds or re-scores it.
-   */
-  riskRadarUrl: str('RISK_RADAR_URL') ?? 'https://solana-risk-radar.vercel.app',
-  /**
    * How long after its last evaluation a token stays on the live Board, in
    * minutes. The default is the engine's own market-evidence aging window
    * (FRESHNESS.liquidityUsd.agingMs); a test keeps the two equal. Past it the

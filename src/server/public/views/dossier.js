@@ -155,7 +155,6 @@ function header(d) {
           <li class="fact fact--neutral">Assessed ${timeAgo(v.assessedAt)}${d.placement.freshness ? html` ${freshnessTag(d.placement.freshness)}` : ''}</li>
         </ul>
       </section>
-      ${riskRadarHandoff(d)}
     </header>
 
     ${decisionStrip(d)}
@@ -186,25 +185,6 @@ function header(d) {
             )}</ul>`}
       </div>
     </section>`;
-}
-
-/**
- * Deep Risk Analysis: the hand-off to Solana Risk Radar, a separate product.
- * Its risk score is its own and is never folded into Token Finder's verdict,
- * so the block says so. The link carries the mint; the click also copies it,
- * in case the visitor needs to paste it.
- * @param {Dossier} d
- */
-function riskRadarHandoff(d) {
-  const url = d.riskRadar ? safeUrl(d.riskRadar.url) : null;
-  if (!url) return '';
-  return html`<aside class="radar-handoff" aria-labelledby="radar-title">
-    <div class="radar-handoff__text">
-      <p id="radar-title" class="radar-handoff__title">Deep Risk Analysis</p>
-      <p class="radar-handoff__note">Solana Risk Radar is a separate, deterministic risk analyser. Its risk score is its own - not part of Token Finder's verdict above.</p>
-    </div>
-    <a class="btn btn--small radar-handoff__link" href="${url}" target="_blank" rel="noopener noreferrer" data-action="risk-radar" data-mint="${d.token.mint}">Open in Risk Radar<span aria-hidden="true"> ↗</span><span class="sr-only"> (opens in a new tab)</span></a>
-  </aside>`;
 }
 
 /** @param {Dossier} d @param {string} active */
@@ -887,12 +867,6 @@ export function mountDossier(root, route) {
     if (target.closest('[data-action="retry"]')) {
       history = null;
       void load();
-      return;
-    }
-    // Opening Risk Radar also puts the address on the clipboard. The link itself opens as usual.
-    const radar = target.closest('[data-action="risk-radar"]');
-    if (radar instanceof HTMLElement) {
-      navigator.clipboard?.writeText(radar.dataset.mint ?? '').catch(() => {});
       return;
     }
     const copy = target.closest('[data-action="copy-mint"]');

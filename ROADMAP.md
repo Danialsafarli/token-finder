@@ -11,7 +11,7 @@ depends on a provider, what is limited, and what is future.
 | Data backbone (Phase 1) | Five discovery feeds plus launches read from the chain; validated provider data; an evidence model where unknown is never zero; cross-provider resolution, conservative for safety facts; SQLite persistence that survives restarts | PIPELINE.md, DATA_BACKBONE.md, PERSISTENCE.md |
 | Deep intelligence (Phase 2) | Wallet profiles and buyer classes, funding, the wallet graph and clusters, wash and activity quality, launch attribution, security events, creator history and serial networks - on its own bounded loop | DEEP_INTELLIGENCE.md |
 | Decision engine (Phase 3) | A normalised, rule-versioned intelligence contract; Hard Gate v2; seven-domain integrity; opportunity kept apart from safety; Momentum v2 from observed history; multi-pool coverage; six verdicts with persisted, reasoned transitions; re-decision after each intelligence cycle | DECISION_ENGINE.md |
-| Calibration and finalisation (Phase 4) | A replay over real stored history with an outcome model that never uses price; verdict stability (danger at once, improvement on confirmation); same-pool liquidity and a collapse signal, from replay evidence; deep-analysis scheduling by stated priority and measured cost; re-decision of linked launches; evidence retention; public access limits, health checks and a container deployment; the Solana Risk Radar hand-off; a product polish pass | CALIBRATION.md, DEPLOYMENT.md, DEMO.md |
+| Calibration and finalisation (Phase 4) | A replay over real stored history with an outcome model that never uses price; verdict stability (danger at once, improvement on confirmation); same-pool liquidity and a collapse signal, from replay evidence; deep-analysis scheduling by stated priority and measured cost; re-decision of linked launches; evidence retention; public access limits, health checks and a container deployment; a product polish pass | CALIBRATION.md, DEPLOYMENT.md, DEMO.md |
 | Product | Landing, on-request analysis, live scan, Board and Observatory, Dossier (Activity integrity, Rug intelligence, evidence, history), Changes, System | README.md, docs/adr/ |
 
 ## Depends on an optional provider
@@ -22,7 +22,6 @@ depends on a provider, what is limited, and what is future.
 | Chain collection and deep intelligence (Activity integrity, Rug intelligence) | Helius (oldest-first history is Helius-only) | collection falls back to the public RPC slowly; deep intelligence reads less and says so |
 | Birdeye listing feed | `BIRDEYE_API_KEY` | four feeds instead of five |
 | Impersonation screening | TypeSafe key **and** `TYPESAFE_ENABLED` | off by design; advisory only, never affects a verdict |
-| Deep Risk Analysis opening pre-filled | Risk Radar applying `integrations/risk-radar/0001-*.patch` | the link opens Risk Radar and the mint is on the clipboard |
 
 ## Limited, and stated as such
 

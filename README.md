@@ -151,7 +151,6 @@ confirmed by a second reading. Full rules: **[DECISION_ENGINE.md](DECISION_ENGIN
 | 🌐 | **Board and Observatory** - the live ranking with segments, search and keyboard navigation, beside a live network sphere of the tokens that matter now |
 | 🔄 | **Changes** - every verdict transition with its reasons, never pruned |
 | 🩺 | **System** - which checks are on, degraded or off; provider, ingestion, intelligence and database health; the decision policy and rule versions |
-| 🧭 | **Risk Radar hand-off** - *Deep Risk Analysis* opens [Solana Risk Radar](https://solana-risk-radar.vercel.app), a separate deterministic analyser whose score stays its own |
 
 ---
 
@@ -186,7 +185,7 @@ All captured from the live production instance - real tokens, real data, nothing
 
 | | |
 |---|---|
-| **661 automated tests** | declared in source at the current release: **590** unit and integration (`npm test`) and **71** real-browser UI tests (`npm run test:ui`) |
+| **660 automated tests** | declared in source at the current release: **589** unit and integration (`npm test`) and **71** real-browser UI tests (`npm run test:ui`) |
 | **Real-browser UI tests** | the product in headless Chrome/Edge over the DevTools protocol with real pointer, touch and key input - including a hostile token that must not execute |
 | **Type safety** | `tsc` over the server, then the browser code (JSDoc-typed) |
 | **Lint** | the render boundary, CSP-compatible markup and the persistence boundary are enforced |
@@ -397,7 +396,6 @@ The defaults below are the code's; the live instance overrides some of them
 | `RETENTION_HISTORY_DAYS` / `RETENTION_EVIDENCE_DAYS` | `90` / `14` | History kept; per-metric evidence kept for ordinary snapshots (transitions keep theirs). |
 | `TOKEN_FINDER_DATA_DIR` | `data` | Where the database lives. |
 | `PUBLIC_ORIGIN`, `ADMIN_TOKEN`, `ANALYZE_PER_*`, `SCAN_*`, ... | - | Public hosting; see [DEPLOYMENT.md](DEPLOYMENT.md). |
-| `RISK_RADAR_URL` | `https://solana-risk-radar.vercel.app` | Where Deep Risk Analysis hands the mint. |
 | `TYPESAFE_API_KEY` / `TYPESAFE_ENABLED` | - / `false` | Advisory impersonation screening. **Off**, and it never affects a verdict. |
 
 The rest are in `.env.example`.
