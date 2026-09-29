@@ -38,8 +38,8 @@ depends on a provider, what is limited, and what is future.
 - **Samples**: at most 12 wallets per token, the newest 100 transactions per
   wallet and per mint; wash and coordination readings rarely represent half
   the market, and are capped accordingly.
-- **Deployment** is prepared, not live: it needs a host with a persistent
-  volume (DEPLOYMENT.md §6).
+- **Deployment** is one instance by design (SQLite has one writer); it runs
+  live on Oracle Cloud, Frankfurt (DEPLOYMENT.md §6).
 
 ## Future - not implemented
 

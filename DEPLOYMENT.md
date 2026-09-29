@@ -1,8 +1,8 @@
 # Deployment
 
-Audience: whoever hosts Token Finder publicly. Status: **prepared, not yet
-deployed** - no hosting account is connected to this repository. The single
-external step is at the end.
+Audience: whoever hosts Token Finder publicly. Status: **live** at
+<https://130-61-32-89.sslip.io> - Oracle Cloud, Frankfurt, deployed with §5
+(see §6).
 
 ## 1. What Token Finder needs from a host
 
@@ -108,10 +108,15 @@ HELIUS_API_KEY=... PUBLIC_ORIGIN=https://tokens.example.com \
 
 and point an HTTPS reverse proxy (Caddy: `reverse_proxy 127.0.0.1:8080`) at it.
 
-## 6. The one external step
+## 6. Current production
 
-No hosting account or CLI with credentials is available to this repository
-(the Vercel CLI on the development machine cannot host a long-lived process
-with a durable disk). To go live, **someone with a Fly.io account (or any
-Docker host) runs §4 or §5 with their own Helius key.** Nothing else is
-missing.
+§5 on one Oracle Cloud Always Free ARM VM (`VM.Standard.A1.Flex`, 1 OCPU,
+2 GB) in Frankfurt, Ubuntu 24.04:
+
+| Piece | How |
+|---|---|
+| App | `deploy/docker-compose.yml`, unchanged, one container on `127.0.0.1:8080` |
+| HTTPS | Caddy with automatic certificates, `reverse_proxy 127.0.0.1:8080`; port 8080 is closed to the internet |
+| Storage | a separate 50 GB block volume mounted by UUID; a host-side compose override binds the `token-finder-data` volume onto it, and Docker is ordered after the mount so a restart can never start on an empty directory |
+| Secrets | `HELIUS_API_KEY` and `PUBLIC_ORIGIN` in a root-only `.env` (mode 600) on the host |
+| Recovery | verified with a real reboot: Docker, Caddy and the container returned on their own, with the same scan count and database |

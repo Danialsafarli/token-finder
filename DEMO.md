@@ -1,7 +1,7 @@
 # Demo path
 
-Audience: a judge or first-time reviewer with a few minutes. Everything shown
-is live data; no token is hard-coded or staged, so the tokens you see will
+Audience: a judge or first-time reviewer with a few minutes. Open the live
+instance at **<https://130-61-32-89.sslip.io>**. Everything shown is live data; no token is hard-coded or staged, so the tokens you see will
 differ from any screenshot.
 
 ## In one minute
